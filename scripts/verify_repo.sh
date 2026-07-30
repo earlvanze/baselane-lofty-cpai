@@ -6,6 +6,7 @@ cd "$ROOT"
 
 python3 -m compileall -q scripts skills/baselane-mcp/src skills/baselane-financials/scripts
 python3 -c 'import openpyxl' >/dev/null
+python3 -m unittest discover -s tests -p 'test_*.py' >/dev/null
 
 while IFS= read -r -d '' script; do
   bash -n "$script"

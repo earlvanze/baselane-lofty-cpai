@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "mode": "shadow",
+  "model": {
+    "provider": "ollama",
+    "endpoint_env": "CPAI_OLLAMA_BASE_URL",
+    "default_endpoint": "http://127.0.0.1:11434",
+    "allowed_models": [
+      "qwen2.5:14b-instruct"
+    ],
+    "request_timeout_seconds": 180,
+    "num_ctx": 8192,
+    "num_predict": 700,
+    "temperature": 0
+  },
+  "input": {
+    "max_reports": 8,
+    "max_report_bytes": 262144,
+    "max_total_context_chars": 60000
+  },
+  "decision": {
+    "default": "review",
+    "allowed": [
+      "proceed",
+      "review",
+      "escalate"
+    ],
+    "allowed_actions": {
+      "continue_read_only_pipeline": {
+        "effect": "advisory_only",
+        "description": "Existing read-only pipeline may continue under its own deterministic guards."
+      },
+      "rebuild_local_review_artifacts": {
+        "effect": "advisory_only",
+        "description": "A local-only artifact rebuild may be considered after deterministic validation."
+      },
+      "request_human_review": {
+        "effect": "advisory_only",
+        "description": "Preserve evidence and require human review before any further action."
+      },
+      "halt_and_preserve_evidence": {
+        "effect": "advisory_only",
+        "description": "Do not progress the affected lane; retain the reports for investigation."
+      }
+    }
+  },
+  "security": {
+    "reject_unknown_envelope_fields": true,
+    "never_dispatch_commands": true,
+    "never_authorize_live_mutations": true,
+    "treat_report_content_as_untrusted": true
+  }
+}

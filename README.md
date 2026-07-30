@@ -18,6 +18,8 @@ This repository intentionally excludes credentials, browser profiles, cookies, M
 
 `docs/PIPELINE_MANIFEST.md` maps these lanes in more detail. Scripts retained for a dated correction or reconciliation are clearly treated as manual-only; they are never a substitute for the scheduled workflows.
 
+The full data and approval flow is documented in [Workflow](docs/WORKFLOW.md). The optional local-model observer is documented in [Local CPAI control plane](docs/LOCAL_CPAI.md).
+
 ## Safety model
 
 - Every job starts from an already authenticated, visible Baselane browser session. This repository does not store or automate credentials, MFA codes, CAPTCHA solving, cookies, or browser-profile state.
@@ -62,6 +64,8 @@ Use the runbooks:
 - [Weekly](docs/runbooks/weekly.md)
 - [Monthly](docs/runbooks/monthly.md)
 - [Recovery and mutation controls](docs/runbooks/recovery-and-mutations.md)
+- [Entire workflow diagram](docs/WORKFLOW.md)
+- [Local CPAI control plane](docs/LOCAL_CPAI.md)
 
 Before a live run, validate the repository itself:
 
@@ -70,6 +74,12 @@ bash scripts/verify_repo.sh
 ```
 
 The scheduler example is [config/baselane-lofty.crontab.example](config/baselane-lofty.crontab.example). It leaves communications disabled by default and must be adapted to the local workspace path, logs path, and approved runtime environment.
+
+## Local model (shadow only)
+
+`scripts/cpai_local_supervisor.py` provides a bounded, local Ollama observer for deterministic reports. Its current policy permits `qwen2.5:14b-instruct` only and returns a schema-validated advisory envelope. It never dispatches scripts or approves financial, workbook, or external changes. Run it only after the corresponding deterministic lane has written its reports.
+
+`scripts/cpai_shadow_after_daily.sh` is the non-blocking daily companion. It reads the completed daily reports and writes a separate shadow report; it never changes the daily lane's action policy or dispatches work.
 
 ## MCP
 

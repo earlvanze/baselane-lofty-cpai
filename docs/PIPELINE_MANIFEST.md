@@ -11,6 +11,7 @@ This repository retains the full reusable Baselane/Lofty operating surface. The 
 | Monthly close | `scripts/baselane_financials_monthly_cron.sh` | `baselane_monthly_*`, `baselane_financials_*`, `baselane_live_cf_*`, `lofty_monthly_*`, `lofty_capture_*` | Builds review artifacts; live publication and messages require explicit flags. |
 | Statements and P&I | `scripts/baselane_monthly_statements_idempotent.sh` | `baselane_statements_*`, `run_mortgage_statement_downloaders.py`, `mortgage_workflow_*`, `update_coownership_mortgage_tokenomics.py`, `skills/baselane-financials` | Evidence and reconciliation with explicit mutation gates; property-scoped owner-statement backfills propagate to Cash Flow workbooks. |
 | Yhome/Web3 reconciliation | `scripts/refresh_yhome_transition_reconciliation.py` | `yhome_*`, `baselane_web3_reconciliation_apply.py`, `baselane_fix_yhome_*`, `reconcile_*` | Read/compare first; non-cash entries remain non-cash absent bank evidence. |
+| Local CPAI shadow observer | `scripts/cpai_shadow_after_daily.sh` | `cpai_local_supervisor.py`, `config/cpai_supervisor_policy.json`, deterministic JSON reports | Local-only report triage; strict JSON, no command dispatch, no financial authority, and no external side effects. |
 | Baselane MCP | `skills/baselane-mcp/src/baselane_mcp/server.py` | `transfers.py`, local MCP scripts, root Baselane scripts | Guarded local tool API. |
 
 ## Retained manual-only scripts
@@ -30,3 +31,7 @@ The checked-in `config/*.json` files encode mapping/classification and approved 
 ## Session boundary
 
 Legacy credential bootstrap, token extraction, cookie seeding, MFA handling, CAPTCHA handling, and browser-login helpers are intentionally not included. Every live lane begins only after a human has established an authorized visible browser session; `baselane_cdp_auth_recovery.py` is a read-only availability check despite its legacy-compatible filename.
+
+## Local-model boundary
+
+The local model is not a scheduler, source of truth, or action engine. `cpai_local_supervisor.py` accepts only bounded local report inputs, binds every response to their SHA-256 manifest, and emits an advisory `DecisionEnvelope` in shadow mode. It has no dispatch implementation by design. See [Local CPAI](LOCAL_CPAI.md) and the [workflow diagram](WORKFLOW.md).
