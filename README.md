@@ -39,6 +39,18 @@ export OPENCLAW_WORKSPACE_ROOT="$PWD"
 export PYTHONPATH="$PWD/skills/baselane-mcp/src:$PWD/scripts"
 ```
 
+## Workspace dependencies
+
+The core cross-repository dependency is [lofty-pm](https://github.com/earlvanze/lofty-pm), used for Lofty property maps, reviewed update payloads, and guarded publication. Install it alongside this repository when running Lofty lanes:
+
+```bash
+git clone git@github.com:earlvanze/lofty-pm.git skills/lofty-pm
+```
+
+[Baselane MCP](skills/baselane-mcp/) is included in this repository, not a separate clone. It is installed with `uv sync --project skills/baselane-mcp` and exposes the guarded internal-transfer and Baselane workflow tools.
+
+There is one optional local integration: two Cashflow-statement hooks reference `skills/baselane-financials/scripts/update_cf_statements.py`. It is not required for daily synchronization, PM-fee accruals, reconciliation, or Baselane MCP operations. Provide that local skill only when running the related monthly-statement or weekly Cashflow sync lanes; otherwise configure those hooks off or provide an explicit replacement path.
+
 Create local-only paths and runtime variables in `config/local/`; do not commit them. The checked-in policy JSON files are data-bearing accounting configuration, so changes require a reason and review.
 
 ## Operating the pipeline

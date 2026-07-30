@@ -21,6 +21,12 @@ Files named for a specific property, date, payment, or remediation are preserved
 
 The checked-in `config/*.json` files encode mapping/classification and approved accounting decisions. They are part of production behavior. Runtime paths, auth state, browser/CDP endpoints, and secret material are local-only and intentionally absent.
 
+## Dependency boundary
+
+- [lofty-pm](https://github.com/earlvanze/lofty-pm) is the external companion repository for Lofty property maps, update payloads, and guarded publication.
+- [Baselane MCP](../skills/baselane-mcp/) is vendored in this repository and installed from `skills/baselane-mcp`; it is not a separate Git clone.
+- `skills/baselane-financials` is an optional local Cashflow-statement integration used by two statement/weekly hooks only. It is not part of the core daily, accrual, reconciliation, or transfer pipeline.
+
 ## Session boundary
 
 Legacy credential bootstrap, token extraction, cookie seeding, MFA handling, CAPTCHA handling, and browser-login helpers are intentionally not included. Every live lane begins only after a human has established an authorized visible browser session; `baselane_cdp_auth_recovery.py` is a read-only availability check despite its legacy-compatible filename.
