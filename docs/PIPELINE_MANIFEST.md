@@ -27,6 +27,7 @@ The checked-in `config/*.json` files encode mapping/classification and approved 
 - [lofty-pm](https://github.com/earlvanze/lofty-pm) is the external companion repository for Lofty property maps, update payloads, and guarded publication.
 - [Baselane MCP](../skills/baselane-mcp/) is vendored in this repository and installed from `skills/baselane-mcp`; it is not a separate Git clone.
 - [Cashflow propagation](../skills/baselane-financials/SKILL.md) is vendored in this repository. It is the canonical Baselane/ECO-GL-to-property-workbook leg that feeds downstream Lofty live-financial review; it is used by weekly/monthly statement flows and by source-cash and Cashflow review tools.
+- [requirements.txt](../requirements.txt) is the root Python bootstrap manifest. The MCP's `pyproject.toml` and `uv.lock` remain its package-specific resolved dependency source; do not hand-copy its transitive dependencies into another lockfile.
 
 ## Session boundary
 

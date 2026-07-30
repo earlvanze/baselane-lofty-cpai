@@ -32,15 +32,22 @@ Read [AGENTS.md](AGENTS.md) before making an accounting change.
 
 ## Install
 
-Requirements: Python 3.11+, Node.js 20+, `uv` (recommended), `jq`, `curl`, `flock`, `openpyxl`, and an authorized visible browser session with CDP reachable from the host.
+Requirements: Python 3.11+, Node.js 20+, `jq`, `curl`, `flock`, and an authorized visible browser session with CDP reachable from the host. Python dependencies are listed in [requirements.txt](requirements.txt); the MCP package also retains its own locked `uv` environment.
 
 ```bash
 git clone git@github.com:earlvanze/baselane-lofty-cpai.git
 cd baselane-lofty-cpai
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
+# Optional: use the MCP's locked environment instead of its editable pip install.
 uv sync --project skills/baselane-mcp
 export OPENCLAW_WORKSPACE_ROOT="$PWD"
 export PYTHONPATH="$PWD/skills/baselane-mcp/src:$PWD/scripts"
 ```
+
+`requirements.txt` is the portable bootstrap manifest for the full script surface: workbook propagation, reviewed HTTP clients, mortgage-PDF parsing, CDP helpers, and the editable Baselane MCP. `skills/baselane-mcp/pyproject.toml` and `uv.lock` remain authoritative for the MCP package's resolved dependency set. Ollama is optional and required only for the local CPAI shadow observer.
 
 ## Workspace dependencies
 
