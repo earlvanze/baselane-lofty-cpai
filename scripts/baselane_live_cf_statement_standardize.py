@@ -36,8 +36,12 @@ except ImportError:  # pragma: no cover - workspace script imports are available
     monthly_exclusion_guards = None
 
 
-ROOT = Path(os.environ.get("OPENCLAW_WORKSPACE") or Path.cwd()).absolute()
-UPDATE_CF_SCRIPT = ROOT / "scripts/update_cf_statements.py"
+ROOT = Path(
+    os.environ.get("OPENCLAW_WORKSPACE_ROOT")
+    or os.environ.get("OPENCLAW_WORKSPACE")
+    or Path(__file__).resolve().parents[1]
+).absolute()
+UPDATE_CF_SCRIPT = ROOT / "skills" / "baselane-financials" / "scripts" / "update_cf_statements.py"
 DEFAULT_LIVE_CAPTURE = ROOT / "reports/baselane_financials_monthly_live_financial_capture.json"
 DEFAULT_LIVE_ROWS = ROOT / "tmp/utilities-six-figure-current/get-manager-properties.current2.json"
 DEFAULT_REPORT = ROOT / "reports/baselane_live_cf_statement_standardize_report.json"

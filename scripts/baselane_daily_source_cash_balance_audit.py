@@ -16,18 +16,7 @@ from lofty_monthly_exclusions import DEFAULT_MANUAL_EXCLUDED_PROPERTIES, match_e
 
 
 ROOT = Path(__file__).absolute().parents[1]
-LOCAL_WORKSPACE_ROOT = Path.home() / ".openclaw" / "workspace"
-CF_SCRIPT = next(
-    (
-        candidate
-        for candidate in (
-            LOCAL_WORKSPACE_ROOT / "skills" / "baselane-financials" / "scripts" / "update_cf_statements.py",
-            ROOT / "skills" / "baselane-financials" / "scripts" / "update_cf_statements.py",
-        )
-        if candidate.is_file()
-    ),
-    ROOT / "skills" / "baselane-financials" / "scripts" / "update_cf_statements.py",
-)
+CF_SCRIPT = ROOT / "skills" / "baselane-financials" / "scripts" / "update_cf_statements.py"
 DEFAULT_REPORT = ROOT / "reports" / "baselane_daily_source_cash_balance_report.json"
 DEFAULT_DATA_QUALITY_REPORT = ROOT / "reports" / "baselane_ecogl_data_quality_autonomy.json"
 DEFAULT_SOURCE_FIX_PLAN = ROOT / "reports" / "baselane_ecogl_source_fix_plan.json"

@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-python3 -m compileall -q scripts skills/baselane-mcp/src
+python3 -m compileall -q scripts skills/baselane-mcp/src skills/baselane-financials/scripts
+python3 -c 'import openpyxl' >/dev/null
 
 while IFS= read -r -d '' script; do
   bash -n "$script"

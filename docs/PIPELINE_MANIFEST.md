@@ -6,10 +6,10 @@ This repository retains the full reusable Baselane/Lofty operating surface. The 
 | --- | --- | --- | --- |
 | Daily finance sync | `scripts/baselane_cron_run.sh` | `baselane_sync_*`, `baselane_export_*`, `baselane_daily_*`, `baselane_ecogl_*`, `baselane_source_*`, `split_ledger_*`, `sync_ledger_*` | Read/refresh; guarded source fixes only with explicit apply flags. |
 | Deposit evidence | `scripts/check_deposits_cron.sh` | `check_deposits_*`, `baselane_hemlane_*`, `hemlane_financial_evidence.py` | Read-only exception reporting. |
-| Weekly review | `scripts/baselane_weekly_file_updates_cron.sh` | `baselane_weekly_*`, `baselane_monthly_mortgage_workflow_idempotent.sh`, mortgage evidence/queue scripts, CF review scripts | Review-first; live actions default off. |
+| Weekly review | `scripts/baselane_weekly_file_updates_cron.sh` | `baselane_weekly_*`, `baselane_monthly_mortgage_workflow_idempotent.sh`, mortgage evidence/queue scripts, CF review scripts, `skills/baselane-financials` | Review-first; syncs closed-period Cash Flow workbooks before downstream Lofty review. |
 | Monthly accruals | `scripts/baselane_monthly_accruals_28th_cron.sh` | `baselane_monthly_accruals_*`, `baselane_apply_monthly_accruals_live.py`, PM-fee checks | Explicitly guarded Baselane accrual lane. |
 | Monthly close | `scripts/baselane_financials_monthly_cron.sh` | `baselane_monthly_*`, `baselane_financials_*`, `baselane_live_cf_*`, `lofty_monthly_*`, `lofty_capture_*` | Builds review artifacts; live publication and messages require explicit flags. |
-| Statements and P&I | `scripts/baselane_monthly_statements_idempotent.sh` | `baselane_statements_*`, `run_mortgage_statement_downloaders.py`, `mortgage_workflow_*`, `update_coownership_mortgage_tokenomics.py` | Evidence and reconciliation with explicit mutation gates. |
+| Statements and P&I | `scripts/baselane_monthly_statements_idempotent.sh` | `baselane_statements_*`, `run_mortgage_statement_downloaders.py`, `mortgage_workflow_*`, `update_coownership_mortgage_tokenomics.py`, `skills/baselane-financials` | Evidence and reconciliation with explicit mutation gates; property-scoped owner-statement backfills propagate to Cash Flow workbooks. |
 | Yhome/Web3 reconciliation | `scripts/refresh_yhome_transition_reconciliation.py` | `yhome_*`, `baselane_web3_reconciliation_apply.py`, `baselane_fix_yhome_*`, `reconcile_*` | Read/compare first; non-cash entries remain non-cash absent bank evidence. |
 | Baselane MCP | `skills/baselane-mcp/src/baselane_mcp/server.py` | `transfers.py`, local MCP scripts, root Baselane scripts | Guarded local tool API. |
 
@@ -25,7 +25,7 @@ The checked-in `config/*.json` files encode mapping/classification and approved 
 
 - [lofty-pm](https://github.com/earlvanze/lofty-pm) is the external companion repository for Lofty property maps, update payloads, and guarded publication.
 - [Baselane MCP](../skills/baselane-mcp/) is vendored in this repository and installed from `skills/baselane-mcp`; it is not a separate Git clone.
-- `skills/baselane-financials` is an optional local Cashflow-statement integration used by two statement/weekly hooks only. It is not part of the core daily, accrual, reconciliation, or transfer pipeline.
+- [Cashflow propagation](../skills/baselane-financials/SKILL.md) is vendored in this repository. It is the canonical Baselane/ECO-GL-to-property-workbook leg that feeds downstream Lofty live-financial review; it is used by weekly/monthly statement flows and by source-cash and Cashflow review tools.
 
 ## Session boundary
 

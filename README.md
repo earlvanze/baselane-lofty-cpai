@@ -12,6 +12,7 @@ This repository intentionally excludes credentials, browser profiles, cookies, M
 | Weekly | `scripts/baselane_weekly_file_updates_cron.sh` | Run the idempotent unprocessed-transaction, mortgage, reconciliation, and Lofty review gates. |
 | Monthly accruals | `scripts/baselane_monthly_accruals_28th_cron.sh` | Run the guarded 28th PM-fee/DAO-fee accrual lane and its recovery detector. |
 | Monthly close | `scripts/baselane_financials_monthly_cron.sh` | Build finance-truth, statement, governance, owner-review, and Lofty review packets. |
+| Cashflow propagation | `skills/baselane-financials/scripts/update_cf_statements.py` | Propagate the canonical Baselane/ECO GL into each property Cash Flow workbook; those workbooks feed downstream Lofty financial review. |
 | Baselane MCP | `skills/baselane-mcp/` | Local MCP surface for exports, guarded splits, reporting, and internal-only transfers. |
 | Accounting policies | `config/*.json` | Versioned classification, split, accrual, reserve, Web3-reconciliation, and Lofty-policy decisions. |
 
@@ -29,7 +30,7 @@ Read [AGENTS.md](AGENTS.md) before making an accounting change.
 
 ## Install
 
-Requirements: Python 3.11+, Node.js 20+, `uv` (recommended), `jq`, `curl`, `flock`, and an authorized visible browser session with CDP reachable from the host.
+Requirements: Python 3.11+, Node.js 20+, `uv` (recommended), `jq`, `curl`, `flock`, `openpyxl`, and an authorized visible browser session with CDP reachable from the host.
 
 ```bash
 git clone git@github.com:earlvanze/baselane-lofty-cpai.git
@@ -49,7 +50,7 @@ git clone git@github.com:earlvanze/lofty-pm.git skills/lofty-pm
 
 [Baselane MCP](skills/baselane-mcp/) is included in this repository, not a separate clone. It is installed with `uv sync --project skills/baselane-mcp` and exposes the guarded internal-transfer and Baselane workflow tools.
 
-There is one optional local integration: two Cashflow-statement hooks reference `skills/baselane-financials/scripts/update_cf_statements.py`. It is not required for daily synchronization, PM-fee accruals, reconciliation, or Baselane MCP operations. Provide that local skill only when running the related monthly-statement or weekly Cashflow sync lanes; otherwise configure those hooks off or provide an explicit replacement path.
+[Cashflow propagation](skills/baselane-financials/SKILL.md) is also included in this repository. It is an in-line pipeline component, not an optional workspace integration: it applies the canonical Baselane/ECO GL to the per-property Cash Flow workbooks that feed downstream Lofty live-financial review. Its hooks run in the weekly statement pass and the property-scoped monthly owner-statement backfill; the daily source-cash audit and several review tools import the same canonical mapping logic.
 
 Create local-only paths and runtime variables in `config/local/`; do not commit them. The checked-in policy JSON files are data-bearing accounting configuration, so changes require a reason and review.
 
