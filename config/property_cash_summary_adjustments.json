@@ -1,0 +1,38 @@
+{
+  "properties": [
+    {
+      "property_name": "1456 W 85th St, Cleveland, OH 44102",
+      "cash_position_lines": [
+        {
+          "metric": "Aligned-held DAO cash",
+          "amount": 1500.0,
+          "source": "Aligned Property Reserve; DAO-owned, held by Aligned",
+          "owner": "DAO",
+          "holder": "Aligned",
+          "include_in_dao_owned_cash": true
+        }
+      ],
+      "source_evidence": [
+        {
+          "field": "Aligned-held DAO cash adjustment",
+          "value": "$1,500.00 (Aligned Property Reserve; DAO-owned, held by Aligned)"
+        },
+        {
+          "field": "APG owner-held security deposits",
+          "value": "$1,790.00 (2102 - Owner Held Security Deposits; $795.00 + $995.00)"
+        },
+        {
+          "field": "APG owner contribution evidence",
+          "value": "$2,100.00 (3150 - Owner Contribution)"
+        },
+        {
+          "field": "APG owner distribution evidence",
+          "value": "$2,248.75 (3250 - Owner Distribution)"
+        }
+      ],
+      "evidence_source": "/mnt/c/Users/digit/Dropbox/Real Estate/OH/APG/General Ledgers/gl_split_by_property.xlsx",
+      "evidence_sheet": "1456 W 85th St Cleveland, OH 44",
+      "notes": "Configured 2026-07-16 from APG split GL and owner confirmation. The Aligned Property Reserve is DAO-owned but Aligned-held, so it should be displayed separately from ECO/Baselane operating cash."
+    }
+  ]
+}

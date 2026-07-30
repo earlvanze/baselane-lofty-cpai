@@ -1,0 +1,18 @@
+{
+  "decisions": [],
+  "schema": {
+    "decision_values": [
+      "true_804_cash_movement",
+      "dao_capital_or_reimbursement",
+      "upstream_retag_required",
+      "exclude_from_transfer_basis"
+    ],
+    "required_fields": [
+      "fingerprint",
+      "reviewed",
+      "decision",
+      "reviewed_at",
+      "note"
+    ]
+  }
+}

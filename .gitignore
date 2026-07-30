@@ -1,0 +1,34 @@
+# Local state, financial exports, and credentials never belong in source control.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.har
+*.session
+*cookie*
+*token*
+*credential*
+*auth*.json
+reports/
+logs/
+output/
+exports/
+statements/
+downloads/
+tmp/
+.cache/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.DS_Store
+
+# Local override files may point at Dropbox, Google, or a browser profile.
+config/local/
+config/*.local.json
+config/mcporter.json
+scripts/.*_state*

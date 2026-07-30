@@ -1,0 +1,42 @@
+{
+  "records": [
+    {
+      "property_name": "84 Madison Ave",
+      "run_month": "2026-06",
+      "eligible": true,
+      "reason": "scoped_dao_reconciliation_final_20260714: retained capital $2,216.82; no ECO debt"
+    },
+    {
+      "property_name": "86 Madison Ave",
+      "run_month": "2026-06",
+      "eligible": false,
+      "reason": "scoped_dao_reconciliation_final_20260714: ECO debt $8,769.59"
+    },
+    {
+      "property_name": "88 Madison Ave",
+      "run_month": "2026-06",
+      "eligible": true,
+      "reason": "scoped_dao_reconciliation_final_20260714: retained capital $1,009.93; no ECO debt"
+    },
+    {
+      "property_name": "90 Madison Ave",
+      "run_month": "2026-06",
+      "eligible": true,
+      "reason": "scoped_dao_reconciliation_final_20260714: retained capital $1,761.98; no ECO debt"
+    },
+    {
+      "property_name": "724 3rd Ave",
+      "run_month": "2026-06",
+      "eligible": true,
+      "reason": "scoped_dao_reconciliation_final_20260714: retained capital $14.71; no ECO debt"
+    },
+    {
+      "property_name": "85-104 Alawa Pl",
+      "run_month": "2026-06",
+      "eligible": false,
+      "reason": "scoped_dao_reconciliation_final_20260714: ECO debt $4,970.11"
+    }
+  ],
+  "source_report": "reports/scoped_dao_reconciliation_final_20260714.md",
+  "status": "ok"
+}

@@ -1,0 +1,33 @@
+{
+  "candidate_count": 0,
+  "decision_count": 0,
+  "decision_group_count": 0,
+  "decisions": [],
+  "generated_at": "2026-07-28T21:12:43Z",
+  "group_summaries": [],
+  "policy": "Human review workspace. Set reviewed=true, reviewed_at, decision, and note for rows you approve. Rerun audit to produce reports/baselane_804_quitman_cash_alignment_proposed_decisions.json. This file is not a live decision config until reviewed rows are copied to config/baselane_804_quitman_cash_alignment_decisions.json.",
+  "review_progress": {
+    "all_review_groups": [],
+    "group_completion_ratio": 1.0,
+    "group_count": 0,
+    "high_priority_group_count": 0,
+    "high_priority_unreviewed_group_count": 0,
+    "next_review_groups": [],
+    "policy": "Review progress is informational and does not approve transfer movement. 804 source-clean requires every current review group to be reviewed and copied into the live decisions config.",
+    "remaining_row_count_by_transfer_basis_effect": {},
+    "remaining_signed_amount_by_bucket": {},
+    "remaining_signed_amount_by_transfer_basis_effect": {},
+    "reviewed_absolute_amount_sum": 0,
+    "reviewed_group_count": 0,
+    "reviewed_row_count_by_transfer_basis_effect": {},
+    "reviewed_signed_amount_by_bucket": {},
+    "reviewed_signed_amount_by_transfer_basis_effect": {},
+    "reviewed_signed_amount_sum": 0,
+    "status": "ok",
+    "unreviewed_absolute_amount_sum": 0,
+    "unreviewed_group_count": 0,
+    "unreviewed_signed_amount_sum": 0
+  },
+  "status": "review_required",
+  "suggested_decision_counts": {}
+}

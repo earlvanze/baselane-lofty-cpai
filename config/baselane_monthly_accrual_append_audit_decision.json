@@ -1,0 +1,15 @@
+{
+  "added_aops_amount_sum": -160342.34,
+  "added_aops_count": 141,
+  "added_non_aops_count": 166,
+  "baseline": "/mnt/c/Users/digit/Dropbox/Projects/assetrail/ECO Systems General Ledger.csv.bak-20260713T070802Z",
+  "baseline_sha256": "703730fb79433c5179b524dc8eb4798f74fa8a25f437cf7b3c0189ba260a0417",
+  "current": "/mnt/c/Users/digit/Dropbox/Projects/assetrail/ECO Systems General Ledger.csv",
+  "current_sha256": "241fb7ee6e08afe2cd1757d7f6522cb730276b7bf395caab1595cb0a979cad27",
+  "decision": "accept_current_aops_overlay",
+  "instructions": "Set reviewed=true, reviewed_at, and reviewed_by only after deciding to keep the current AOPS overlay rows instead of restoring the verified baseline. Any hash/count drift invalidates this decision.",
+  "removed_count": 40,
+  "reviewed": false,
+  "reviewed_at": "",
+  "reviewed_by": ""
+}

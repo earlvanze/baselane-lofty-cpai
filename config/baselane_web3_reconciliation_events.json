@@ -1,0 +1,57 @@
+{
+  "events": [
+    {
+      "event_id": "2026-07-16-yhome-1456-earldao-23-shares",
+      "status": "applied",
+      "date": "2026-07-16",
+      "asset": "EARLDAO shares",
+      "chain": "Algorand",
+      "shares": 23,
+      "reference_share_price": 50.0,
+      "web3_reference_value": 1150.0,
+      "web2_settlement_amount": 1140.36,
+      "source_wallet": "Yhome escrow wallet",
+      "destination_wallet": "1456 DAO possession",
+      "reconciliation_basis": {
+        "apg_owner_contribution": -2100.0,
+        "apg_owner_distribution": 2248.75,
+        "apg_owner_distribution_net_due_from_yhome": 148.75,
+        "dao_payable_to_yhome_offset": 798.39,
+        "yhome_held_security_deposit": 1790.0,
+        "net_due_from_yhome_to_dao": 1140.36
+      },
+      "source_evidence": [
+        "/mnt/c/Users/digit/Dropbox/Real Estate/OH/APG/General Ledgers/gl_split_by_property.xlsx",
+        "/home/digit/.openclaw/workspace/reports/1456_w85_aligned_held_cash_adjustment_20260716.json",
+        "/home/digit/.openclaw/workspace/reports/baselane_web3_reconciliation_1456_yhome_earldao_20260716.apply.json",
+        "/home/digit/.openclaw/workspace/reports/baselane_web3_reconciliation_1456_yhome_earldao_20260716.verify.json"
+      ],
+  "created_baselane_transaction_ids": [
+    "315577023",
+    "315577024"
+      ],
+      "baselane_tag": {
+        "name": "Owner Contributions/Distributions",
+        "id": "25"
+      },
+      "ledger_rows": [
+        {
+          "leg": "yhome_to_earldao_out",
+          "property_name": "Yhome Nursing LLC",
+          "property_id": "151099",
+          "amount": -1140.36,
+          "merchantName": "Yhome Nursing LLC -> EARLDAO",
+          "note_summary": "23 EARLDAO shares moved from Yhome escrow wallet to DAO possession on Algorand; Web2 settlement leg from Yhome to EARLDAO."
+        },
+        {
+          "leg": "yhome_to_earldao_in",
+          "property_name": "EARLDAO",
+          "property_id": "94512",
+          "amount": 1140.36,
+          "merchantName": "Yhome Nursing LLC -> EARLDAO",
+          "note_summary": "23 EARLDAO shares moved from Yhome escrow wallet to DAO possession on Algorand; Web2 settlement leg into EARLDAO."
+    }
+      ]
+    }
+  ]
+}

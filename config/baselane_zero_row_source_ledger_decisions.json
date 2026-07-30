@@ -1,0 +1,11 @@
+{
+  "decisions": [
+    {
+      "decision": "include_active_no_activity",
+      "note": "Reviewed for 2026-06 monthly close: active Lofty candidate with Lofty reserve present, FINANCIALS.md present, ECO GL source mode source_ledger_zero_rows, zero source-ledger rows and zero ECO GL sum. Include as active no-activity rather than treating the zero-row evidence as missing data.",
+      "property": "3139 West Blvd",
+      "reviewed": true,
+      "reviewed_at": "2026-07-13T02:45:00Z"
+    }
+  ]
+}

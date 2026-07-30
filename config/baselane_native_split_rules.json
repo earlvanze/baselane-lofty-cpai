@@ -1,0 +1,107 @@
+{
+  "rules": [
+    {
+      "id": "madison_morgan_linen_4_5_6_5",
+      "category": "Cleaning & Maintenance",
+      "match": {
+        "contains_any": ["morgan linen services"],
+        "source_property": "88 Madison Ave"
+      },
+      "targets": [
+        {"property": "84 Madison Ave", "weight": 4},
+        {"property": "86 Madison Ave", "weight": 5},
+        {"property": "88 Madison Ave", "weight": 6},
+        {"property": "90 Madison Ave", "weight": 5}
+      ]
+    },
+    {
+      "id": "madison_spectrum_6958_equal",
+      "category": "Phone, Cable & Internet",
+      "match": {
+        "contains_any": ["spectrum"],
+        "source_property": "90 Madison Ave"
+      },
+      "targets": [
+        {"property": "84 Madison Ave", "weight": 1},
+        {"property": "86 Madison Ave", "weight": 1},
+        {"property": "88 Madison Ave", "weight": 1},
+        {"property": "90 Madison Ave", "weight": 1}
+      ]
+    },
+    {
+      "id": "madison_netflix_equal",
+      "category": "Phone, Cable & Internet",
+      "match": {
+        "contains_any": ["netflix.com", "netflix"],
+        "source_property": "88 Madison Ave"
+      },
+      "targets": [
+        {"property": "84 Madison Ave", "weight": 1},
+        {"property": "86 Madison Ave", "weight": 1},
+        {"property": "88 Madison Ave", "weight": 1},
+        {"property": "90 Madison Ave", "weight": 1}
+      ]
+    },
+    {
+      "id": "madison_hulu_equal",
+      "category": "Phone, Cable & Internet",
+      "match": {
+        "contains_any": ["hulu"],
+        "source_property": "88 Madison Ave"
+      },
+      "targets": [
+        {"property": "84 Madison Ave", "weight": 1},
+        {"property": "86 Madison Ave", "weight": 1},
+        {"property": "88 Madison Ave", "weight": 1},
+        {"property": "90 Madison Ave", "weight": 1}
+      ]
+    },
+    {
+      "id": "madison_county_waste_equal",
+      "category": "Garbage & Recycling",
+      "match": {
+        "contains_any": ["county waste"],
+        "source_property": "88 Madison Ave"
+      },
+      "targets": [
+        {"property": "84 Madison Ave", "weight": 1},
+        {"property": "86 Madison Ave", "weight": 1},
+        {"property": "88 Madison Ave", "weight": 1},
+        {"property": "90 Madison Ave", "weight": 1}
+      ]
+    },
+    {
+      "id": "hospitable_april_2026_listing_weights",
+      "category": "Software Subscriptions",
+      "match": {
+        "contains_any": ["hospitable.com"],
+        "source_property": "88 Madison Ave"
+      },
+      "targets": [
+        {"property": "22164 Umland Circle", "weight": 1},
+        {"property": "27 Pillar Ln", "weight": 1},
+        {"property": "22 W Main St", "weight": 1},
+        {"property": "9 Country Club Ln N", "weight": 1},
+        {"property": "84 Madison Ave", "weight": 2},
+        {"property": "86 Madison Ave", "weight": 2},
+        {"property": "88 Madison Ave", "weight": 4},
+        {"property": "90 Madison Ave", "weight": 3}
+      ]
+    },
+    {
+      "id": "pricelabs_april_2026_listing_weights",
+      "category": "Software Subscriptions",
+      "match": {
+        "contains_any": ["pricelabsinc", "pricelabs", "price labs"],
+        "source_property": "88 Madison Ave"
+      },
+      "targets": [
+        {"property": "27 Pillar Ln", "weight": 1},
+        {"property": "84 Madison Ave", "weight": 2},
+        {"property": "86 Madison Ave", "weight": 2},
+        {"property": "88 Madison Ave", "weight": 4},
+        {"property": "90 Madison Ave", "weight": 3}
+      ]
+    }
+  ]
+}

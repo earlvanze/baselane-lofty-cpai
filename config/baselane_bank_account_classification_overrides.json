@@ -1,0 +1,7 @@
+{
+  "114283": {
+    "classification": "pooled_eco_legacy_aligned_operations",
+    "exclude_from_dao_cash": true,
+    "reason": "This ECO Systems, LLC account is the pooled Aligned Operations account. It was temporarily nicknamed 1456 W 85th St Operations without changing its existing cards or pooled activity, then renamed back. Property-tagged transactions remain attributable in the GL; the bank balance is not dedicated DAO cash."
+  }
+}

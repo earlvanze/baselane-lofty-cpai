@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "baselane": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/absolute/path/to/baselane-lofty-cpai/skills/baselane-mcp",
+        "baselane-mcp"
+      ],
+      "env": {
+        "OPENCLAW_WORKSPACE_ROOT": "/absolute/path/to/baselane-lofty-cpai"
+      }
+    }
+  }
+}

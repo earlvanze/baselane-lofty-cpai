@@ -1,0 +1,34 @@
+{
+  "rows": [
+    {
+      "label": "Property Management fee",
+      "month": "2026-06",
+      "original_amount": -46.5,
+      "property": "1432 Sara Ave.",
+      "required_note_marker": "ECO-VOID-DUPLICATE-PM",
+      "required_voided_amount": -46.5,
+      "row": "12",
+      "void_baselane_id": "313978482"
+    },
+    {
+      "label": "Property Management fee",
+      "month": "2026-06",
+      "original_amount": -126.63,
+      "property": "1456 W 85th St, Cleveland, OH 44102",
+      "required_note_marker": "AOPS-OHIL-ACCRUAL|pm_settlement|1456 W 85th St, Cleveland, OH 44102|2026-06|0.00",
+      "required_voided_amount": 161.67,
+      "row": "12",
+      "void_baselane_id": "316009306"
+    },
+    {
+      "label": "Property Management fee",
+      "month": "2026-06",
+      "original_amount": -102.5,
+      "property": "8708 Willard Ave, Cleveland, OH 44102",
+      "required_note_marker": "AOPS-OHIL-ACCRUAL|pm|8708 Willard Ave, Cleveland, OH 44102|2026-06|0.00",
+      "required_voided_amount": 159.5,
+      "row": "12",
+      "void_baselane_id": "314060189"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+# Adapt paths and local runtime environment before installing. Communications
+# and external publishing intentionally remain absent from this example.
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Daily guarded finance refresh.
+0 9 * * * flock -n /tmp/baselane-daily-sync.lock timeout --kill-after=30s 90m /path/to/baselane-lofty-cpai/scripts/baselane_cron_run.sh >> /path/to/local/logs/baselane-daily.log 2>&1
+
+# Weekly review-only file update pass (Saturday).
+45 6 * * 6 flock -n /tmp/baselane-weekly-file-updates.lock timeout --kill-after=30s 3h /path/to/baselane-lofty-cpai/scripts/baselane_weekly_file_updates_cron.sh >> /path/to/local/logs/baselane-weekly.log 2>&1
+
+# Dedicated current-month accrual lane and non-mutating missed-run detector.
+0 3 28 * * flock -n -E 75 /path/to/local/baselane-monthly.lock timeout --kill-after=30s 2h /path/to/baselane-lofty-cpai/scripts/baselane_monthly_accruals_28th_cron.sh >> /path/to/local/logs/baselane-monthly-accruals.log 2>&1
+15 5 28-31 * * timeout --kill-after=15s 2m python3 /path/to/baselane-lofty-cpai/scripts/baselane_monthly_accruals_28th_recovery_check.py >> /path/to/local/logs/baselane-monthly-accrual-recovery.log 2>&1

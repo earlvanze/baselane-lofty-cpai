@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-07-14T03:21:21Z",
+  "records": {
+    "155481957": {
+      "csv_import": {
+        "imported_at": "2026-07-14T03:21:21Z",
+        "path": "/home/digit/.openclaw/workspace/reports/baselane_85104_preclosing_protected_row_review.csv",
+        "row_number": 4
+      },
+      "disposition": "exclude_from_dao_gl",
+      "evidence_digest": "bb91b3ad3cc3e684fde243a84934ac9f1de807fff1c9c585d478b8cd6c7ab83a",
+      "review_note": "Pre-launch internal closing funding is not post-closing ECO Operating Cash attributable to the active DAO.",
+      "reviewed": true,
+      "reviewed_at": "2026-07-14T03:19:45Z"
+    },
+    "155481961": {
+      "csv_import": {
+        "imported_at": "2026-07-14T03:21:21Z",
+        "path": "/home/digit/.openclaw/workspace/reports/baselane_85104_preclosing_protected_row_review.csv",
+        "row_number": 3
+      },
+      "disposition": "exclude_from_dao_gl",
+      "evidence_digest": "84f27aec38113b221348d7e9d430b3c58508a52e56505024a176ea5672f079ea",
+      "review_note": "Pre-launch internal closing funding is not post-closing ECO Operating Cash attributable to the active DAO.",
+      "reviewed": true,
+      "reviewed_at": "2026-07-14T03:19:45Z"
+    },
+    "156162866": {
+      "csv_import": {
+        "imported_at": "2026-07-14T03:21:21Z",
+        "path": "/home/digit/.openclaw/workspace/reports/baselane_85104_preclosing_protected_row_review.csv",
+        "row_number": 2
+      },
+      "disposition": "exclude_from_dao_gl",
+      "evidence_digest": "30b99cd3509b7facc97e817030f3df53a754f7ab0196e1a28454fbffe7e5d372",
+      "review_note": "Pre-launch closing capital is not post-closing ECO Operating Cash attributable to the active DAO.",
+      "reviewed": true,
+      "reviewed_at": "2026-07-14T03:19:45Z"
+    }
+  },
+  "status": "review"
+}

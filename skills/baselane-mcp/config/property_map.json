@@ -1,0 +1,5 @@
+{
+  "description": "Property address to Baselane entity ID mappings",
+  "properties": {},
+  "note": "Add entries as: { \"123 Main St\": { \"entity_id\": \"abc123\", \"split_profile\": \"mortgage_standard\" } }"
+}

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "payments": [
+    {
+      "id": "cuyahoga-20260729-321910372",
+      "description": "Cuyahoga County second-half tax payment",
+      "parent_baselane_id": "321910372",
+      "date": "2026-07-29",
+      "bank_account_id": "38968",
+      "merchant_contains": "CUYAHOGA CO TREASURER",
+      "parent_amount": "-5063.89",
+      "required_components": [
+        {
+          "property": "1456 W 85th St",
+          "amount": "-2399.80",
+          "tag_id": "93",
+          "category": "Property Taxes"
+        },
+        {
+          "property": "1456 W 85th St",
+          "amount": "-1.40",
+          "tag_id": "15",
+          "category": "Taxes"
+        },
+        {
+          "property": "1278 E 187th St",
+          "amount": "-877.97",
+          "tag_id": "93",
+          "category": "Property Taxes"
+        },
+        {
+          "property": "1278 E 187th St",
+          "amount": "-0.51",
+          "tag_id": "15",
+          "category": "Taxes"
+        },
+        {
+          "property": "1518 Dille Rd",
+          "amount": "-1783.17",
+          "tag_id": "93",
+          "category": "Property Taxes"
+        },
+        {
+          "property": "1518 Dille Rd",
+          "amount": "-1.04",
+          "tag_id": "15",
+          "category": "Taxes"
+        }
+      ],
+      "residual_policy": "The three convenience-fee rows are required components and must remain allocated to the same parcel properties as their tax rows."
+    }
+  ]
+}

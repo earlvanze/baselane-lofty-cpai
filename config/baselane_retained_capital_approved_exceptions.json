@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "policy": "Exact property/month reporting exceptions only. These never create or modify Baselane source transactions and must not be used for unresolved retained-capital evidence.",
+  "exceptions": [
+    {
+      "approval_id": "june-2026-9cc-verified-retained-earnings",
+      "property": "9 Country Club Ln N",
+      "month": "2026-06",
+      "amount": 510.96,
+      "reason": "Verified DAO fee revenue is excluded from the generic retained-capital input for the approved June reporting treatment."
+    },
+    {
+      "approval_id": "june-2026-alcott-verified-retained-earnings",
+      "property": "326-332 S Alcott St, Denver, CO 80219",
+      "month": "2026-06",
+      "amount": 2794.82,
+      "reason": "Verified DAO fee revenue is excluded from the generic retained-capital input for the approved June reporting treatment."
+    },
+    {
+      "approval_id": "june-2026-84-madison-approved-financials",
+      "property": "84 Madison Ave",
+      "month": "2026-06",
+      "amount": 24.61,
+      "reason": "The canonical approved June financials retain the $24.61 NOI and exclude the separate $62.50 DAO fee accrual from retained-capital input."
+    },
+    {
+      "approval_id": "june-2026-86-madison-approved-financials",
+      "property": "86 Madison Ave",
+      "month": "2026-06",
+      "amount": 351.46,
+      "reason": "The canonical approved June financials retain the $351.46 NOI and exclude the separate $62.50 DAO fee accrual from retained-capital input."
+    },
+    {
+      "approval_id": "june-2026-88-madison-approved-financials",
+      "property": "88 Madison Ave",
+      "month": "2026-06",
+      "amount": 964.48,
+      "reason": "The canonical approved June financials retain the $964.48 NOI and exclude the separate $62.50 DAO fee accrual from retained-capital input."
+    },
+    {
+      "approval_id": "june-2026-90-madison-approved-financials",
+      "property": "90 Madison Ave",
+      "month": "2026-06",
+      "amount": 921.66,
+      "reason": "The canonical approved June financials retain the $921.66 NOI and exclude the separate $62.50 DAO fee accrual from retained-capital input."
+    }
+  ]
+}

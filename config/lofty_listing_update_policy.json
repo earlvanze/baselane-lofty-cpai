@@ -1,0 +1,163 @@
+{
+  "sold_ignore_listing_updates": [
+    "1935 S Glen Ave, Independence, MO 64052",
+    "5401 Odom Ave, Fort Worth, TX 76114",
+    {
+      "address": "12028 Wade Park Ave, Cleveland, OH 44106",
+      "reason": "sold; seller closing package and sale summary present in Public folder; no further active Lofty PM CF/live update/email workflow"
+    },
+    {
+      "address": "3850 W 17th St, Cleveland, Ohio 44109",
+      "reason": "sold; Baselane GL contains Golden Eagle Title sale proceeds; no further active Lofty PM CF/live update/email workflow"
+    },
+    "1236 W 7th St, Davenport, IA 52802",
+    "3560 Saint Albans Rd, Saint Louis, MO 63114",
+    {
+      "address": "402 N Wild Olive Ave, Daytona Beach, FL 32118",
+      "reason": "offboarded/sold; no further Lofty PM live update, Discord post, investor email, accrual, or downstream reporting action necessary"
+    },
+        {
+            "address": "3139 West Blvd, Cleveland, OH 44111",
+            "reason": "disposed to third-party buyer effective 2026-04-01; no further Lofty PM live update, Discord post, investor email, accrual, or downstream reporting action necessary"
+        },
+        {
+            "address": "13806 Coit Rd, Cleveland, OH 44110",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "10724 Gooding Ave, Cleveland, OH 44108",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "1315 E 114th St, Cleveland, OH 44106",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "9902 Garfield Ave, Cleveland, OH 44108",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "7411 Elton Ave, Cleveland, OH 44102",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "254 Bowmanville St, Akron, OH 44305",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "26931 Shoreview Ave, Euclid, OH 44132",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "1258 Lily St, Akron, OH 44301",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "4920 E 110th St, Garfield Heights, OH 44125",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "2337 Greenvale Rd, Cleveland, OH 44121",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "783 Leonard St, Akron, OH 44307",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "656 E 126th St, Cleveland, OH 44108",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "12507 Astor Ave, Cleveland, OH 44135",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "3024 W 103rd St, Cleveland, OH 44111",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "614 E 97th St, Cleveland, OH 44108",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "4183 E 146th St, Cleveland, OH 44128",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "9919 S Oglesby Ave, Chicago, IL 60617",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "6914 Polonia Ave, Cleveland, OH 44105",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "799 Stadelman Ave, Akron, OH 44320",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "1090 Diagonal Rd, Akron, OH 44320",
+            "reason": "sold; no synthetic tax, insurance, or DAO-fee accruals"
+        },
+        {
+            "address": "8708 Willard Ave, Cleveland, OH 44102",
+            "reason": "sold to a third party; sale explicitly confirmed 2026-07-29; no synthetic tax, insurance, or DAO-fee accruals"
+        }
+  ],
+  "operational_ignore_listing_updates": [
+    {
+      "address": "1 Coolwood Dr, Little Rock, AR 72202",
+      "reason": "owned by a separate workspace; exclude from this workspace's cash-flow, listing, Discord, and owner-email workflow"
+    },
+    {
+      "address": "804 S Quitman St, Denver, CO 80219",
+      "reason": "not yet launched"
+    },
+    {
+      "address": "122 Florida Park Dr, Palm Coast, FL 32137",
+      "reason": "lis pendens, no revenue"
+    },
+    {
+      "address": "27 Pillar Ln, Palm Coast, FL 32164",
+      "reason": "lis pendens, no revenue"
+    },
+    {
+      "address": "440 Louden Ave, Dunedin, FL",
+      "reason": "explicitly excluded from Lofty monthly PM workflow"
+    },
+    {
+      "address": "3880 Dover St, Wheat Ridge, CO",
+      "reason": "excluded Baselane source export; not a Lofty PM public financials target"
+    },
+    {
+      "address": "110 N Saddle Dr, Idaho Springs, CO",
+      "reason": "no Public guarded workflow or ECO GL source; not a Lofty PM public financials target"
+    },
+    {
+      "address": "724 3rd Ave, Watervliet, NY 12189",
+      "reason": "Lofty PM transition completed; continue canonical Dropbox and Cash Flow Statement reporting, but do not publish Lofty updates, Discord posts, or owner emails from this workflow"
+    },
+    {
+      "address": "Yhome Nursing LLC",
+      "reason": "operational/legal entity row; not a Lofty property public financials target",
+      "split_exclude": true
+    }
+  ],
+  "distribution_rule": {
+    "positive_cash_flow_requires_enable_distributions": true,
+    "cash_flow_field": "cash_flow",
+    "enable_distributions_effective_rule": "round(cash_flow / 12, 2) > 0 and curr_maintenance_reserve >= 0",
+    "note": "Enable Distributions must be off when Current Maintenance Reserve is negative. Guard moves positive monthly-cent distribution into OR replenishment as round(cash_flow/12,2)*12 and sets cash_flow/current month distribution to 0. Annual dust below one monthly cent is treated as $0.00/month.",
+    "alert_on_discrepancy": true,
+    "positive_distribution_requires_nonnegative_current_maintenance_reserve": true,
+    "current_maintenance_reserve_field": "curr_maintenance_reserve",
+    "negative_current_maintenance_reserve_patch": "move_positive_cash_flow_to_or_replenishment_and_set_cash_flow_zero",
+    "cash_flow_positive_threshold": "monthly_distribution_rounded_to_nearest_cent",
+    "rounding_rule": "Use monthly cents: current_month_distribution_monthly = round(cash_flow / 12, 2). Annual dust that rounds to $0.00/month is not a distribution."
+  },
+  "protected_write_fields": {
+    "curr_maintenance_reserve": "Never patch/write current maintenance reserve unless Earl explicitly requests that exact field in the current task. Read-only use is allowed.",
+    "current_maintenance_reserve": "Alias for curr_maintenance_reserve; same protection."
+  }
+}
