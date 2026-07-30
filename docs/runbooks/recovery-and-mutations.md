@@ -11,3 +11,16 @@ For every mutation:
 5. Record the result in the appropriate ignored local report and commit only code or policy changes.
 
 If the action concerns a transfer, it must stay inside the Baselane workspace and preserve category 24 on both mirrored bank entries. If the action would need an external recipient, a new cash instruction, authentication challenge handling, or a guess about an accrual, stop and obtain a human decision.
+
+## GraphQL execution
+
+Scheduled Baselane reads and writes use direct GraphQL. The visible browser is
+only an authorized source of short-lived session and App Check headers. The
+transport reuses fresh cached headers, refreshes them through raw CDP when
+needed, and does not use Playwright unless
+`BASELANE_GQL_PLAYWRIGHT_FALLBACK=1` is explicitly set for manual recovery.
+
+Full-ledger workflows batch bounded metadata and pagination operations through
+one bridge process. A guarded write must still re-read its exact transaction
+IDs before mutation and verify those same IDs afterward; a second full-ledger
+scan is not a substitute for that check.

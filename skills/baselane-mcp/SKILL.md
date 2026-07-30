@@ -22,3 +22,15 @@ uv run baselane-mcp
 Set `OPENCLAW_WORKSPACE_ROOT` to the repository root and ensure `PYTHONPATH` includes `skills/baselane-mcp/src` and `scripts`.
 
 Always preview first. For a transfer, confirm the source/destination accounts, property ID, label, date, amount, and confirmation token; then independently reconcile both post-transfer mirrors. Never use the MCP to send to an external recipient.
+
+## GraphQL transport
+
+The MCP issues direct GraphQL requests after acquiring short-lived session and
+Firebase App Check headers from the authorized visible browser. Fresh headers
+are reused from a mode-0600 runtime cache; raw CDP is the normal refresh path.
+Playwright is disabled by default and may be enabled for manual recovery only
+with `BASELANE_GQL_PLAYWRIGHT_FALLBACK=1`.
+
+Use `run_graphql_batch_via_cdp` for bounded multi-page reads so one bridge
+process serves the batch. Guarded mutations still require workflow-specific
+preconditions and independent exact-ID readback.

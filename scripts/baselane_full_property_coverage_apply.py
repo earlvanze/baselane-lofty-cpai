@@ -31,7 +31,10 @@ LOCK_PATH = Path(
 APPLY_ENV = "BASELANE_FULL_PROPERTY_COVERAGE_APPLY"
 
 sys.path.insert(0, str(ROOT / "skills" / "baselane-mcp" / "src"))
-from baselane_mcp.transfers import run_graphql_via_cdp  # noqa: E402
+from baselane_mcp.transfers import (  # noqa: E402
+    run_graphql_batch_via_cdp,
+    run_graphql_via_cdp,
+)
 
 
 TRANSACTIONS_QUERY = """
@@ -150,13 +153,32 @@ def graphql(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def graphql_batch(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return run_graphql_batch_via_cdp(
+        operations,
+        bridge_path=BRIDGE,
+        workspace_root=ROOT,
+        timeout=180,
+    )
+
+
 def fetch_metadata() -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, str]]:
-    properties_payload = graphql(
-        {
-            "operationName": "PropertyList",
-            "variables": {},
-            "query": "query PropertyList { property { id name address } }",
-        }
+    properties_payload, tags_payload = graphql_batch(
+        [
+            {
+                "operationName": "PropertyList",
+                "variables": {},
+                "query": "query PropertyList { property { id name address } }",
+            },
+            {
+                "operationName": "TagList",
+                "variables": {},
+                "query": (
+                    "query TagList { tag { type subType { id name "
+                    "subType { id name subType { id name } } } } }"
+                ),
+            },
+        ]
     )
     property_ids: dict[str, list[str]] = defaultdict(list)
     property_names: dict[str, str] = {}
@@ -167,16 +189,6 @@ def fetch_metadata() -> tuple[dict[str, list[str]], dict[str, list[str]], dict[s
             property_ids[norm(name)].append(row_id)
             property_names[row_id] = name
 
-    tags_payload = graphql(
-        {
-            "operationName": "TagList",
-            "variables": {},
-            "query": (
-                "query TagList { tag { type subType { id name "
-                "subType { id name subType { id name } } } } }"
-            ),
-        }
-    )
     tag_ids: dict[str, list[str]] = defaultdict(list)
 
     def walk(items: list[dict[str, Any]]) -> None:
@@ -194,65 +206,87 @@ def fetch_metadata() -> tuple[dict[str, list[str]], dict[str, list[str]], dict[s
     return property_ids, tag_ids, property_names
 
 
-def fetch_all_transactions(page_limit: int = 500) -> tuple[list[dict[str, Any]], int]:
+def transaction_operation(page: int, page_limit: int) -> dict[str, Any]:
+    return {
+        "operationName": "Transactions",
+        "variables": {
+            "input": {
+                "sort": {"field": "id", "direction": "DESC"},
+                "filter": {
+                    "isHidden": False,
+                    "search": "",
+                    "isDeleted": False,
+                },
+                "page": page,
+                "pageLimit": page_limit,
+            }
+        },
+        "query": TRANSACTIONS_QUERY,
+    }
+
+
+def transaction_result(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    result = (payload.get("data") or {}).get("transactions") or {}
+    return result.get("data") or [], int(result.get("total") or 0)
+
+
+def fetch_all_transactions(
+    page_limit: int = 500, operation_batch_size: int = 25
+) -> tuple[list[dict[str, Any]], int]:
+    if page_limit < 1 or operation_batch_size < 1:
+        raise ValueError("page_limit and operation_batch_size must be positive")
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    total = 0
-    page = 1
-    while True:
-        payload = graphql(
-            {
-                "operationName": "Transactions",
-                "variables": {
-                    "input": {
-                        "sort": {"field": "id", "direction": "DESC"},
-                        "filter": {
-                            "isHidden": False,
-                            "search": "",
-                            "isDeleted": False,
-                        },
-                        "page": page,
-                        "pageLimit": page_limit,
-                    }
-                },
-                "query": TRANSACTIONS_QUERY,
-            }
-        )
-        result = (payload.get("data") or {}).get("transactions") or {}
-        batch = result.get("data") or []
-        total = int(result.get("total") or total)
-        if not batch:
-            break
+    first_batch, total = transaction_result(graphql(transaction_operation(1, page_limit)))
+    page_count = (total + page_limit - 1) // page_limit
+    payloads = [(first_batch, total)]
+    remaining = [
+        transaction_operation(page, page_limit) for page in range(2, page_count + 1)
+    ]
+    for start in range(0, len(remaining), operation_batch_size):
+        for payload in graphql_batch(remaining[start : start + operation_batch_size]):
+            payloads.append(transaction_result(payload))
+
+    for batch, reported_total in payloads:
+        if reported_total != total:
+            raise RuntimeError(
+                f"live pagination total changed: first={total} page={reported_total}"
+            )
         for row in batch:
             row_id = str(row.get("id") or "")
             if not row_id or row_id in seen:
                 raise RuntimeError(f"duplicate or missing transaction ID during pagination: {row_id!r}")
             seen.add(row_id)
             rows.append(row)
-        if len(rows) >= total:
-            break
-        page += 1
     if total != len(rows):
         raise RuntimeError(f"live pagination incomplete: fetched={len(rows)} total={total}")
     return rows, total
 
 
-def verify_by_ids(ids: list[str]) -> dict[str, dict[str, Any]]:
-    fields = [
-        f't{index}: transaction(id: {json.dumps(row_id)}) {{ {VERIFY_FIELDS} }}'
-        for index, row_id in enumerate(ids)
-    ]
-    payload = graphql(
-        {
-            "operationName": "VerifyCoverageTransactions",
-            "variables": {},
-            "query": "query VerifyCoverageTransactions {\n" + "\n".join(fields) + "\n}",
-        }
-    )
-    data = payload.get("data") or {}
+def verify_by_ids(ids: list[str], operation_size: int = 50) -> dict[str, dict[str, Any]]:
+    unique_ids = list(dict.fromkeys(str(row_id) for row_id in ids if row_id))
+    operations = []
+    for start in range(0, len(unique_ids), operation_size):
+        fields = [
+            f't{index}: transaction(id: {json.dumps(row_id)}) {{ {VERIFY_FIELDS} }}'
+            for index, row_id in enumerate(unique_ids[start : start + operation_size])
+        ]
+        operations.append(
+            {
+                "operationName": "VerifyCoverageTransactions",
+                "variables": {},
+                "query": (
+                    "query VerifyCoverageTransactions {\n"
+                    + "\n".join(fields)
+                    + "\n}"
+                ),
+            }
+        )
+    payloads = graphql_batch(operations)
     return {
         str(row.get("id")): row
-        for row in data.values()
+        for payload in payloads
+        for row in (payload.get("data") or {}).values()
         if isinstance(row, dict) and row.get("id")
     }
 
@@ -378,15 +412,16 @@ def classify(
 
 
 def unchanged(record: dict[str, Any], live: dict[str, Any]) -> bool:
-    current_property = str(live.get("propertyId") or "")
     return (
         live_key(live) == plan_key(record)
         and not live.get("pending")
         and not live.get("isSplit")
-        and not live.get("parentId")
         and not live.get("hidden")
         and not live.get("isDeleted")
-        and current_property in {"", str(record["target_property_id"])}
+        and str(live.get("parentId") or "") == str(record.get("parent_id") or "")
+        and str(live.get("propertyId") or "")
+        == str(record.get("current_property_id") or "")
+        and str(live.get("tagId") or "") == str(record.get("current_tag_id") or "")
     )
 
 
@@ -394,6 +429,15 @@ def execute(records: list[dict[str, Any]], batch_size: int) -> tuple[int, int]:
     applied = 0
     failed = 0
     ready = [row for row in records if row["apply_status"] == "ready"]
+    if not ready:
+        return applied, failed
+    pre_by_id = verify_by_ids([row["baselane_id"] for row in ready])
+    for row in ready:
+        live = pre_by_id.get(row["baselane_id"]) or {}
+        if not unchanged(row, live):
+            row["apply_status"] = "blocked_pre_write_state_changed"
+            row["apply_reason"] = "exact-ID live state no longer matches classified snapshot"
+    ready = [row for row in ready if row["apply_status"] == "ready"]
     if not ready:
         return applied, failed
     for start in range(0, len(ready), batch_size):
@@ -409,15 +453,20 @@ def execute(records: list[dict[str, Any]], batch_size: int) -> tuple[int, int]:
         updated_ids = {str(row.get("id") or "") for row in updated}
         for row in batch:
             if row["baselane_id"] in updated_ids:
-                row["apply_status"] = "updated_pending_full_readback"
+                row["apply_status"] = "updated_pending_exact_readback"
             else:
                 row["apply_status"] = "failed_update_not_returned"
                 failed += 1
 
-    post_rows, _ = fetch_all_transactions()
-    post_by_id = {str(row.get("id") or ""): row for row in post_rows}
+    post_by_id = verify_by_ids(
+        [
+            row["baselane_id"]
+            for row in ready
+            if row["apply_status"] == "updated_pending_exact_readback"
+        ]
+    )
     for row in ready:
-        if row["apply_status"] != "updated_pending_full_readback":
+        if row["apply_status"] != "updated_pending_exact_readback":
             continue
         live = post_by_id.get(row["baselane_id"]) or {}
         if (

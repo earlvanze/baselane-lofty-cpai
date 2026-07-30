@@ -73,13 +73,12 @@ PY
   if [ "$applied_count" -gt 0 ]; then
     "$PY" scripts/baselane_sync_cdp_deterministic.py >/dev/null
     "$PY" scripts/baselane_nonproperty_category_plan.py --output-prefix "$PREFIX" >/dev/null
-  else
-    # The apply command already classified every live transaction. With no
-    # writes, its report is also the final readback and a second pagination
-    # cannot add verification evidence.
-    needs_final_verify=0
-    verify_rc="$apply_rc"
   fi
+  # Apply performs exact-ID precondition and post-write reads. The final
+  # export/replan above refreshes local work products; another full live
+  # classification scan would duplicate both forms of verification.
+  needs_final_verify=0
+  verify_rc="$apply_rc"
 fi
 
 if [ "$needs_final_verify" = "1" ]; then
@@ -98,7 +97,7 @@ from pathlib import Path
 
 report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 counts = report.get("status_counts") or {}
-allowed = {"already_applied", "blocked_pending"}
+allowed = {"already_applied", "applied_verified", "blocked_pending"}
 unexpected = {
     name: int(count)
     for name, count in counts.items()

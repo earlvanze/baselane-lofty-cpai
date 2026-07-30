@@ -12,6 +12,7 @@ const timeoutMs = Number(process.env.BASELANE_GQL_TIMEOUT_MS || 60000);
 const commandTimeoutMs = Number(process.env.BASELANE_GQL_COMMAND_TIMEOUT_MS || 15000);
 const runtimeFailureLimit = Number(process.env.BASELANE_GQL_RUNTIME_FAILURE_LIMIT || 4);
 const directTabEnabled = process.env.BASELANE_GQL_DIRECT_TAB !== '0';
+const playwrightFallbackEnabled = process.env.BASELANE_GQL_PLAYWRIGHT_FALLBACK === '1';
 const targetLimit = Math.max(1, Number(process.env.BASELANE_GQL_TARGET_LIMIT || 2));
 const createTargetEnabled = process.env.BASELANE_GQL_CREATE_TARGET === '1';
 const initialReloadMs = Math.max(250, Number(process.env.BASELANE_GQL_INITIAL_RELOAD_MS || 1000));
@@ -439,6 +440,7 @@ async function directPageGraphqlAttempt(tab) {
     }
     if (!lastAppCheck) throw new Error(`DIRECT_APPCHECK_TIMEOUT: ${await currentHref() || tab.url || 'unknown-url'}`);
     if (lastGraphqlHeaders) {
+      writeSessionCache(lastGraphqlHeaders);
       await fetchGraphqlWithCapturedHeaders(lastGraphqlHeaders, 'direct page');
       return true;
     }
@@ -597,16 +599,18 @@ async function main() {
       }
     }
     try {
-      await playwrightPageGraphqlAttempt();
-      return;
-    } catch (err) {
-      console.error('[Playwright CDP] Falling back to raw page target: ' + errorMessage(err));
-    }
-    try {
       await tryDirectPageGraphql();
       return;
     } catch (err) {
-      console.error('[CDP direct] Falling back to browser Target flow: ' + errorMessage(err));
+      console.error('[CDP direct] Raw page target failed: ' + errorMessage(err));
+    }
+    if (playwrightFallbackEnabled) {
+      try {
+        await playwrightPageGraphqlAttempt();
+        return;
+      } catch (err) {
+        console.error('[Playwright CDP] Falling back to browser Target flow: ' + errorMessage(err));
+      }
     }
   }
 
@@ -921,6 +925,7 @@ async function main() {
     throw new Error(`timed out waiting for x-firebase-appcheck at ${current || 'unknown-url'} via ${versionUrl}`);
   }
   if (lastGraphqlHeaders) {
+    writeSessionCache(lastGraphqlHeaders);
     await fetchGraphqlWithCapturedHeaders(lastGraphqlHeaders, 'browser target');
     try { ws.close(); } catch (_err) {}
     process.exit(0);

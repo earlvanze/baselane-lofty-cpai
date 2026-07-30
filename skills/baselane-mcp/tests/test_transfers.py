@@ -16,6 +16,7 @@ from baselane_mcp.transfers import (  # noqa: E402
     build_transfer_plan,
     execute_transfer,
     list_active_transfer_accounts,
+    run_graphql_batch_via_cdp,
     run_graphql_via_cdp,
 )
 
@@ -117,6 +118,53 @@ class TransferPlanTests(unittest.TestCase):
 
 
 class TransferExecutionTests(unittest.TestCase):
+    def test_graphql_batch_uses_one_bridge_process_and_preserves_order(self):
+        completed = type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {
+                        "batchResults": [
+                            {"data": {"property": [{"id": "1"}]}},
+                            {"data": {"tag": [{"id": "2"}]}},
+                        ]
+                    }
+                ),
+                "stderr": "",
+            },
+        )()
+        operations = [
+            {"operationName": "PropertyList"},
+            {"operationName": "TagList"},
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with patch(
+                "baselane_mcp.transfers.subprocess.run", return_value=completed
+            ) as run:
+                results = run_graphql_batch_via_cdp(
+                    operations,
+                    bridge_path=Path(temporary_directory) / "bridge.js",
+                    workspace_root=Path(temporary_directory),
+                )
+
+        self.assertEqual(results[0]["data"]["property"][0]["id"], "1")
+        self.assertEqual(results[1]["data"]["tag"][0]["id"], "2")
+        self.assertEqual(run.call_count, 1)
+
+    def test_graphql_batch_rejects_incomplete_response(self):
+        with patch(
+            "baselane_mcp.transfers.run_graphql_via_cdp",
+            return_value={"batchResults": [{"data": {}}]},
+        ):
+            with self.assertRaisesRegex(TransferStateError, "incomplete"):
+                run_graphql_batch_via_cdp(
+                    [{"operationName": "One"}, {"operationName": "Two"}],
+                    bridge_path=Path("/tmp/bridge.js"),
+                    workspace_root=Path("/tmp"),
+                )
+
     def test_cdp_bridge_otp_required_is_a_definite_retryable_rejection(self):
         completed = type(
             "Completed",

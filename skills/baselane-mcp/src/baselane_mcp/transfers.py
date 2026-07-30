@@ -271,7 +271,7 @@ def run_graphql_via_cdp(
     workspace_root: Path,
     timeout: int = 90,
 ) -> dict[str, Any]:
-    """Execute one GraphQL operation inside the authenticated Baselane browser tab."""
+    """Execute one GraphQL operation using the authenticated Baselane session."""
     with tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -330,6 +330,47 @@ def run_graphql_via_cdp(
             f"Baselane rejected the GraphQL operation: {detail}"
         )
     return response
+
+
+def run_graphql_batch_via_cdp(
+    operations: list[dict[str, Any]],
+    *,
+    bridge_path: Path,
+    workspace_root: Path,
+    timeout: int = 90,
+) -> list[dict[str, Any]]:
+    """Execute multiple GraphQL operations through one bridge process/session."""
+    if not operations:
+        return []
+    response = run_graphql_via_cdp(
+        {"batchOperations": operations},
+        bridge_path=bridge_path,
+        workspace_root=workspace_root,
+        timeout=timeout,
+    )
+    results = response.get("batchResults")
+    if results is None and len(operations) == 1:
+        results = [response]
+    if not isinstance(results, list) or len(results) != len(operations):
+        raise TransferStateError(
+            "Baselane returned an incomplete GraphQL batch response; reconcile before retrying"
+        )
+    for result in results:
+        if not isinstance(result, dict):
+            raise TransferStateError(
+                "Baselane returned an unreadable GraphQL batch item; reconcile before retrying"
+            )
+        if result.get("errors"):
+            messages = [
+                " ".join(str(error.get("message") or "").split())[:300]
+                for error in result["errors"][:3]
+                if isinstance(error, dict) and error.get("message")
+            ]
+            detail = "; ".join(messages) or "unspecified GraphQL error"
+            raise TransferValidationError(
+                f"Baselane rejected a batched GraphQL operation: {detail}"
+            )
+    return results
 
 
 def _load_state(path: Path) -> dict[str, Any]:
