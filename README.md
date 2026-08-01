@@ -1,6 +1,6 @@
 # Baselane → Lofty CPAI
 
-Private, deterministic operating code for the Baselane-to-Lofty finance pipeline. It keeps the reusable automation, accounting rules, guardrails, and configuration required to reconcile DAO cash, maintain the ECO general ledger, prepare Lofty reporting, and build review artifacts.
+Deterministic operating code for the Baselane-to-Lofty finance pipeline. It keeps the reusable automation, accounting rules, guardrails, and configuration required to reconcile DAO cash, maintain the ECO general ledger, prepare Lofty reporting, and build review artifacts.
 
 This repository intentionally excludes credentials, browser profiles, cookies, MFA material, raw HAR files, bank exports, statements, Google/Dropbox documents, reports, and generated financial data. Those belong in approved local storage and are supplied at runtime.
 
@@ -28,6 +28,7 @@ Investor-facing summaries deliberately separate custody from debt:
 - **Less: Accrued but Unpaid Obligations** is the recorded restricted portion of that custody cash.
 - **ECO Net DAO Funds (spendable)** is the nonnegative remainder available to the DAO after those obligations.
 - **DAO A/P - Due to ECO for Verified Advances** is cash ECO paid for the DAO in excess of DAO cash credits. It is simultaneously **ECO A/R - Due from DAO** and is never presented as negative cash.
+- The **$3,000 co-ownership reserve floor** is one combined test: positive Lofty Operating Reserve plus ECO Net DAO Funds (spendable). It is not an additional $3,000 that must remain in an ECO-controlled bank account.
 
 The property GL Column E total remains an internal accounting control that can contain accruals and non-cash rows. It is not a bank balance, custody balance, or investor-facing cash measure.
 

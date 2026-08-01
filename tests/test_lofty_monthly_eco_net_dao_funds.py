@@ -192,6 +192,26 @@ def test_distribution_guard_prefers_reconciled_spendable_cash() -> None:
     assert eco_operating_cash_for_distribution({}, summary) == (-18571.79, "total_dao_spendable_cash")
 
 
+def test_distribution_guard_uses_full_combined_three_thousand_floor() -> None:
+    summary = {
+        "lofty_curr_maintenance_reserve": 1500.00,
+        "total_dao_spendable_cash": 1000.00,
+        "eco_held_unrestricted_cash": 1000.00,
+    }
+
+    preview = distribution_guard_preview(
+        summary,
+        {},
+        {"cash_flow": 1200.00, "projected_annual_cash_flow": 1200.00},
+        property_name="88 Madison Ave",
+    )
+
+    assert preview["distribution_minimum"] == 3000.00
+    assert preview["combined_operating_cash"] == 2500.00
+    assert preview["requires_zero_distribution"] is True
+    assert "combined_operating_cash_below_distribution_minimum" in preview["zero_distribution_sources"]
+
+
 def test_verified_live_distribution_mismatch_is_corrective_ready() -> None:
     summary = {
         "lofty_curr_maintenance_reserve": 1147.19,

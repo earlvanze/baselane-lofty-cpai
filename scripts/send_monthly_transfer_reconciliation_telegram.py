@@ -162,7 +162,10 @@ def message_quality_issues(text: str, transfer_report: dict[str, object], messag
                 issues.append("message_digest_mismatch_transfer_report_telegram_summary")
     if int(transfer_report.get("candidate_packet_record_count") or 0) <= 0:
         issues.append("candidate_packet_record_count_zero")
-    if transfer_report.get("recommended_send_to_lofty_total") is None and transfer_report.get("eco_cash_shortfall_total") is None:
+    if transfer_report.get("recommended_send_to_lofty_total") is None and transfer_report.get(
+        "combined_reserve_shortfall_total",
+        transfer_report.get("eco_cash_shortfall_total"),
+    ) is None:
         issues.append("no_transfer_total_or_shortfall_available")
     bank_actions_final = transfer_report.get("bank_transfer_actions_final")
     if bank_actions_final is None:
@@ -424,6 +427,10 @@ def main(argv: list[str] | None = None) -> int:
     payload["transfer_report_eco_operating_cash_full_balance_total"] = transfer_report.get("eco_operating_cash_full_balance_total")
     payload["transfer_report_recommended_send_to_lofty_total_is_cash_balance"] = transfer_report.get("recommended_send_to_lofty_total_is_cash_balance")
     payload["transfer_report_eco_cash_shortfall_total"] = transfer_report.get("eco_cash_shortfall_total")
+    payload["transfer_report_combined_reserve_shortfall_total"] = transfer_report.get(
+        "combined_reserve_shortfall_total",
+        transfer_report.get("eco_cash_shortfall_total"),
+    )
     payload["transfer_report_source_blockers"] = transfer_report.get("source_blockers") if isinstance(transfer_report.get("source_blockers"), list) else []
     payload["transfer_report_source_blocker_count"] = len(payload["transfer_report_source_blockers"])
     payload["transfer_report_property_cash_review_blockers"] = (

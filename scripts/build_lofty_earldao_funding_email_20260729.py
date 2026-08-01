@@ -105,13 +105,19 @@ def build_coownership_rows(
         live = find_prefix(live_rows, "property", live_prefix)
         if active_prefix is None:
             accounting_position = money(live["gl_column_e_full_as_of"])
+            lofty_operating_reserve = Decimal("0.00")
         else:
             active = find_prefix(active_rows, "property", active_prefix)
             accounting_position = money(active["combined_eco_and_lofty_reserve"])
+            lofty_operating_reserve = max(
+                Decimal("0.00"),
+                money(active.get("lofty_curr_maintenance_reserve")),
+            )
         unrestricted_bank_cash = money(live["operations_balance"])
+        bank_and_lofty_liquidity = money(unrestricted_bank_cash + lofty_operating_reserve)
         target_cash = money(Decimal("3000.00") + obligations)
         accounting_gap = money(max(Decimal("0"), target_cash - accounting_position))
-        bank_gap = money(max(Decimal("0"), target_cash - unrestricted_bank_cash))
+        bank_gap = money(max(Decimal("0"), target_cash - bank_and_lofty_liquidity))
         request = max(accounting_gap, bank_gap)
         output.append(
             {
@@ -120,13 +126,15 @@ def build_coownership_rows(
                 "status": "active",
                 "accounting_position": accounting_position,
                 "unrestricted_bank_cash": unrestricted_bank_cash,
+                "lofty_operating_reserve": lofty_operating_reserve,
+                "bank_and_lofty_liquidity": bank_and_lofty_liquidity,
                 "reserve_floor": Decimal("3000.00"),
                 "near_term_obligations": obligations,
                 "target_cash": target_cash,
                 "accounting_gap": accounting_gap,
                 "bank_gap": bank_gap,
                 "request": request,
-                "basis": "higher of accounting-position gap and unrestricted-bank gap",
+                "basis": "higher of combined accounting-position gap and bank-plus-Lofty-OR gap",
             }
         )
     return output
@@ -224,7 +232,7 @@ def write_email(rows: list[dict[str, Any]], total: Decimal, fee: Decimal) -> Non
     lines.extend(
         [
             "",
-            "The coownership amounts use the higher of (1) the accounting shortfall and (2) the unrestricted bank-cash shortfall after the $3,000 reserve floor and known July obligations. The other amounts use the corrected Yhome DAO Net Cash result and the approved $500 non-coownership floor; sold properties receive no reserve floor.",
+            "The coownership amounts use the higher of (1) the combined accounting shortfall and (2) the unrestricted bank-cash-plus-Lofty-OR shortfall after the $3,000 combined reserve floor and known July obligations. Lofty OR is credited toward the floor in both views and is never requested a second time. The other amounts use the corrected Yhome DAO Net Cash result and the approved $500 non-coownership floor; sold properties receive no reserve floor.",
             "",
             "Not included as new capital calls: Ohio 3 Property Package (existing $20,000 EARLDAO authority), 1432 Sara Ave (existing $16,000 authority), 8708 Willard Ave (buyer/EARLDAO closing settlement), 1315 E 114th St (Yhome/EARLDAO sold-property settlement), and 724's separate $5,200 individual loan from @thegottfather.",
             "",

@@ -17,6 +17,7 @@ This repository is the finance-control plane for Baselane → ECO Systems → DA
 - `cash_shortfall` is a reconciliation diagnostic, never an autonomous transfer instruction or proof of an account payable. A DAO payable to ECO exists only when the ID-bearing ECO-account intercompany subledger verifies that ECO advanced cash for that DAO; recognize the same amount as ECO's reciprocal receivable and never net it against ECO-held DAO cash.
 - Do not reallocate pooled ECO/Aligned cash to a DAO merely because a transaction has a property tag. Dedicated account ownership is governed by `config/baselane_bank_account_classification_overrides.json`.
 - Preserve accrued tax, insurance, vendor, mortgage, and reserve obligations. Do not lend, distribute, or sweep cash that supports a recorded obligation.
+- Measure the $3,000 co-ownership reserve floor across ECO-held spendable cash plus positive Lofty Operating Reserve, not ECO cash alone. A transfer out of ECO may use only the combined surplus and may never exceed cash actually held by ECO.
 - Sold-property operating accruals that are no longer payable may be cancelled only with sale evidence and an audit trail. A remaining sold-property negative balance is an escalation, not a cleanup opportunity.
 - Yhome/EARLDAO Web3 reconciliation rows are non-cash unless source evidence proves bank movement. Do not create fictional Baselane deposits to mirror token ownership.
 

@@ -729,7 +729,7 @@ def build_monthly_close_status_markdown(status: dict[str, Any]) -> str:
         f"- Transfer total final: `{status.get('transfer_reconciliation_recommended_total_is_final')}`",
         f"- Approved to send to Lofty now: `{status.get('transfer_reconciliation_approved_send_to_lofty_now_total')}`",
         f"- Held surplus, do not send yet: `{status.get('transfer_reconciliation_held_surplus_pending_review_total')}`",
-        f"- Top up ECO before distributions: `{status.get('transfer_reconciliation_eco_cash_shortfall_total')}`",
+        f"- Combined ECO + Lofty OR shortfall before distributions: `{status.get('transfer_reconciliation_eco_cash_shortfall_total')}`",
         f"- Telegram transfer DM: `{status.get('transfer_reconciliation_telegram_status')}`, send ok `{status.get('transfer_reconciliation_telegram_send_ok')}`",
         f"- Telegram transfer current: `{status.get('transfer_reconciliation_telegram_current_for_transfer')}`, digest match `{status.get('owner_email_transfer_telegram_digest_matches_current')}`",
         f"- Lofty listing financial chain: `{status.get('lofty_listing_financial_update_chain_status')}`",

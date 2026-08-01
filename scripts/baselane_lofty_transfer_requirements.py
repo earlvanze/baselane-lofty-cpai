@@ -8,8 +8,10 @@ The transfer rule is intentionally conservative:
 - Cash settlement basis is reported separately for transfer review and excludes
   non-cash closes and unsettled accrual journals.
 - ECO General Ledger is the full per-property ECO GL Column E/Amount sum.
-- Co-ownership properties must retain at least ``--eco-minimum`` in ECO cash.
-- Amount "sendable to Lofty" is only the surplus above that floor.
+- Co-ownership properties must retain at least ``--eco-minimum`` across
+  ECO-held spendable cash plus positive Lofty Operating Reserve.
+- Amount "sendable to Lofty" is the combined surplus above that floor, capped
+  by the non-negative cash actually held by ECO.
 - If source cleanup or CF reflection is not clean, exact send amounts are held.
 """
 
@@ -31,7 +33,11 @@ from typing import Any, Iterable
 from canonical_property_ledger import DivergentCanonicalLedgerError, resolve_equivalent_ledgers
 from coownership_mortgage_policy import NO_DAO_MORTGAGE_PROPERTY_KEYS, is_no_dao_mortgage_property
 from baselane_reconciliation_policy import is_cash_basis_excluded_row
-from coownership_reserve_policy import LOCAL_FINANCIALS_ONLY_PROPERTIES, canonical_property as canonical_reserve_property
+from coownership_reserve_policy import (
+    LOCAL_FINANCIALS_ONLY_PROPERTIES,
+    canonical_property as canonical_reserve_property,
+    combined_reserve_position,
+)
 from lofty_monthly_exclusions import monthly_exclusion_guards
 
 
@@ -2068,14 +2074,14 @@ def bank_transfer_instruction(
             "bank_transfer_action": "send_to_lofty",
             "bank_transfer_amount": surplus,
             "bank_transfer_direction": "ECO/source account -> Lofty account",
-            "next_action": "Transfer ECO surplus above floor to Lofty.",
+            "next_action": "Transfer ECO-held cash above the combined ECO + Lofty OR floor to Lofty.",
         }
     if shortfall and shortfall > 0:
         return {
             "bank_transfer_action": "top_up_eco",
             "bank_transfer_amount": shortfall,
-            "bank_transfer_direction": "Non-property/ECO funding source -> DAO ECO/source account",
-            "next_action": "Top up ECO/source account to required floor before sending anything to Lofty.",
+            "bank_transfer_direction": "Funding source -> DAO ECO/source account or Lofty OR",
+            "next_action": "Top up combined ECO-held spendable cash plus Lofty OR to the required floor.",
         }
     if "property_cash_alignment_review_required" in hold_reasons:
         return {
@@ -2156,22 +2162,36 @@ def build_rows(
         no_dao_mortgage_policy = no_dao_mortgage_policy_applies(property_name, property_path)
         no_dao_mortgage_source_unresolved = no_dao_mortgage_policy and bool(global_source_blockers)
         no_dao_mortgage_liability_review_required = no_dao_mortgage_source_unresolved
+        effective_lofty_operating_cash = (
+            0.0
+            if local_financials_only and lofty_operating_cash_missing
+            else lofty_operating_cash_source
+        )
+        reserve_position = (
+            combined_reserve_position(
+                eco_cash,
+                effective_lofty_operating_cash,
+                eco_minimum,
+            )
+            if eco_cash is not None and effective_lofty_operating_cash is not None
+            else None
+        )
         total_operating_cash = (
-            round(eco_cash + lofty_operating_cash, 2)
-            if eco_cash is not None
+            float(reserve_position["combined_reserve_liquidity"])
+            if reserve_position is not None
             else None
         )
         surplus = (
-            round(max(0.0, eco_cash - eco_minimum), 2)
-            if eco_cash is not None
+            float(reserve_position["sendable_eco_cash"])
+            if reserve_position is not None
             else None
         )
         provisional_send = surplus
         if no_dao_mortgage_liability_review_required:
             provisional_send = None
         shortfall = (
-            round(max(0.0, eco_minimum - eco_cash), 2)
-            if eco_cash is not None
+            float(reserve_position["combined_shortfall_to_floor"])
+            if reserve_position is not None
             else None
         )
         hold_reasons: list[str] = []
@@ -2216,7 +2236,7 @@ def build_rows(
         )
         accrual_coverage_detail = matched_monthly_accrual_coverage_detail(property_name, accrual_coverage)
         if shortfall and shortfall > 0:
-            hold_reasons.append("eco_operating_cash_below_minimum")
+            hold_reasons.append("combined_eco_and_lofty_reserve_below_minimum")
         if inactive:
             action = "skip_inactive"
         elif hold_reasons:
@@ -2277,6 +2297,8 @@ def build_rows(
                 ),
                 "total_operating_cash_for_distribution_test": total_operating_cash,
                 "total_operating_cash_for_distribution_test_formatted": money(total_operating_cash),
+                "combined_reserve_liquidity": total_operating_cash,
+                "combined_reserve_liquidity_formatted": money(total_operating_cash),
                 "eco_gl_column_e_row_count": row_count,
                 "eco_gl_column_e_source": summary.get("eco_gl_column_e_source"),
                 "eco_gl_column_e_source_mode": source_mode,
@@ -2308,9 +2330,20 @@ def build_rows(
                     "pm_fee_basis_gap_previous_month_gross_rent"
                 ),
                 "eco_minimum": round(eco_minimum, 2),
+                "combined_reserve_floor": round(eco_minimum, 2),
                 "eco_cash_surplus_above_minimum": surplus,
                 "eco_cash_shortfall_to_minimum": shortfall,
-                "distribution_formula": "max(0, eco_operating_cash - eco_minimum)",
+                "combined_reserve_surplus_above_floor": (
+                    float(reserve_position["combined_surplus_above_floor"])
+                    if reserve_position is not None
+                    else None
+                ),
+                "combined_reserve_shortfall_to_floor": shortfall,
+                "sendable_eco_cash_above_combined_floor": surplus,
+                "distribution_formula": (
+                    "min(max(0, eco_operating_cash), "
+                    "max(0, eco_operating_cash + lofty_operating_reserve - combined_reserve_floor))"
+                ),
                 "provisional_send_to_lofty_amount": provisional_send,
                 "property_cash_review_required": property_cash_detail is not None,
                 "property_cash_review_report": property_cash_detail.get("report") if property_cash_detail else None,
@@ -2393,8 +2426,13 @@ def write_csv_report(path: Path, rows: list[dict[str, Any]]) -> None:
         "cash_settlement_basis_scope",
         "lofty_curr_maintenance_reserve",
         "total_operating_cash_for_distribution_test",
+        "combined_reserve_liquidity",
         "eco_minimum",
+        "combined_reserve_floor",
         "distribution_formula",
+        "combined_reserve_surplus_above_floor",
+        "combined_reserve_shortfall_to_floor",
+        "sendable_eco_cash_above_combined_floor",
         "eco_cash_surplus_above_minimum",
         "eco_cash_shortfall_to_minimum",
         "recommended_send_to_lofty_amount",
@@ -2445,7 +2483,7 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
         "",
         f"- Status: `{report['status']}`",
         f"- Source clean for final transfer amounts: `{str(report['source_clean_for_final_transfer_amounts']).lower()}`",
-        f"- Maintenance reserve floor per co-ownership: `{money(report['eco_minimum'])}`",
+        f"- Combined ECO + Lofty OR reserve floor per co-ownership: `{money(report['eco_minimum'])}`",
         f"- ECO Operating Cash balance: `{money(report.get('eco_operating_cash_full_balance_total'))}`",
         f"- ECO General Ledger balance: `{money(report.get('eco_general_ledger_total'))}`",
         f"- ECO cash vs send policy: `{report.get('eco_operating_cash_vs_send_to_lofty_policy')}`",
@@ -2453,7 +2491,7 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
         f"- Co-ownership states: `{', '.join(report['coownership_states'])}`",
         f"- Final sendable total: `{money(report['recommended_send_to_lofty_total']) if report['recommended_send_to_lofty_total'] is not None else 'held'}`",
         f"- Provisional send-to-Lofty total, excluding unresolved no-DAO-mortgage responsibility rows: `{money(report['provisional_send_to_lofty_total'])}`",
-        f"- Total operating cash shortfall to reserve floor: `{money(report['eco_cash_shortfall_total'])}`",
+        f"- Combined ECO + Lofty OR shortfall to reserve floor: `{money(report['combined_reserve_shortfall_total'])}`",
         f"- Bank action amounts: `{bank_action_amounts}`",
         "",
         "## Bank Action Summary",
@@ -2473,6 +2511,8 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
         suffix = f"; hold: {reasons}" if reasons else ""
         lines.append(
             f"- `{row['state']}` `{row['property']}`: ECO {money(row.get('eco_operating_cash'))}; "
+            f"Lofty OR {money(row.get('lofty_curr_maintenance_reserve'))}; "
+            f"combined reserve {money(row.get('combined_reserve_liquidity'))}; "
             f"GL source `{row.get('eco_operating_cash_balance_basis') or 'missing'}`; "
             f"physical bank cash {money(row.get('physical_bank_cash'))} "
             f"as of `{row.get('physical_bank_cash_as_of_date') or 'unknown'}`; "
@@ -2640,12 +2680,12 @@ def write_telegram_markdown(path: Path, report: dict[str, Any], *, max_rows: int
         f"Reporting month policy: {report.get('eco_operating_cash_reporting_month_policy') or ECO_OPERATING_CASH_REPORTING_MONTH_POLICY}",
         f"Full ECO Operating Cash balance: {compact_money(report.get('eco_operating_cash_full_balance_total'))} (not the Lofty send amount)",
         f"ECO General Ledger balance: {compact_money(report.get('eco_general_ledger_total'))}",
-        f"ECO floor: {compact_money(report.get('eco_minimum'))} per active co-ownership DAO",
+        f"Combined ECO + Lofty OR floor: {compact_money(report.get('eco_minimum'))} per active co-ownership DAO",
         f"Active DAO cash balances: {report.get('active_dao_cash_balance_property_count', 0)}; ECO Net DAO Funds total {compact_money(report.get('active_dao_eco_operating_cash_total'))}; physical bank known total {compact_money(report.get('active_dao_physical_bank_cash_known_total'))}; detail {Path(str(report.get('active_dao_cash_balance_csv') or 'reports/baselane_active_dao_cash_balances.csv')).name}",
         f"Final transfer amounts: {'yes' if report.get('bank_transfer_actions_final') is True else 'no'}",
         f"Approved to send to Lofty now: {compact_money(report.get('approved_send_to_lofty_now_total'))} across {report.get('ready_to_send_property_count', 0)} DAO(s)",
         f"Held surplus, do not send yet: {compact_money(report.get('held_surplus_pending_review_total'))}",
-        f"Top up ECO before distributions: {compact_money(report.get('eco_cash_shortfall_total'))}",
+        f"Top up combined reserve before distributions: {compact_money(report.get('combined_reserve_shortfall_total'))}",
         f"Bank action summary: send_to_lofty {compact_money((report.get('bank_action_amount_totals') or {}).get('send_to_lofty'))}; top_up_eco {compact_money((report.get('bank_action_amount_totals') or {}).get('top_up_eco'))}; review/hold {compact_money((report.get('bank_action_amount_totals') or {}).get('review_or_hold'))}",
     ]
     if report.get("recommended_send_to_lofty_total_is_final") is True and report.get("bank_transfer_actions_final") is not True:
@@ -2685,14 +2725,17 @@ def write_telegram_markdown(path: Path, report: dict[str, Any], *, max_rows: int
         for row in send_rows[:max_rows]:
             lines.append(
                 f"- {row.get('state')} {row.get('property')}: send {compact_money(row.get('recommended_send_to_lofty_amount'))}; "
-                f"ECO {compact_money(row.get('eco_operating_cash'))} -> {compact_money(report.get('eco_minimum'))}"
+                f"ECO {compact_money(row.get('eco_operating_cash'))}; Lofty OR "
+                f"{compact_money(row.get('lofty_curr_maintenance_reserve'))}; combined floor "
+                f"{compact_money(report.get('eco_minimum'))}"
             )
     if top_shortfalls:
         lines.append("")
-        lines.append("Keep/Top up ECO first:")
+        lines.append("Top up combined ECO + Lofty OR reserve first:")
         for row in top_shortfalls:
             lines.append(
                 f"- {row.get('state')} {row.get('property')}: ECO {compact_money(row.get('eco_operating_cash'))}, "
+                f"Lofty OR {compact_money(row.get('lofty_curr_maintenance_reserve'))}, "
                 f"top up {compact_money(row.get('bank_transfer_amount'))}"
             )
     if held_surplus_rows:
@@ -2703,6 +2746,7 @@ def write_telegram_markdown(path: Path, report: dict[str, Any], *, max_rows: int
             suffix = f" ({reasons})" if reasons else ""
             lines.append(
                 f"- {row.get('state')} {row.get('property')}: ECO {compact_money(row.get('eco_operating_cash'))}; "
+                f"Lofty OR {compact_money(row.get('lofty_curr_maintenance_reserve'))}; "
                 f"potential send {compact_money(row.get('eco_cash_surplus_above_minimum'))}; HOLD{suffix}"
             )
     if yhome_update_rows:
@@ -3001,7 +3045,13 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         ),
         2,
     )
-    shortfall_total = round(sum(float(row.get("eco_cash_shortfall_to_minimum") or 0.0) for row in active_rows), 2)
+    shortfall_total = round(
+        sum(
+            float(row.get("combined_reserve_shortfall_to_floor") or 0.0)
+            for row in active_rows
+        ),
+        2,
+    )
     missing_lofty_reserve_rows = [
         {
             "property": row.get("property"),
@@ -3098,10 +3148,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "active_dao_cash_balance_csv": str(getattr(args, "cash_balance_csv", DEFAULT_CASH_BALANCE_CSV)),
         "total_operating_cash_for_distribution_test_total": total_operating_cash_for_distribution_test_total,
-        "transfer_formula": "max(0, eco_operating_cash - eco_minimum)",
+        "transfer_formula": (
+            "min(max(0, eco_operating_cash), "
+            "max(0, eco_operating_cash + lofty_operating_reserve - combined_reserve_floor))"
+        ),
         "transfer_policy": (
-            "Sendable amount to Lofty is max(0, ECO Operating Cash minus the ECO minimum); "
-            "Lofty-held reserve is reported separately and never offsets the required ECO cash floor; "
+            "The $3,000 co-ownership reserve floor is measured across ECO-held spendable cash plus "
+            "positive Lofty Operating Reserve. Sendable cash is the combined surplus, capped by "
+            "non-negative cash actually held by ECO; "
             "no-DAO-mortgage responsibility properties do not report provisional send amounts while source cleanup is unresolved."
         ),
         "no_dao_mortgage_responsibility_policy_properties": sorted(NO_DAO_MORTGAGE_PROPERTY_KEYS),
@@ -3114,7 +3168,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "recommended_send_to_lofty_total_is_final, which certifies only the ready send_to_lofty rows."
         ),
         "recommended_send_to_lofty_total_policy": (
-            "Total sums ready send_to_lofty rows only, using eco_operating_cash - eco_minimum. Held rows remain excluded and surface top-up/review reasons separately."
+            "Total sums ready send_to_lofty rows only, using combined ECO-held spendable cash plus Lofty OR "
+            "less the reserve floor, capped by ECO-held cash. Held rows remain excluded and surface "
+            "top-up/review reasons separately."
         ),
         "recommended_send_to_lofty_total_is_cash_balance": False,
         "eco_operating_cash_vs_send_to_lofty_policy": (
@@ -3365,6 +3421,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "approved_send_to_lofty_now_total": recommended_total if recommended_total is not None else 0.0,
         "held_surplus_pending_review_total": held_surplus_pending_review_total,
         "provisional_send_to_lofty_total": provisional_total,
+        "combined_reserve_shortfall_total": shortfall_total,
         "eco_cash_shortfall_total": shortfall_total,
         "telegram_summary": str(args.telegram_markdown),
         "rows": rows,

@@ -94,6 +94,35 @@ def round_money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def combined_reserve_position(
+    eco_held_spendable_cash: object,
+    lofty_operating_reserve: object,
+    reserve_floor: object = MAINTENANCE_RESERVE_TARGET,
+) -> dict[str, Decimal]:
+    """Calculate the reserve floor across ECO cash and Lofty OR.
+
+    Lofty OR is DAO liquidity even though it is not cash held by ECO. A cash
+    transfer out of ECO may therefore use the combined surplus, but it can
+    never exceed the non-negative cash actually held by ECO.
+    """
+    eco_cash = round_money(money(eco_held_spendable_cash))
+    lofty_or = round_money(max(money(lofty_operating_reserve), Decimal()))
+    floor = round_money(max(money(reserve_floor), Decimal()))
+    combined = round_money(eco_cash + lofty_or)
+    combined_surplus = round_money(max(combined - floor, Decimal()))
+    combined_shortfall = round_money(max(floor - combined, Decimal()))
+    sendable_eco_cash = round_money(min(max(eco_cash, Decimal()), combined_surplus))
+    return {
+        "eco_held_spendable_cash": eco_cash,
+        "lofty_operating_reserve": lofty_or,
+        "combined_reserve_liquidity": combined,
+        "reserve_floor": floor,
+        "combined_surplus_above_floor": combined_surplus,
+        "combined_shortfall_to_floor": combined_shortfall,
+        "sendable_eco_cash": sendable_eco_cash,
+    }
+
+
 @lru_cache(maxsize=4096)
 def normalize_property_text(value: str) -> str:
     text = value.lower().replace("&", " and ")

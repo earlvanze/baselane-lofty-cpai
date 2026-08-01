@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from coownership_reserve_policy import (
-    FULL_REPLENISHMENT_THRESHOLD,
     MAINTENANCE_RESERVE_TARGET,
     canonical_property as canonical_reserve_property,
     replenishment_rate,
@@ -1230,7 +1229,9 @@ def distribution_guard_preview(
         monthly_artifact_property_folder(financials_md)
     )
     maintenance_reserve = float(MAINTENANCE_RESERVE_TARGET) if reserve_policy_property else coownership_eco_cash_minimum()
-    distribution_minimum = float(FULL_REPLENISHMENT_THRESHOLD) if reserve_policy_property else maintenance_reserve
+    # The approved co-ownership floor is one combined liquidity test: positive
+    # Lofty OR plus ECO-held spendable cash must remain at or above $3,000.
+    distribution_minimum = maintenance_reserve
     source_values = {
         "lofty_operating_reserve": parse_accounting_money(summary.get("lofty_curr_maintenance_reserve")),
         "total_dao_spendable_cash": parse_accounting_money(summary.get("total_dao_spendable_cash")),

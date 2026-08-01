@@ -12,6 +12,18 @@ Complete a close only when the source ledger, accrual completeness, statement ch
 
 ## Cash and intercompany summary controls
 
+For co-ownerships, the $3,000 minimum reserve is a combined liquidity floor:
+positive Lofty Operating Reserve plus ECO-held spendable DAO cash. Do not demand
+an additional $3,000 in ECO cash when Lofty already holds part or all of the
+floor. Any ECO-to-Lofty transfer is limited to the combined surplus and capped
+by non-negative cash actually held by ECO.
+
+The live Baselane cash reconciliation does not impose a second co-ownership
+bank-account floor. Its co-ownership local-bank float is zero; the guarded
+transfer planner applies the $3,000 combined test after joining the current
+Lofty OR balance. The separate $500 non-co-ownership operating-float policy is
+unchanged.
+
 Run `scripts/baselane_live_dao_cash_reconciliation.py` from the current ID-bearing source ledger before building review candidates. The output is the authority for both custody and verified intercompany debt:
 
 1. Gross ECO-held DAO cash is reduced only by recorded unpaid obligations to produce nonnegative spendable cash.

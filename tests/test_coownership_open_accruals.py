@@ -52,3 +52,28 @@ def test_zero_value_void_marker_uses_encoded_accrual_amount():
     assert policy.outstanding_manual_accrual_liability(
         rows, "Example House", date(2026, 7, 31)
     ) == policy.Decimal("0.00")
+
+
+def test_combined_reserve_counts_lofty_or_toward_floor():
+    position = policy.combined_reserve_position("2500", "1000", "3000")
+
+    assert position["combined_reserve_liquidity"] == policy.Decimal("3500.00")
+    assert position["combined_surplus_above_floor"] == policy.Decimal("500.00")
+    assert position["combined_shortfall_to_floor"] == policy.Decimal("0.00")
+    assert position["sendable_eco_cash"] == policy.Decimal("500.00")
+
+
+def test_combined_reserve_send_is_capped_by_eco_cash():
+    position = policy.combined_reserve_position("1000", "4000", "3000")
+
+    assert position["combined_reserve_liquidity"] == policy.Decimal("5000.00")
+    assert position["combined_surplus_above_floor"] == policy.Decimal("2000.00")
+    assert position["sendable_eco_cash"] == policy.Decimal("1000.00")
+
+
+def test_combined_reserve_reports_shortfall_without_negative_transfer():
+    position = policy.combined_reserve_position("-500", "2500", "3000")
+
+    assert position["combined_reserve_liquidity"] == policy.Decimal("2000.00")
+    assert position["combined_shortfall_to_floor"] == policy.Decimal("1000.00")
+    assert position["sendable_eco_cash"] == policy.Decimal("0.00")

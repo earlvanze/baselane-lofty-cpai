@@ -6,7 +6,7 @@ The report joins:
 * live Baselane internal-transfer account balances;
 * current property GL Column E totals;
 * live savings/security-account transaction histories;
-* the $500 active-property operating float; and
+* any local-bank operating float that is separate from the portfolio reserve;
 * explicitly documented security-deposit principal.
 
 It is deliberately read-only.  Transfer execution requires a separate guarded
@@ -160,10 +160,13 @@ ACCOUNT_PROPERTY = {
 
 # Baselane property accounts mapped above are Lofty coownership/DAO accounts.
 # The portfolio capital-control policy adopted 2026-07-28 requires $3,000 of
-# operating liquidity per coownership.  Non-coownership property accounts, if
-# added later, must be listed explicitly rather than silently receiving the
-# lower $500 operating floor.
-COOWNERSHIP_OPERATING_FLOAT = Decimal("3000.00")
+# combined co-ownership liquidity across positive Lofty Operating Reserve and
+# ECO-held spendable DAO cash. It is not a second $3,000 minimum that must sit
+# in a Baselane account. This read-only bank reconciliation therefore applies
+# no separate co-ownership local-bank float; the downstream transfer planner
+# enforces the combined floor using the current Lofty OR balance.
+COOWNERSHIP_COMBINED_RESERVE_FLOOR = Decimal("3000.00")
+COOWNERSHIP_LOCAL_BANK_FLOAT = Decimal("0.00")
 NON_COOWNERSHIP_OPERATING_FLOAT = Decimal("500.00")
 NON_COOWNERSHIP_PROPERTIES: set[str] = {
     "1278 E 187th St",
@@ -983,7 +986,7 @@ def main() -> int:
             operating_floor = (
                 NON_COOWNERSHIP_OPERATING_FLOAT
                 if prop in NON_COOWNERSHIP_PROPERTIES
-                else COOWNERSHIP_OPERATING_FLOAT
+                else COOWNERSHIP_LOCAL_BANK_FLOAT
             )
         else:
             operating_floor = Decimal()
@@ -1213,7 +1216,13 @@ def main() -> int:
         "custody_source_status": "ok" if custody_source_ok else "missing_account_ownership",
         "policy": {
             "internal_transfers_only": True,
-            "coownership_operations_float": f"{COOWNERSHIP_OPERATING_FLOAT:.2f}",
+            "coownership_combined_reserve_floor": f"{COOWNERSHIP_COMBINED_RESERVE_FLOOR:.2f}",
+            "coownership_local_bank_float": f"{COOWNERSHIP_LOCAL_BANK_FLOAT:.2f}",
+            "coownership_combined_reserve_components": [
+                "positive_lofty_operating_reserve",
+                "eco_held_spendable_dao_cash",
+            ],
+            "coownership_combined_floor_enforced_by": "baselane_lofty_transfer_requirements.py",
             "non_coownership_operations_float": f"{NON_COOWNERSHIP_OPERATING_FLOAT:.2f}",
             "non_coownership_properties": sorted(NON_COOWNERSHIP_PROPERTIES),
             "security_principal_is_restricted": True,

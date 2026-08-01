@@ -4533,7 +4533,10 @@ def build_message(*, send_requested: bool = False, refresh_health: dict | None =
     lofty_transfer_ready_count = compact_count(lofty_transfer_requirements.get("ready_to_send_property_count"))
     lofty_transfer_property_count = compact_count(lofty_transfer_requirements.get("property_count"))
     lofty_transfer_provisional_total = lofty_transfer_requirements.get("provisional_send_to_lofty_total")
-    lofty_transfer_shortfall_total = lofty_transfer_requirements.get("eco_cash_shortfall_total")
+    lofty_transfer_shortfall_total = lofty_transfer_requirements.get(
+        "combined_reserve_shortfall_total",
+        lofty_transfer_requirements.get("eco_cash_shortfall_total"),
+    )
     lofty_transfer_recommended_total = lofty_transfer_requirements.get("recommended_send_to_lofty_total")
     lofty_transfer_source_clean = lofty_transfer_requirements.get("source_clean_for_final_transfer_amounts")
     cf_balance_sheet_cash_apply_status = str(cf_balance_sheet_cash_apply.get("status") or "").strip()
@@ -5280,7 +5283,7 @@ def build_message(*, send_requested: bool = False, refresh_health: dict | None =
             action = (
                 "resolve transfer holds; "
                 f"provisional={compact_money_short(lofty_transfer_provisional_total)} "
-                f"shortfall={compact_money_short(lofty_transfer_shortfall_total)}"
+                f"combined ECO+Lofty OR shortfall={compact_money_short(lofty_transfer_shortfall_total)}"
             )
         run_command = "bash scripts/baselane_weekly_file_updates_cron.sh"
         hold = "Lofty transfers; Lofty PM publish or investor email"

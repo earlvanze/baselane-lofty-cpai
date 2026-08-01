@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from csv import DictWriter
 from pathlib import Path
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -16,6 +17,54 @@ from coownership_reserve_policy import (
 
 
 class BaselaneLoftyTransferRequirementsTests(unittest.TestCase):
+    def test_transfer_planner_uses_combined_eco_cash_and_lofty_or_floor(self):
+        summary = {
+            "eco_gl_column_e_sum": 2500.00,
+            "eco_gl_column_e_status": "ok",
+            "eco_gl_column_e_scope": "all_property_split_rows",
+            "eco_gl_column_e_source_mode": "canonical_property_split_gl",
+            "eco_operating_cash": 2500.00,
+            "eco_operating_cash_status": "ok",
+            "eco_operating_cash_source_mode": "verified_eco_cash_custody_reconciliation",
+            "lofty_curr_maintenance_reserve": 1000.00,
+        }
+        property_name = "88 Madison Ave"
+        cf_index = {
+            transfers.normalize_property_name(property_name): {
+                "eco_balance_semantics": "spendable_eco_cash",
+                "eco_operating_cash_expected": 2500.00,
+                "eco_operating_cash_actual": 2500.00,
+            }
+        }
+
+        with patch.object(transfers, "financial_summary", return_value=summary):
+            rows = transfers.build_rows(
+                records=[
+                    {
+                        "property_name": property_name,
+                        "property_path": "/tmp/Real Estate/NY/88 Madison Ave Public",
+                    }
+                ],
+                cf_index=cf_index,
+                inactive_rows={},
+                states={"NY"},
+                eco_minimum=3000.00,
+                global_source_blockers=[],
+                coownership_policy_blockers={},
+                property_cash_review_policy_blockers={},
+                property_cash_review_details_by_property=[],
+                monthly_accruals_report={"status": "ok"},
+            )
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["combined_reserve_liquidity"], 3500.00)
+        self.assertEqual(row["combined_reserve_surplus_above_floor"], 500.00)
+        self.assertEqual(row["sendable_eco_cash_above_combined_floor"], 500.00)
+        self.assertEqual(row["combined_reserve_shortfall_to_floor"], 0.00)
+        self.assertEqual(row["action"], "send_to_lofty")
+        self.assertEqual(row["bank_transfer_amount"], 500.00)
+
     def test_cf_audit_accepts_dated_gl_cash_basis_fallback(self):
         source = {
             "eco_operating_cash": 18296.21,
