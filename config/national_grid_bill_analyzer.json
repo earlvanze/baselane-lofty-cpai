@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "analysis_from_month": "2025-01",
+  "thresholds": {
+    "charge_increase_percent": 10.0,
+    "charge_increase_dollars": 25.0,
+    "payment_stable_percent": 2.0,
+    "payment_stable_dollars": 2.0,
+    "deferred_balance_increase_dollars": 25.0,
+    "supplier_rate_increase_percent": 10.0,
+    "stale_after_days": 62
+  },
+  "properties": [
+    {
+      "name": "84 Madison Ave",
+      "public_dir": "NY/84 Madison Ave Public",
+      "source_dirs": ["NY/84 Madison Ave Public/14 - Utilities/National Grid"]
+    },
+    {
+      "name": "86 Madison Ave",
+      "public_dir": "NY/86 Madison Ave Public",
+      "source_dirs": ["NY/86 Madison Ave Public/14 - Utilities/National Grid"]
+    },
+    {
+      "name": "88 Madison Ave",
+      "public_dir": "NY/88 Madison Ave Public",
+      "source_dirs": ["NY/88 Madison Ave Public/14 - Utilities/National Grid"]
+    },
+    {
+      "name": "90 Madison Ave",
+      "public_dir": "NY/90 Madison Ave Public",
+      "source_dirs": ["NY/90 Madison Ave Public/14 - Utilities/National Grid"]
+    },
+    {
+      "name": "724 3rd Ave",
+      "public_dir": "NY/724 3rd Ave Public",
+      "source_dirs": [
+        "NY/724 3rd Ave Public/13 - Utilities/Arcadia Power",
+        "NY/724 3rd Ave, Watervliet, NY 12189/Operations/Utilities"
+      ]
+    }
+  ]
+}

@@ -4,10 +4,20 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+OPENCLAW_SCRIPTS = Path(
+    os.environ.get("OPENCLAW_WORKSPACE", Path(__file__).resolve().parents[3])
+) / "scripts"
+if OPENCLAW_SCRIPTS.is_dir():
+    # Keep this repository's monthly modules authoritative; shared OpenClaw
+    # scripts are fallback helpers (for example, the Discord route resolver).
+    sys.path.append(str(OPENCLAW_SCRIPTS))
 
 import post_property_update_discord as discord_route
 from lofty_index_status import is_active_index_status
@@ -22,13 +32,11 @@ DEFAULT_FINANCIAL_PATCH_READINESS = Path("reports/lofty_financial_patch_readines
 DEFAULT_PLAN = Path("reports/baselane_financials_monthly_discord_all_send_plan.json")
 DISCORD_LIMIT_BYTES = 2000
 FINANCIAL_SUMMARY_MARKERS = ("Financial detail:", "Financial summary from FINANCIALS.md:")
-FULL_GL_SUMMARY_SNIPPETS = (
+SPENDABLE_CASH_MARKER = "ECO Net DAO Funds (spendable cash held by ECO)"
+OBSOLETE_LEDGER_CASH_SNIPPETS = (
     "ECO Operating Cash is the full DAO-attributed Column E sum",
     "ECO General Ledger is the complete DAO-attributed Column E total",
-)
-FULL_GL_POLICY_LINE = (
-    "ECO Operating Cash is the full DAO-attributed Column E sum. "
-    "ECO General Ledger is the complete DAO-attributed Column E total."
+    "ECO GL Column E sum",
 )
 UPSTREAM_FINANCIAL_BLOCKER_PREFIXES = (
     "data_quality.",
@@ -75,7 +83,8 @@ def read_text(path_value: object) -> tuple[str, str | None, str | None]:
 def has_financial_summary(text: str) -> bool:
     return (
         any(marker in text for marker in FINANCIAL_SUMMARY_MARKERS)
-        and all(snippet in text for snippet in FULL_GL_SUMMARY_SNIPPETS)
+        and SPENDABLE_CASH_MARKER in text
+        and not any(snippet in text for snippet in OBSOLETE_LEDGER_CASH_SNIPPETS)
         and "## Monthly Cash Position (" in text
     )
 
@@ -104,20 +113,6 @@ def strip_embedded_property_update_history(text: str) -> str:
         return text
     embedded_match = matches[1]
     return before_financial[: embedded_match.start()].rstrip() + "\n\n" + after_financial.lstrip()
-
-
-def ensure_full_gl_policy_line(text: str) -> tuple[str, bool]:
-    if "## Monthly Cash Position (" not in text:
-        return text, False
-    if all(snippet in text for snippet in FULL_GL_SUMMARY_SNIPPETS):
-        return text, False
-    insert_at = text.find("Lofty Operating Cash:")
-    if insert_at < 0:
-        insert_at = text.find("ECO Operating Cash:")
-    line = FULL_GL_POLICY_LINE + "\n\n"
-    if insert_at >= 0:
-        return text[:insert_at].rstrip() + "\n\n" + line + text[insert_at:].lstrip(), True
-    return text.rstrip() + "\n\n" + line.rstrip() + "\n", True
 
 
 def truncate_utf8(text: str, limit: int) -> str:
@@ -154,9 +149,8 @@ def bound_message_bytes(message: str) -> tuple[str, bool]:
 
 def compact_message(message: str) -> tuple[str, bool]:
     compacted = strip_embedded_property_update_history(dedupe_financial_summary(message))
-    compacted, policy_added = ensure_full_gl_policy_line(compacted)
     compacted, bounded = bound_message_bytes(compacted)
-    return compacted, policy_added or bounded or compacted != message
+    return compacted, bounded or compacted != message
 
 
 def normalize_property_name(value: object) -> str:

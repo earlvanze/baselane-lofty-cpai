@@ -289,6 +289,55 @@ def no_mortgage_debt_policy_applies(path):
     )
 
 
+def is_90_madison_cf_path(path):
+    normalized_parts = [normalize_property_name(part) for part in Path(path).parts]
+    normalized_filename = normalize_property_name(property_name_from_cf_file(path))
+    key = "90 madison ave"
+    return (
+        key == normalized_filename
+        or key in normalized_filename
+        or any(key == part or key in part for part in normalized_parts)
+    )
+
+
+def no_mortgage_debt_row_is_exempt(path, label):
+    """Allow only 90 Madison's exact GL-backed NOI principal curtailments.
+
+    90 Madison remains a no-DAO-mortgage property: ordinary principal,
+    interest, and the outstanding principal balance belong to ECO. Its
+    separately approved NOI principal curtailments are nevertheless DAO
+    expenses and share the Mortgage Principal Payments CF row. Baselane's
+    deterministic AOPS-90-CURTAILMENT rows are the sole source for that row.
+    """
+    if str(label or "").strip() != "Mortgage Principal Payments":
+        return False
+    return is_90_madison_cf_path(path)
+
+
+def ensure_madison_90_principal_payments_row(sheet, xlsx_path, dry_run=True):
+    """Reuse a legacy zero interest-only row when 2024 lacks a principal row."""
+    if not is_90_madison_cf_path(xlsx_path):
+        return None
+    labels = {
+        str(sheet.cell(row=row_number, column=1).value or "").strip(): row_number
+        for row_number in range(2, sheet.max_row + 1)
+    }
+    if "Mortgage Principal Payments" in labels:
+        return None
+    row_number = labels.get("Mortgage Interest-Only Payments")
+    if not row_number:
+        return None
+    if not dry_run:
+        sheet.cell(row=row_number, column=1).value = "Mortgage Principal Payments"
+    return {
+        "row": row_number,
+        "label": "Mortgage Principal Payments",
+        "action": "rename_legacy_90_madison_principal_row",
+        "old_value": "Mortgage Interest-Only Payments",
+        "new_value": "Mortgage Principal Payments",
+    }
+
+
 def cf_candidate_priority(path):
     """Prefer direct canonical CF files, then canonical nested statement files."""
     if path.parent.name == OWNER_STATEMENTS_DIR:
@@ -2052,6 +2101,8 @@ def audit_no_mortgage_debt_rows(wb, xlsx_path):
             label = str(sheet.cell(row=row_number, column=1).value or "").strip()
             if label not in NO_MORTGAGE_DEBT_ROW_LABELS:
                 continue
+            if no_mortgage_debt_row_is_exempt(xlsx_path, label):
+                continue
             for column_number in range(2, min(sheet.max_column, 15) + 1):
                 checked_cell_count += 1
                 cell = sheet.cell(row=row_number, column=column_number)
@@ -2103,6 +2154,8 @@ def clear_no_mortgage_debt_rows(wb, xlsx_path):
         for row_number in range(2, sheet.max_row + 1):
             label = str(sheet.cell(row=row_number, column=1).value or "").strip()
             if label not in NO_MORTGAGE_DEBT_ROW_LABELS:
+                continue
+            if no_mortgage_debt_row_is_exempt(xlsx_path, label):
                 continue
             for column_number in range(2, min(sheet.max_column, 15) + 1):
                 cell = sheet.cell(row=row_number, column=column_number)
@@ -2647,6 +2700,12 @@ def update_xlsx(
         wb.close()
         return [{"error": f"No column for {year}-{month:02d} in {xlsx_path}"}]
 
+    principal_row_change = ensure_madison_90_principal_payments_row(
+        sheet, xlsx_path, dry_run=dry_run
+    )
+    if principal_row_change:
+        changes.append(principal_row_change)
+
     source_cash_update = None
     if source_cash_data is not None and (
         not selected_rows or ECO_GL_NET_CASH_BALANCE_LABEL.casefold() in selected_rows
@@ -2717,7 +2776,11 @@ def update_xlsx(
             continue
         if source_cash_only:
             continue
-        if no_mortgage_policy and label in NO_MORTGAGE_DEBT_ROW_LABELS:
+        if (
+            no_mortgage_policy
+            and label in NO_MORTGAGE_DEBT_ROW_LABELS
+            and not no_mortgage_debt_row_is_exempt(xlsx_path, label)
+        ):
             value_cell = sheet.cell(row=row_num, column=col)
             old_value = value_cell.value
             old_numeric = numeric_cell_value(old_value)
@@ -2823,7 +2886,7 @@ def update_xlsx(
             "old_value": old_value, "new_value": gl_total
         })
 
-    if not dry_run and any(c.get("action") in {"overwrite", "overwrite_formula", "restore_formula", "set_source_cash_balance", "create_source_cash_balance_row", "rename_source_cash_balance_row", "set_mortgage_principal_balance_from_statement", "set_no_dao_mortgage_debt_zero", "clear_no_dao_mortgage_debt_rows"} for c in changes):
+    if not dry_run and any(c.get("action") in {"overwrite", "overwrite_formula", "restore_formula", "set_source_cash_balance", "create_source_cash_balance_row", "rename_source_cash_balance_row", "rename_legacy_90_madison_principal_row", "set_mortgage_principal_balance_from_statement", "set_no_dao_mortgage_debt_zero", "clear_no_dao_mortgage_debt_rows"} for c in changes):
         wb.save(xlsx_path)
 
     wb.close()

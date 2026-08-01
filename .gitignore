@@ -13,6 +13,7 @@
 *credential*
 *auth*.json
 reports/
+/reports
 logs/
 output/
 exports/
@@ -32,3 +33,6 @@ config/local/
 config/*.local.json
 config/mcporter.json
 scripts/.*_state*
+/scripts/.baselane_source_pipeline.lock
+/.secrets/
+/skills/lofty-pm

@@ -7,9 +7,10 @@ financial summary packet:
 - ECO General Ledger / ECO Net DAO Funds from the complete per-property ECO GL
   Column E sum
 
-Physical ECO Operating Cash is a separate bank balance and is never sourced
-from the general ledger or modified by this utility. Cash-settlement basis is
-also kept as a separate transfer-review measure.
+Physical ECO Operating Cash is a separate dated cash-authority balance and is
+never sourced from the general ledger. It is updated only when the explicit
+``--apply-physical-eco-cash`` gate is enabled. Cash-settlement basis is also
+kept as a separate transfer-review measure.
 
 The script is dry-run by default and refuses workbook writes while known source
 cleanup blockers are present unless explicitly overridden.
@@ -340,6 +341,7 @@ def update_workbook(
     month: int,
     apply: bool,
     create_missing_rows: bool,
+    apply_physical_eco_cash: bool,
     canonical_workbooks: dict[str, Path] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     property_name = str(record.get("property_name") or record.get("input_property_name") or "").strip()
@@ -381,6 +383,15 @@ def update_workbook(
         specs = [
             ("ECO General Ledger", getattr(audit, "ECO_GL_LABELS", (audit.ECO_GL_LABEL,)), parse_money(summary.get("eco_general_ledger_sum", summary.get("eco_gl_column_e_sum")))),
         ]
+        if apply_physical_eco_cash:
+            specs.insert(
+                0,
+                (
+                    "ECO Operating Cash",
+                    getattr(audit, "ECO_CASH_LABELS", (audit.ECO_CASH_LABEL,)),
+                    parse_money(summary.get("eco_operating_cash")),
+                ),
+            )
         if retained_earnings_exemption:
             specs.insert(
                 0,
@@ -541,6 +552,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             month=month,
             apply=effective_apply,
             create_missing_rows=bool(args.create_missing_rows),
+            apply_physical_eco_cash=bool(args.apply_physical_eco_cash),
             canonical_workbooks=canonical_workbooks,
         )
         all_changes.extend(changes)
@@ -566,6 +578,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "effective_mode": "apply" if effective_apply else "blocked" if apply_blocked else "dry_run",
         "apply_requested": apply_requested,
         "apply_blocked_by_source_guard": apply_blocked,
+        "apply_physical_eco_cash": bool(args.apply_physical_eco_cash),
         "allow_downstream_balance_correction": bool(args.allow_downstream_balance_correction),
         "downstream_balance_correction_gate": correction_gate,
         "source_blockers": blockers,
@@ -600,6 +613,11 @@ def main() -> int:
         help="Allow only the guarded canonical-source cash-row correction when structural source checks are clean.",
     )
     parser.add_argument("--create-missing-rows", action="store_true")
+    parser.add_argument(
+        "--apply-physical-eco-cash",
+        action="store_true",
+        help="Update ECO Operating Cash only from a verified dated DAO cash-authority snapshot.",
+    )
     args = parser.parse_args()
     report = build_report(args)
     args.report.parent.mkdir(parents=True, exist_ok=True)

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ APPLY_ENV = "BASELANE_FULL_PROPERTY_COVERAGE_APPLY"
 
 sys.path.insert(0, str(ROOT / "skills" / "baselane-mcp" / "src"))
 from baselane_mcp.transfers import (  # noqa: E402
+    TransferStateError,
     run_graphql_batch_via_cdp,
     run_graphql_via_cdp,
 )
@@ -43,6 +45,7 @@ query Transactions($input: SortsAndFilters) {
     total
     data {
       id amount date merchantName description name pending propertyId tagId
+      unitId note
       isSplit parentId hidden isDeleted
     }
   }
@@ -162,6 +165,32 @@ def graphql_batch(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def graphql_read(payload: dict[str, Any], attempts: int = 3) -> dict[str, Any]:
+    """Retry transient unreadable CDP responses for read-only operations."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return graphql(payload)
+        except TransferStateError:
+            if attempt == attempts:
+                raise
+            time.sleep(attempt)
+    raise AssertionError("unreachable")
+
+
+def graphql_batch_read(
+    operations: list[dict[str, Any]], attempts: int = 3
+) -> list[dict[str, Any]]:
+    """Retry transient unreadable CDP responses for read-only batches."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return graphql_batch(operations)
+        except TransferStateError:
+            if attempt == attempts:
+                raise
+            time.sleep(attempt)
+    raise AssertionError("unreachable")
+
+
 def fetch_metadata() -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, str]]:
     properties_payload, tags_payload = graphql_batch(
         [
@@ -237,15 +266,23 @@ def fetch_all_transactions(
         raise ValueError("page_limit and operation_batch_size must be positive")
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    first_batch, total = transaction_result(graphql(transaction_operation(1, page_limit)))
+    first_batch, total = transaction_result(
+        graphql_read(transaction_operation(1, page_limit))
+    )
     page_count = (total + page_limit - 1) // page_limit
     payloads = [(first_batch, total)]
     remaining = [
         transaction_operation(page, page_limit) for page in range(2, page_count + 1)
     ]
-    for start in range(0, len(remaining), operation_batch_size):
-        for payload in graphql_batch(remaining[start : start + operation_batch_size]):
-            payloads.append(transaction_result(payload))
+    if operation_batch_size == 1:
+        for operation in remaining:
+            payloads.append(transaction_result(graphql_read(operation)))
+    else:
+        for start in range(0, len(remaining), operation_batch_size):
+            for payload in graphql_batch_read(
+                remaining[start : start + operation_batch_size]
+            ):
+                payloads.append(transaction_result(payload))
 
     for batch, reported_total in payloads:
         if reported_total != total:

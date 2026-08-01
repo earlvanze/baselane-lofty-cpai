@@ -376,8 +376,8 @@ def run_audit(args: argparse.Namespace, *, phase: str, env: dict[str, str]) -> d
             "path": str(args.audit_report),
         }
     overlay: dict[str, Any] = {
-        "policy": "full_property_split_ecogl_column_e_all_rows_v1",
-        "action": "preserve_full_gl_audit_plan",
+        "policy": "eco_held_unrestricted_cash_v1",
+        "action": "preserve_spendable_cash_audit_plan",
     }
     merged_update_count = int(report.get("yhome_update_required_count") or 0)
     return {

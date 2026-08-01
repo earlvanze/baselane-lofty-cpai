@@ -458,6 +458,70 @@ class TransferExecutionTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(mutation_calls, 2)
 
+    def test_normalized_otp_validation_error_is_resumable(self):
+        plan = build_transfer_plan(
+            from_transfer_account_id=1001,
+            to_transfer_account_id=1002,
+            amount="62.50",
+            bookkeeping_note="monthly fee",
+            property_id=33594,
+        )
+
+        def runner(payload):
+            if payload["operationName"] == "BankAccountsActive":
+                return account_response()
+            raise TransferValidationError(
+                "Baselane bank OTP has not been completed"
+            )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "state.json"
+            with self.assertRaisesRegex(TransferStateError, "SMS OTP is required"):
+                execute_transfer(
+                    plan=plan,
+                    confirmation_token=plan["confirmation_token"],
+                    graphql_runner=runner,
+                    state_path=state_path,
+                )
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            state["transfers"][plan["confirmation_token"]]["status"],
+            "authentication_challenge",
+        )
+
+    def test_in_progress_validation_error_requires_reconciliation(self):
+        plan = build_transfer_plan(
+            from_transfer_account_id=1001,
+            to_transfer_account_id=1002,
+            amount="62.50",
+            bookkeeping_note="monthly fee",
+            property_id=33594,
+        )
+
+        def runner(payload):
+            if payload["operationName"] == "BankAccountsActive":
+                return account_response()
+            raise TransferValidationError(
+                "Baselane rejected the GraphQL operation: Request is already in progress"
+            )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "state.json"
+            with self.assertRaisesRegex(TransferStateError, "already in progress"):
+                execute_transfer(
+                    plan=plan,
+                    confirmation_token=plan["confirmation_token"],
+                    graphql_runner=runner,
+                    state_path=state_path,
+                )
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            state["transfers"][plan["confirmation_token"]]["status"],
+            "verification_failed",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

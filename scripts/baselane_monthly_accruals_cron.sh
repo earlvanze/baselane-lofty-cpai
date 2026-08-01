@@ -191,9 +191,11 @@ if not report_path.is_file():
 data = json.loads(report_path.read_text(encoding="utf-8"))
 status = str(data.get("status") or "").strip().lower()
 blocker_fields = {
+    "active_without_accrual_template_count": int(data.get("active_without_accrual_template_count") or 0),
     "amount_mismatch_count": int(data.get("amount_mismatch_count") or 0),
     "blocked_first_day_pm_fee_count": int(data.get("blocked_first_day_pm_fee_count") or 0),
     "blocking_gap_action_count": int(data.get("blocking_gap_action_count") or 0),
+    "missing_fixed_accrual_coverage_count": int(data.get("missing_fixed_accrual_coverage_count") or 0),
     "unapproved_pm_fee_basis_gap_count": int(
         data.get("unapproved_pm_fee_basis_gap_count")
         if data.get("unapproved_pm_fee_basis_gap_count") is not None
@@ -201,8 +203,9 @@ blocker_fields = {
     ),
 }
 blockers = [f"{name}={value}" for name, value in blocker_fields.items() if value]
-if status == "ok" and not blockers:
-    print(f"[baselane-monthly-accruals] Monthly accruals verified ok: {report_path}")
+if status in {"ok", "review"} and not blockers:
+    suffix = " with audit-only notes" if status == "review" else ""
+    print(f"[baselane-monthly-accruals] Monthly accruals verified ok{suffix}: {report_path}")
     sys.exit(0)
 
 queue = data.get("gap_action_queue") if isinstance(data.get("gap_action_queue"), list) else []

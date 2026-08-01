@@ -134,8 +134,35 @@ def build_child_rows(parent: dict[str, str], record: dict[str, Any]) -> list[dic
         child["Amount"] = amount_text(split.get("amount"))
         child["Property"] = str(split.get("property") or "")
         child["Category"] = str(split.get("category") or record.get("category") or "")
+        audit_note = (
+            f"DOWNSTREAM-SPLIT|source_baselane_id={record.get('baselane_id')}"
+            f"|rule={record.get('rule')}|source_pending={str(bool(record.get('pending'))).lower()}"
+        )
+        existing_note = str(child.get("Notes") or "").strip()
+        child["Notes"] = f"{existing_note} | {audit_note}" if existing_note else audit_note
         child_rows.append(child)
     return child_rows
+
+
+def build_pending_parent(fieldnames: list[str], record: dict[str, Any]) -> dict[str, str]:
+    row = {field: "" for field in fieldnames}
+    row.update(
+        {
+            "Account": str(record.get("account") or ""),
+            "Date": str(record.get("date") or record.get("iso_date") or ""),
+            "ISODate": str(record.get("iso_date") or ""),
+            "Merchant": str(record.get("merchant") or ""),
+            "Description": str(record.get("description") or ""),
+            "Amount": amount_text(record.get("amount")),
+            "Type": str(record.get("source_type") or "Operating Expenses"),
+            "Category": str(record.get("source_category") or record.get("category") or ""),
+            "Property": str(record.get("source_property") or ""),
+            "Notes": str(record.get("source_notes") or ""),
+            "BaselaneId": str(record.get("baselane_id") or ""),
+            "Pending": "true",
+        }
+    )
+    return row
 
 
 def child_matches(row: dict[str, str], record: dict[str, Any], split: dict[str, Any], total_weight: int) -> bool:
@@ -187,6 +214,16 @@ def apply_overlay(fieldnames: list[str], rows: list[dict[str, str]], records: li
             output_rows = [row for index, row in enumerate(output_rows) if index not in parent_index_set]
             action["status"] = "removed_duplicate_parent"
             action["removed_parent_count"] = len(parent_indices)
+        elif (
+            not parent_indices
+            and child_count == 0
+            and record.get("pending") is True
+            and record.get("baselane_id")
+        ):
+            children = build_child_rows(build_pending_parent(fieldnames, record), record)
+            output_rows = output_rows + children
+            action["status"] = "pending_manual_rows_applied"
+            action["child_count"] = len(children)
         elif not parent_indices:
             action["status"] = "blocked_parent_missing"
         else:
@@ -219,7 +256,12 @@ def build_report(
     records = load_plan(plan, rule_ids)
     output_rows, actions = apply_overlay(fieldnames, rows, records)
     blocked = [action for action in actions if str(action.get("status", "")).startswith("blocked")]
-    applied = [action for action in actions if action.get("status") in {"overlay_applied", "removed_duplicate_parent"}]
+    applied = [
+        action
+        for action in actions
+        if action.get("status")
+        in {"overlay_applied", "removed_duplicate_parent", "pending_manual_rows_applied"}
+    ]
     backup_path = None
     if apply and applied and not blocked:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -227,7 +269,10 @@ def build_report(
         backup_path = backup_root / ledger.name
         backup_path.parent.mkdir(parents=True, exist_ok=True)
         backup_path.write_bytes(ledger.read_bytes())
-        write_csv_atomic(ledger, fieldnames, output_rows)
+        output_fieldnames = list(fieldnames)
+        if "Notes" not in output_fieldnames:
+            output_fieldnames.append("Notes")
+        write_csv_atomic(ledger, output_fieldnames, output_rows)
     elif apply and blocked:
         issues.append("blocked_actions_present_no_write")
     return {

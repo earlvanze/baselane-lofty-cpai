@@ -76,12 +76,16 @@ PROPERTY_UPDATES_HEADER_RE = re.compile(r"(?mi)^\s*#\s+Property Updates\s*$")
 DATED_UPDATE_HEADING_RE = re.compile(r"(?mi)^\s*##\s+\d{4}-\d{2}-\d{2}\s*$")
 DATED_UPDATE_HEADING_DATE_RE = re.compile(r"(?mi)^\s*##\s+(\d{4}-\d{2}-\d{2})\s*$")
 LOFTY_RESERVE_SUMMARY_RE = re.compile(
-    r"(?mi)^\s*(?:-\s*Lofty-held current maintenance reserve:|\|\s*Lofty Operating Cash\s*\|)\s*-?\$[\d,]+\.\d{2}"
+    r"(?mi)^\s*(?:-\s*Lofty maintenance reserve balance:|\|\s*Lofty maintenance reserve balance\s*\|)\s*-?\$[\d,]+\.\d{2}"
 )
 ECO_GL_SUMMARY_RE = re.compile(
     r"(?mi)^\s*(?:-\s*ECO GL Column E sum:|\|\s*ECO Operating Cash\s*\||ECO Operating Cash:)\s*-?\$[\d,]+\.\d{2}(?:\s+\(\d+\s+rows\)|\s+\([^)\n]*rows[^)\n]*\))?"
 )
 FINANCIALS_MD_SUMMARY_RE = re.compile(r"(?m)^(?:Financial detail:|Financial summary from FINANCIALS\.md:)\s*$")
+SPENDABLE_ECO_SUMMARY_RE = re.compile(
+    r"(?mi)^\s*(?:-\s*ECO Net DAO Funds \(spendable cash held by ECO\):"
+    r"|\|\s*ECO Net DAO Funds \(spendable cash held by ECO\)\s*\|)\s*\$[\d,]+\.\d{2}"
+)
 DISALLOWED_LIMITED_FINANCIAL_SUMMARY_SNIPPETS = (
     "This month's update is limited to verified cash-position data from Lofty and ECO records.",
     "No tenant ledger rows are included.",
@@ -106,7 +110,7 @@ PROPERTY_EMAIL_COOLDOWN_DAYS = 7
 MIN_FULL_SOURCE_LEAK_CHARS = 200
 SIGNAL_ONLY_OWNER_EMAIL_POLICY = (
     "one property per packet; latest approved Property Update snippet only; "
-    "verified Lofty reserve and ECO GL Column E summary required; no UPDATES.md history"
+    "verified Lofty-held and ECO-held spendable-cash summary required; no UPDATES.md history"
 )
 DISCORD_SNOWFLAKE_RE = re.compile(r"^\d{17,20}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -905,7 +909,7 @@ def monthly_financial_summary_guard_issues(
         return []
     issues: list[str] = []
     financials_md_count = len(FINANCIALS_MD_SUMMARY_RE.findall(text or ""))
-    eco_count = len(ECO_GL_SUMMARY_RE.findall(text or ""))
+    eco_count = len(SPENDABLE_ECO_SUMMARY_RE.findall(text or ""))
     if require_financials_md_summary and financials_md_count < required_summary_count:
         issues.append(f"financials_md_summary_count={financials_md_count}<required={required_summary_count}")
     if financials_md_count and not financials_md_text_matches_run_month(text, run_month):
@@ -948,6 +952,8 @@ def verified_candidate_summary(summary: dict[str, Any]) -> bool:
         isinstance(summary, dict)
         and summary.get("eco_gl_column_e_status") == "ok"
         and summary.get("eco_gl_column_e_sum") is not None
+        and summary.get("eco_held_unrestricted_cash_status") == "ok"
+        and summary.get("eco_held_unrestricted_cash") is not None
     )
 
 
@@ -1049,11 +1055,17 @@ def render_monthly_financial_summary(summary: dict[str, Any], run_month: str | N
     ]
     if summary.get("lofty_curr_maintenance_reserve") is not None:
         lines.append(
-            f"- Lofty-held current maintenance reserve: {format_money(summary.get('lofty_curr_maintenance_reserve'))}"
+            f"- Lofty maintenance reserve balance: {format_money(summary.get('lofty_curr_maintenance_reserve'))}"
         )
-    lines.append(f"- ECO GL Column E sum: {format_money(summary.get('eco_gl_column_e_sum'))}")
-    if summary.get("eco_gl_column_e_row_count") is not None:
-        lines[-1] += f" ({int(summary.get('eco_gl_column_e_row_count') or 0)} rows)"
+    lines.append(
+        "- ECO Net DAO Funds (spendable cash held by ECO): "
+        f"{format_money(summary.get('eco_held_unrestricted_cash'))}"
+    )
+    if summary.get("open_accrued_obligations_status") == "ok":
+        lines.append(
+            "- Recorded unpaid obligations (not spendable cash): "
+            f"{format_money(summary.get('open_accrued_obligations'))}"
+        )
     return "\n".join(lines)
 
 

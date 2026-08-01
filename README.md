@@ -20,6 +20,17 @@ This repository intentionally excludes credentials, browser profiles, cookies, M
 
 The full data and approval flow is documented in [Workflow](docs/WORKFLOW.md). The optional local-model observer is documented in [Local CPAI control plane](docs/LOCAL_CPAI.md).
 
+## DAO cash and intercompany labels
+
+Investor-facing summaries deliberately separate custody from debt:
+
+- **ECO-held DAO Cash (Gross)** is transaction-backed DAO cash currently in an ECO-controlled bank account.
+- **Less: Accrued but Unpaid Obligations** is the recorded restricted portion of that custody cash.
+- **ECO Net DAO Funds (spendable)** is the nonnegative remainder available to the DAO after those obligations.
+- **DAO A/P - Due to ECO for Verified Advances** is cash ECO paid for the DAO in excess of DAO cash credits. It is simultaneously **ECO A/R - Due from DAO** and is never presented as negative cash.
+
+The property GL Column E total remains an internal accounting control that can contain accruals and non-cash rows. It is not a bank balance, custody balance, or investor-facing cash measure.
+
 ## Safety model
 
 - Every job starts from an already authenticated, visible Baselane browser session. This repository does not store or automate credentials, MFA codes, CAPTCHA solving, cookies, or browser-profile state.

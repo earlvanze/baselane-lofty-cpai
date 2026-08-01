@@ -1,0 +1,85 @@
+{
+  "properties": [
+    {
+      "enabled": true,
+      "property_full": "1456 W 85th St, Cleveland, OH 44102",
+      "property_short": "1456 W 85th St",
+      "baselane_property": "1456 W 85th St.",
+      "baselane_property_id": "81428",
+      "id_prefix": "aligned-1456-w-85th-st-cleveland-oh-4410",
+      "transition_date": "2025-05-06",
+      "property_aliases": [
+        "1456 W 85th St",
+        "1456 W 85th",
+        "1456 West 85th",
+        "Cleveland, OH 44102"
+      ],
+      "search_roots": [
+        "/mnt/c/Users/digit/Dropbox/Real Estate/OH/1456 W 85th St, Cleveland, OH 44102/Public/07 - P&L & Owner Statements"
+      ],
+      "discovery_mode": "all_pdfs_in_search_roots",
+      "pdf_glob": "*.pdf",
+      "output_stem": "Aligned Owner Statement Transactions - 1456 W 85th St - 2024-2026",
+      "existing_manifest_paths": [
+        "/home/digit/.openclaw/workspace/reports/aligned-baselane-import-1456w85-20260702T140555Z/created_transactions_manifest.json"
+      ],
+      "existing_manifest_dirs": [
+        "/home/digit/.openclaw/workspace/reports/aligned-owner-statement-import-manifests"
+      ],
+      "converter_script": "/mnt/c/Users/digit/Dropbox/Projects/cyber-gateway/config/openclaw/workspace-discord-public/scripts/convert_1456_w85_aligned_owner_statements.py"
+    },
+    {
+      "enabled": false,
+      "disabled_reason": "2026-07-16 user correction: 1456 W 85th St is the last Aligned property remaining; this property is not in scope for Aligned clearing imports.",
+      "property_full": "1278 E 187th St, Cleveland, OH 44110",
+      "property_short": "1278 E 187th St",
+      "baselane_property": "1278 E 187th St",
+      "baselane_property_id": "93597",
+      "id_prefix": "aligned-1278-e-187th-st-cleveland-oh-441",
+      "transition_date": "2025-05-06",
+      "property_aliases": [
+        "1278 E 187th St",
+        "1278 E 187th",
+        "1278 East 187th",
+        "Cleveland, OH 44110"
+      ],
+      "search_roots": [
+        "/mnt/c/Users/digit/Dropbox/Real Estate/OH/1278 E 187th St, Cleveland, OH 44110/Public/07 - P&L & Owner Statements"
+      ],
+      "discovery_mode": "all_pdfs_in_search_roots",
+      "pdf_glob": "*.pdf",
+      "output_stem": "Aligned Owner Statement Transactions - 1278 E 187th St - 2025-2026",
+      "existing_manifest_paths": [],
+      "existing_manifest_dirs": [
+        "/home/digit/.openclaw/workspace/reports/aligned-owner-statement-import-manifests"
+      ],
+      "converter_script": "/mnt/c/Users/digit/Dropbox/Projects/cyber-gateway/config/openclaw/workspace-discord-public/scripts/convert_1456_w85_aligned_owner_statements.py"
+    },
+    {
+      "enabled": false,
+      "disabled_reason": "2026-07-16 user correction: 1456 W 85th St is the last Aligned property remaining; Evernest is a legacy PM and must not be imported through the Aligned clearing workflow.",
+      "property_full": "8708 Willard Ave, Cleveland, OH 44102",
+      "property_short": "8708 Willard Ave",
+      "baselane_property": "8708 Willard Ave",
+      "baselane_property_id": "81779",
+      "id_prefix": "aligned-8708-willard-ave-cleveland-oh-44",
+      "transition_date": "2025-05-06",
+      "property_aliases": [
+        "8708 Willard Ave",
+        "8708 Willard Avenue",
+        "Cleveland, OH 44102"
+      ],
+      "search_roots": [
+        "/mnt/c/Users/digit/Dropbox/Real Estate/OH/8708 Willard Ave, Cleveland, OH 44102/Public/07 - P&L & Owner Statements"
+      ],
+      "discovery_mode": "all_pdfs_in_search_roots",
+      "pdf_glob": "*.pdf",
+      "output_stem": "Aligned Owner Statement Transactions - 8708 Willard Ave - 2025-2026",
+      "existing_manifest_paths": [],
+      "existing_manifest_dirs": [
+        "/home/digit/.openclaw/workspace/reports/aligned-owner-statement-import-manifests"
+      ],
+      "converter_script": "/mnt/c/Users/digit/Dropbox/Projects/cyber-gateway/config/openclaw/workspace-discord-public/scripts/convert_1456_w85_aligned_owner_statements.py"
+    }
+  ]
+}

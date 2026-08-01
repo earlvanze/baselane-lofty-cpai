@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -117,6 +118,7 @@ OVERRIDES = {
     "1518 Dille Rd.": "OH/Ohio 3-Property Package",
     "1518 Dille Road": "OH/Ohio 3-Property Package",
     "16713 Lotus Drive": "OH/APG/16713 Lotus Drive",
+    "4318 Clybourne Ave": "OH/4318 Clybourne Ave, Cleveland, OH 44109",
     "4183 E 146 St": "OH/LFTY0148 4183 E 146th St. Cleveland, OH 44128",
 }
 
@@ -527,10 +529,18 @@ def is_eco_company_dao_fee_revenue(row: Dict[str, str]) -> bool:
     notes = str(row.get("Notes") or "")
     if not DAO_ECO_ACCRUAL_NOTE.match(notes):
         return False
+    row_type = str(row.get("Type") or "").strip()
+    category = str(row.get("Category") or "").strip()
+    sub_category = str(row.get("Sub-category") or "").strip()
+    generated_classification = row_type == "Revenue" and category == "Fees & Other Revenue"
+    baselane_export_classification = (
+        row_type == "Manual"
+        and category == "Revenue"
+        and sub_category == "Fees & Other Revenue"
+    )
     return (
         abs(safe_float(row.get("Amount")) - 62.5) <= 0.001
-        and str(row.get("Type") or "").strip() == "Revenue"
-        and str(row.get("Category") or "").strip() == "Fees & Other Revenue"
+        and (generated_classification or baselane_export_classification)
         and str(row.get("Merchant") or "").strip().startswith(DAO_ECO_REVENUE_PREFIX)
         and str(row.get("Description") or "").strip().startswith(DAO_ECO_REVENUE_PREFIX)
     )
@@ -1369,15 +1379,34 @@ def apply_mortgage_statement_splits(prop: str, rows: List[Dict[str, str]], root_
         if paid_total is not None and abs(abs(safe_float(row.get("Amount"))) - float(paid_total)) > 1.0:
             transformed.append(row)
             continue
+        if not dao_pays_mortgage_principal_interest(prop):
+            transfer = dict(row)
+            transfer["Category"] = "Transfers Between Accounts"
+            if "Sub-category" in transfer:
+                transfer["Sub-category"] = "Transfers Between Accounts"
+            transfer["Type"] = "Transfers & Other"
+            transformed.append(transfer)
+            applied.append(
+                {
+                    "property": prop,
+                    "year": ym[0],
+                    "month": ym[1],
+                    "parent_amount": round(safe_float(row.get("Amount")), 2),
+                    "child_count": 0,
+                    "statement_path": statement.get("statement_path"),
+                    "statement_component_source": statement.get("statement_component_source"),
+                    "cash_basis_transfer": True,
+                }
+            )
+            continue
         insurance, taxes = citadel_escrow_components(rows, ym[0], ym[1], float(statement["paid_escrow"]))
         children = []
-        if dao_pays_mortgage_principal_interest(prop):
-            children.extend(
-                [
-                    split_child_row(row, -float(statement["paid_principal"]), "Mortgage Principal Payments", f"{prop} Mortgage Principal"),
-                    split_child_row(row, -float(statement["paid_interest"]), "Mortgage Interest Payments", f"{prop} Mortgage Interest"),
-                ]
-            )
+        children.extend(
+            [
+                split_child_row(row, -float(statement["paid_principal"]), "Mortgage Principal Payments", f"{prop} Mortgage Principal"),
+                split_child_row(row, -float(statement["paid_interest"]), "Mortgage Interest Payments", f"{prop} Mortgage Interest"),
+            ]
+        )
         paid_fees = float(statement.get("paid_fees") or 0.0)
         if paid_fees > CONFLICT_THRESHOLD:
             children.append(split_child_row(row, -paid_fees, "Mortgage Payments", f"{prop} Mortgage Fees"))
@@ -1441,13 +1470,22 @@ def public_ledger_rows(fieldnames: List[str], rows: List[Dict[str, str]]) -> tup
 
 def write_property_csv(out_path: str, fieldnames: List[str], rows: List[Dict[str, str]]) -> None:
     target = Path(out_path)
-    tmp_path = target.with_name(f".{target.name}.tmp.{os.getpid()}")
     filtered_fieldnames, filtered_rows = public_ledger_rows(fieldnames, rows)
+    # Dropbox can lock a newly created temp file before the copy/unlink cycle
+    # completes. Stage on ext4 and copy only the completed artifact upstream.
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        newline="",
+        prefix=f".{target.name}.tmp.",
+        suffix=".csv",
+        delete=False,
+    ) as wf:
+        tmp_path = Path(wf.name)
+        writer = csv.DictWriter(wf, fieldnames=filtered_fieldnames)
+        writer.writeheader()
+        writer.writerows(filtered_rows)
     try:
-        with open(tmp_path, "w", encoding="utf-8", newline="") as wf:
-            writer = csv.DictWriter(wf, fieldnames=filtered_fieldnames)
-            writer.writeheader()
-            writer.writerows(filtered_rows)
         copied = subprocess.run(["cp", "-f", str(tmp_path), str(target)], text=True, capture_output=True)
         if copied.returncode != 0:
             raise OSError(f"cp failed for {target}: {copied.stderr.strip()}")

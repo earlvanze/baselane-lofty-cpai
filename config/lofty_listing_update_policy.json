@@ -108,6 +108,7 @@
   "operational_ignore_listing_updates": [
     {
       "address": "1 Coolwood Dr, Little Rock, AR 72202",
+      "split_exclude": true,
       "reason": "owned by a separate workspace; exclude from this workspace's cash-flow, listing, Discord, and owner-email workflow"
     },
     {

@@ -14,7 +14,7 @@ This repository is the finance-control plane for Baselane → ECO Systems → DA
 - Preserve double-entry logic: every inter-entity accrual, receivable, payable, loan, or settlement needs the appropriate reciprocal recognition. Cash movement and manual/accounting rows are separate facts.
 - Never double-count PM fees. Calculate the contractual fee from gross revenue only when the management platform did not already withhold/remit it; do not treat a bookkeeping "less platform fee" profit note as a DAO credit.
 - Use category 24, `Transfers Between Accounts`, on both mirrors of an internal Baselane cash movement. Decompose material transfers with native split components so month and purpose remain auditable.
-- `cash_shortfall` is a reconciliation diagnostic, never an autonomous transfer instruction or proof of an account payable.
+- `cash_shortfall` is a reconciliation diagnostic, never an autonomous transfer instruction or proof of an account payable. A DAO payable to ECO exists only when the ID-bearing ECO-account intercompany subledger verifies that ECO advanced cash for that DAO; recognize the same amount as ECO's reciprocal receivable and never net it against ECO-held DAO cash.
 - Do not reallocate pooled ECO/Aligned cash to a DAO merely because a transaction has a property tag. Dedicated account ownership is governed by `config/baselane_bank_account_classification_overrides.json`.
 - Preserve accrued tax, insurance, vendor, mortgage, and reserve obligations. Do not lend, distribute, or sweep cash that supports a recorded obligation.
 - Sold-property operating accruals that are no longer payable may be cancelled only with sale evidence and an audit trail. A remaining sold-property negative balance is an escalation, not a cleanup opportunity.

@@ -402,6 +402,7 @@ ANNUAL_REFERENCE_FIXED_ACCRUALS: set[tuple[str, str]] = {
 }
 
 NO_FIXED_ACCRUAL_TEMPLATE_REQUIRED: dict[str, str] = {
+    "6914 Polonia Ave, Cleveland, OH 44105": "sold property; no synthetic tax, insurance, PM, or DAO LLC fee accruals",
     "49 Bannbury Ln, Palm Coast, FL 32137": "existing ledger activity has direct tax/license, management fee, mortgage interest, and rent rows; fixed monthly accrual amounts not established",
     "804 S Quitman St, Denver, CO 80219": "rehab/development property with direct expense and financing rows; fixed monthly accrual amounts not established",
     "9902 Garfield Ave, Cleveland, Ohio 44108": "ledger shows direct insurance/legal/loan/sale activity; fixed monthly accrual amounts not established",
@@ -700,6 +701,49 @@ def parse_row_date(row: dict[str, str]) -> dt.date | None:
     return None
 
 
+def parse_reporting_cutoff(value: str | None) -> dt.date | None:
+    if not value:
+        return None
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"reporting cutoff date must be YYYY-MM-DD, got {value!r}"
+        ) from exc
+
+
+def rows_through_reporting_cutoff(
+    rows: list[dict[str, str]],
+    cutoff: dt.date | None,
+    target_months: list[str],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Exclude later ordinary transactions while retaining target-month AOPS rows."""
+    if cutoff is None:
+        return list(rows), []
+
+    target_month_set = set(target_months)
+    included: list[dict[str, str]] = []
+    excluded: list[dict[str, str]] = []
+    for row in rows:
+        row_date = parse_row_date(row)
+        if row_date is None or row_date <= cutoff:
+            included.append(row)
+            continue
+
+        notes = str(row.get("Notes") or "").strip()
+        marker = parse_marker(notes) or parse_pm_fee_marker(notes)
+        row_month = f"{row_date.year:04d}-{row_date.month:02d}"
+        if (
+            notes.upper().startswith("AOPS-")
+            and row_month in target_month_set
+            and (marker is None or marker["month"] == row_month)
+        ):
+            included.append(row)
+            continue
+        excluded.append(row)
+    return included, excluded
+
+
 def is_rent_revenue(row: dict[str, str], amount: float) -> bool:
     if amount <= 0:
         return False
@@ -814,6 +858,8 @@ def load_hemlane_pm_fee_basis(path: Path | None, target_month: str) -> tuple[dic
     basis: dict[str, dict[str, Any]] = {}
     for property_name, rate, _prefix in PM_FEE_PROPERTIES:
         rent_amount = Decimal("0.00")
+        rent_success_amount = Decimal("0.00")
+        rent_success_evidence_count = 0
         pm_fee_amount = Decimal("0.00")
         rent_ids: list[str] = []
         pm_fee_ids: list[str] = []
@@ -826,6 +872,9 @@ def load_hemlane_pm_fee_basis(path: Path | None, target_month: str) -> tuple[dic
                 continue
             if hemlane_category_text_is_rent(category_text):
                 rent_amount += request_amount
+                if "success_amount" in tx:
+                    rent_success_evidence_count += 1
+                    rent_success_amount += decimal_amount(tx.get("success_amount"))
                 if tx.get("id"):
                     rent_ids.append(str(tx["id"]))
             elif "management" in category_text and "fee" in category_text:
@@ -839,6 +888,8 @@ def load_hemlane_pm_fee_basis(path: Path | None, target_month: str) -> tuple[dic
             "property": property_name,
             "month": target_month,
             "rent_request_amount": round_money(rent_amount),
+            "rent_success_amount": round_money(rent_success_amount),
+            "rent_success_evidence_count": rent_success_evidence_count,
             "pm_fee_request_amount": round_money(pm_fee_amount),
             "computed_pm_fee_amount": round_money(amount),
             "rent_transaction_ids": rent_ids,
@@ -1677,13 +1728,31 @@ def find_amount_mismatches(
         elif kind == RETAINED_CAPITAL_RULE["kind"] and canonical_reserve_property(property_name):
             expected_label = f"OR Replenishment | {property_name} | {month_label(target_month)}"
             expected_note = retained_capital_note(property_name, target_month, expected, retained_summary)
+            description = str(row.get("Description") or "")
+            classification_ok = (
+                str(row.get("Type") or "") == "Transfers & Other"
+                and str(row.get("Category") or "") == "Owner Contributions/Distributions"
+            ) or (
+                str(row.get("Type") or "") == "Manual"
+                and str(row.get("Category") or "") == "Transfers & Other"
+                and str(row.get("Sub-category") or "") == "Owner Contributions/Distributions"
+            )
+            canonical_note_prefix = (
+                f"{RETAINED_CAPITAL_RULE['source_prefix']}|{RETAINED_CAPITAL_RULE['kind']}|"
+                f"{property_name}|{target_month}|{expected:.2f} | "
+            )
+            policy_snapshot_ok = (
+                notes.startswith(canonical_note_prefix)
+                and "Outstanding cash reserve settlement requirement" in notes
+            )
             stale_retained_rule = any(
                 (
                     str(row.get("Merchant") or "") != expected_label,
-                    str(row.get("Description") or "") != expected_label,
-                    str(row.get("Type") or "") != "Transfers & Other",
-                    str(row.get("Category") or "") != "Owner Contributions/Distributions",
-                    notes != expected_note,
+                    # Baselane's export leaves Description blank for manual
+                    # transactions even when merchantName is canonical.
+                    description not in {"", expected_label},
+                    not classification_ok,
+                    not policy_snapshot_ok,
                 )
             )
             if retained_summary.get("approved_exception"):
@@ -2132,6 +2201,20 @@ def pm_fee_basis_gaps(
             # Hemlane remits these receipts after withholding its PM split.
             # The positive bank receipt is evidence of rent activity, while a
             # second manual PM accrual would duplicate the withheld fee.
+            continue
+        hemlane_basis = HEMLANE_PM_FEE_BASIS.get(property_name) or {}
+        rent_ids = hemlane_basis.get("rent_transaction_ids") or []
+        if (
+            hemlane_basis.get("month") == target_month
+            and float(hemlane_basis.get("rent_request_amount") or 0) > 0
+            and int(hemlane_basis.get("rent_success_evidence_count") or 0) == len(rent_ids)
+            and len(rent_ids) > 0
+            and float(hemlane_basis.get("rent_success_amount") or 0) == 0
+        ):
+            # The full Baselane ledger has no rent basis and Hemlane explicitly
+            # reports zero successful collection for every scheduled rent row.
+            # A zero PM marker is deterministic; carrying prior rent forward
+            # would create an expense and ECO revenue that never occurred.
             continue
         previous = previous_month(target_month)
         previous_gross_rent = property_gross_revenue(rows, property_name, previous)
@@ -3219,6 +3302,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--month", type=str, default=None, help="Target month YYYY-MM (default: previous month)")
     parser.add_argument("--start-month", type=str, default=None, help="Inclusive start month YYYY-MM for range backfill")
     parser.add_argument("--end-month", type=str, default=None, help="Inclusive end month YYYY-MM for range backfill")
+    parser.add_argument(
+        "--reporting-cutoff-date",
+        default=os.environ.get("BASELANE_REPORTING_CUTOFF_DATE"),
+        help="Exclude ordinary transactions after YYYY-MM-DD while retaining same-month AOPS synthetic rows",
+    )
     parser.add_argument("--property", dest="property_filters", action="append", default=None, help="Limit to property template/address substring; may be repeated")
     parser.add_argument("--kind", dest="kind_filters", action="append", default=None, help="Limit to accrual kind, e.g. taxes, insurance, dao, pm; may be repeated")
     parser.add_argument("--active-property-map", type=Path, default=None, help="JSON property map used to require accrual template coverage for active DAOs")
@@ -3317,6 +3405,16 @@ def main(argv: list[str] | None = None) -> int:
             "--lofty-reserve-snapshot is missing co-ownership properties: "
             + ", ".join(missing_lofty_reserves)
         )
+    months = iter_months(args.start_month, args.end_month) if args.start_month else [args.month or default_target_month()]
+    target_month = months[0]
+    try:
+        reporting_cutoff = parse_reporting_cutoff(args.reporting_cutoff_date)
+    except ValueError as exc:
+        parser.error(str(exc))
+    working_rows, post_cutoff_excluded_rows = rows_through_reporting_cutoff(
+        rows, reporting_cutoff, months
+    )
+
     pm_rate_schedule = {
         "path": str(args.pm_rate_schedule) if args.pm_rate_schedule else None,
         "status": "review",
@@ -3326,10 +3424,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.pm_rate_schedule:
         if not args.pm_rate_schedule.is_file():
             parser.error(f"--pm-rate-schedule not found: {args.pm_rate_schedule}")
-        PM_FEE_PROPERTIES, pm_rate_schedule = pm_fee_properties_from_schedule(args.pm_rate_schedule, gl_rows=rows)
-
-    months = iter_months(args.start_month, args.end_month) if args.start_month else [args.month or default_target_month()]
-    target_month = months[0]
+        PM_FEE_PROPERTIES, pm_rate_schedule = pm_fee_properties_from_schedule(
+            args.pm_rate_schedule, gl_rows=working_rows
+        )
     global HEMLANE_PM_FEE_BASIS
     hemlane_pm_fee_basis_report = {
         "path": str(args.hemlane_live_transactions) if args.hemlane_live_transactions else None,
@@ -3343,7 +3440,6 @@ def main(argv: list[str] | None = None) -> int:
     active_properties = load_active_property_map(args.active_property_map)
     active_without_templates = find_active_properties_without_accrual_templates(active_properties)
     active_without_fixed_requirement = active_properties_without_fixed_accrual_requirement(active_properties)
-    working_rows = list(rows)
     month_reports = []
     all_new_rows: list[dict[str, str]] = []
     all_mismatches: list[dict[str, Any]] = []
@@ -3560,6 +3656,18 @@ def main(argv: list[str] | None = None) -> int:
         "month_label": month_label(target_month) if len(months) == 1 else None,
         "gl_csv": str(args.gl_csv),
         "gl_source_sha256": gl_source_sha256,
+        "reporting_cutoff_date": reporting_cutoff.isoformat() if reporting_cutoff else None,
+        "post_cutoff_excluded_row_count": len(post_cutoff_excluded_rows),
+        "post_cutoff_excluded_rows": [
+            {
+                "date": row.get("Date", ""),
+                "property": row.get("Property", ""),
+                "amount": row.get("Amount", ""),
+                "merchant": row.get("Merchant", ""),
+                "description": row.get("Description", ""),
+            }
+            for row in post_cutoff_excluded_rows
+        ],
         "retained_capital_approved_exceptions": {
             "path": str(args.retained_capital_approved_exceptions),
             "sha256": ledger_sha256(args.retained_capital_approved_exceptions),
@@ -3663,7 +3771,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.apply and (all_new_rows or all_updated_amount_mismatches):
         try:
             if args.update_amount_mismatches:
-                write_gl(args.gl_csv, working_rows, fieldnames, expected_sha256=gl_source_sha256)
+                write_gl(
+                    args.gl_csv,
+                    rows + all_new_rows,
+                    fieldnames,
+                    expected_sha256=gl_source_sha256,
+                )
             else:
                 append_rows_to_gl(args.gl_csv, all_new_rows, fieldnames, expected_sha256=gl_source_sha256)
         except RuntimeError as exc:

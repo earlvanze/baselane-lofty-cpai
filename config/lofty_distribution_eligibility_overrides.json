@@ -35,6 +35,12 @@
       "run_month": "2026-06",
       "eligible": false,
       "reason": "scoped_dao_reconciliation_final_20260714: ECO debt $4,970.11"
+    },
+    {
+      "property_name": "1432 Sara Ave",
+      "run_month": "2026-07",
+      "eligible": false,
+      "reason": "approved governance update retains 100% of NOI for loan balances and capital calls"
     }
   ],
   "source_report": "reports/scoped_dao_reconciliation_final_20260714.md",

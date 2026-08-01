@@ -1,41 +1,7 @@
 {
-  "approval_count": 1,
-  "approvals": [
-    {
-      "approval_effect": "waive_pm_accrual_for_month_only_no_cash_transfer",
-      "current_implied_pm_fee_amount": 0.0,
-      "current_month_gross_rent": 0.0,
-      "decision": "approve_zero_pm_fee",
-      "evidence": {
-        "action": "verify_missing_rent_or_approve_zero_pm",
-        "current_month_gross_rent": 0.0,
-        "key": "917 Pawnee Ave, Memphis, TN 38109|pm",
-        "kind": "pm",
-        "month": "2026-07",
-        "previous_month": "2026-06",
-        "previous_month_gross_rent": 2335.0,
-        "property": "917 Pawnee Ave, Memphis, TN 38109"
-      },
-      "evidence_digest": "f7277d367a74dd9af4c6c9c246888ca7df80aafd2cc9104edd6876a87959abb2",
-      "key": "917 Pawnee Ave, Memphis, TN 38109|pm",
-      "kind": "pm",
-      "month": "2026-07",
-      "note": "Set reviewed=true only after confirming current-month rent is truly zero and no Baselane/APG/Evernest rent rows are missing or mis-tagged.",
-      "previous_month": "2026-06",
-      "previous_month_gross_rent": 2335.0,
-      "previous_month_implied_pm_fee_amount": 233.5,
-      "property": "917 Pawnee Ave, Memphis, TN 38109",
-      "required_review_evidence": [
-        "Baselane current-month GL/rent rows checked for this property and aliases",
-        "APG/Evernest/current PM portal or owner statement checked when applicable",
-        "No current-month rent was expected or collected, or missing/mistagged rent rows were corrected upstream"
-      ],
-      "review_note_template": "Checked Baselane/APG/Evernest for {month}; no rent rows were missing or mistagged because ...",
-      "reviewed": false,
-      "reviewed_at": null
-    }
-  ],
-  "generated_at": "2026-07-30T02:16:09Z",
+  "approval_count": 0,
+  "approvals": [],
+  "generated_at": "2026-08-01T06:02:30Z",
   "policy": "Human review scaffold only. Reviewed approvals are non-mutating and only waive zero-rent PM fee accrual generation for the listed month/key. Reviewed approvals must retain the current evidence_digest or they are rejected as stale.",
-  "status": "review_required"
+  "status": "ok"
 }

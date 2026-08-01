@@ -8,11 +8,14 @@ same authenticated browser session used by the daily sync workflow.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -20,6 +23,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 GRAPHQL_HELPER = ROOT / "scripts" / "baselane_graphql_via_cdp.js"
+PIPELINE_LOCK = ROOT / "scripts" / ".baselane_source_pipeline.lock"
 
 ALAWA_PROPERTY_ID = "73461"
 MINING_PROPERTY_ID = "37648"
@@ -29,6 +33,7 @@ TAG_MORTGAGE_PAYMENT = "33"
 TAG_INSURANCE = "8"
 TAG_TAXES = "15"
 TAG_GENERAL_ESCROW = "130"
+TAG_CITY_STATE_LOCAL_TAXES = "95"
 NO_DAO_MORTGAGE_DEBT_TAG_IDS = {TAG_MORTGAGE_INTEREST, TAG_MORTGAGE_PRINCIPAL, TAG_MORTGAGE_PAYMENT, TAG_GENERAL_ESCROW}
 
 BAD_NOTES = {"*SPLIT*", "hidden after mortgage component split"}
@@ -109,6 +114,51 @@ TARGET_SPLITS: dict[str, list[dict[str, Any]]] = {
             "date": "2026-06-26",
         },
     ],
+    "321949940": [
+        {
+            "amount": -1479.65,
+            "tagId": TAG_MORTGAGE_INTEREST,
+            "propertyId": MINING_PROPERTY_ID,
+            "merchantName": "85-104 Alawa Pl Mortgage Interest",
+            "date": "2026-07-29",
+        },
+        {
+            "amount": -1364.06,
+            "tagId": TAG_MORTGAGE_PRINCIPAL,
+            "propertyId": MINING_PROPERTY_ID,
+            "merchantName": "85-104 Alawa Pl Mortgage Principal",
+            "date": "2026-07-29",
+        },
+        {
+            "amount": -280.45,
+            "tagId": TAG_TAXES,
+            "propertyId": ALAWA_PROPERTY_ID,
+            "merchantName": "85-104 Alawa Pl Mortgage Escrow - Property Taxes",
+            "date": "2026-07-29",
+        },
+        {
+            "amount": -187.88,
+            "tagId": TAG_INSURANCE,
+            "propertyId": ALAWA_PROPERTY_ID,
+            "merchantName": "85-104 Alawa Pl Mortgage Escrow - Insurance",
+            "date": "2026-07-29",
+        },
+        {
+            "amount": -300.66,
+            "tagId": TAG_GENERAL_ESCROW,
+            "propertyId": MINING_PROPERTY_ID,
+            "merchantName": "85-104 Alawa Pl Mortgage Escrow - General",
+            "date": "2026-07-29",
+        },
+    ],
+}
+
+LEGACY_COMPONENT_BY_ABS_AMOUNT = {
+    Decimal("1319.12"): (MINING_PROPERTY_ID, TAG_MORTGAGE_PRINCIPAL),
+    Decimal("1524.59"): (MINING_PROPERTY_ID, TAG_MORTGAGE_INTEREST),
+    Decimal("141.56"): (ALAWA_PROPERTY_ID, TAG_CITY_STATE_LOCAL_TAXES),
+    Decimal("58.58"): (ALAWA_PROPERTY_ID, TAG_INSURANCE),
+    Decimal("135.74"): (MINING_PROPERTY_ID, TAG_GENERAL_ESCROW),
 }
 
 
@@ -246,6 +296,18 @@ def split_matches(parent: dict[str, Any], target: list[dict[str, Any]]) -> bool:
     return normalized_components(children) == normalized_components(target)
 
 
+def duplicate_child_ids(parent: dict[str, Any], target: list[dict[str, Any]]) -> list[str]:
+    remaining = list(normalized_components(target))
+    extras: list[str] = []
+    for child in active_children(parent):
+        component = normalized_components([child])[0]
+        if component in remaining:
+            remaining.remove(component)
+        else:
+            extras.append(str(child["id"]))
+    return extras if not remaining else []
+
+
 def mutation_split(parent_id: str, splits: list[dict[str, Any]]) -> dict[str, Any]:
     payload = {
         "operationName": "createOrUpdateSplitTx",
@@ -318,6 +380,44 @@ def mutation_update_notes(transaction_ids: list[str]) -> list[dict[str, Any]]:
     return mutation_update_transactions([{"id": str(tx_id), "note": ""} for tx_id in transaction_ids])
 
 
+def expected_component(row: dict[str, Any]) -> tuple[str, str] | None:
+    merchant = " ".join(str(row.get("merchantName") or "").lower().split())
+    if "mortgage interest" in merchant:
+        return MINING_PROPERTY_ID, TAG_MORTGAGE_INTEREST
+    if "mortgage principal" in merchant:
+        return MINING_PROPERTY_ID, TAG_MORTGAGE_PRINCIPAL
+    if "escrow - property taxes" in merchant:
+        return ALAWA_PROPERTY_ID, TAG_TAXES
+    if "escrow - insurance" in merchant:
+        return ALAWA_PROPERTY_ID, TAG_INSURANCE
+    if "escrow - general" in merchant:
+        return MINING_PROPERTY_ID, TAG_GENERAL_ESCROW
+    if merchant == "loandepot" and row.get("parentId"):
+        return LEGACY_COMPONENT_BY_ABS_AMOUNT.get(abs(decimal_amount(row.get("amount") or "0")))
+    return None
+
+
+def plan_digest(plan: dict[str, Any]) -> str:
+    payload = {
+        "split_actions": plan["split_actions"],
+        "note_ids": plan["note_ids"],
+        "property_fix_inputs": plan["property_fix_inputs"],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@contextmanager
+def exclusive_pipeline_lock():
+    PIPELINE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with PIPELINE_LOCK.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def build_plan() -> dict[str, Any]:
     parents = {parent_id: query_parent(parent_id) for parent_id in TARGET_SPLITS}
     loan_depot_rows = query_transactions()
@@ -345,6 +445,14 @@ def build_plan() -> dict[str, Any]:
             continue
         if split_matches(parent, target):
             split_actions.append({"parent_id": parent_id, "action": "already_split"})
+        elif extras := duplicate_child_ids(parent, target):
+            split_actions.append(
+                {
+                    "parent_id": parent_id,
+                    "action": "delete_duplicate_children",
+                    "transaction_ids": sorted(extras, key=int),
+                }
+            )
         else:
             split_actions.append({"parent_id": parent_id, "action": "split", "target": target})
         if note_text(parent.get("note")) in BAD_NOTES:
@@ -354,14 +462,13 @@ def build_plan() -> dict[str, Any]:
                 note_ids.add(str(child["id"]))
 
     for row in loan_depot_rows:
+        if str(row.get("parentId") or "") in TARGET_SPLITS:
+            continue
         tag_id = str(row.get("tagId") or "")
         property_id = str(row.get("propertyId") or "")
-        target_property_id: str | None | object = NO_PROPERTY_FIX
-        if tag_id in {TAG_TAXES, TAG_INSURANCE} and property_id != ALAWA_PROPERTY_ID:
-            target_property_id = ALAWA_PROPERTY_ID
-        elif tag_id in NO_DAO_MORTGAGE_DEBT_TAG_IDS and property_id and property_id != MINING_PROPERTY_ID:
-            target_property_id = MINING_PROPERTY_ID
-        if target_property_id is not NO_PROPERTY_FIX:
+        expected = expected_component(row)
+        if expected and (property_id, tag_id) != expected:
+            target_property_id, target_tag_id = expected
             property_issues.append(
                 {
                     "id": row.get("id"),
@@ -370,6 +477,7 @@ def build_plan() -> dict[str, Any]:
                     "tagId": tag_id,
                     "propertyId": property_id,
                     "targetPropertyId": target_property_id,
+                    "targetTagId": target_tag_id,
                     "merchantName": row.get("merchantName"),
                 }
             )
@@ -382,7 +490,12 @@ def build_plan() -> dict[str, Any]:
         "property_issues": property_issues,
         "property_fix_inputs": sorted(
             (
-                {"id": str(item["id"]), "propertyId": item.get("targetPropertyId")}
+                {
+                    "id": str(item["id"]),
+                    "propertyId": item.get("targetPropertyId"),
+                    "tagId": item.get("targetTagId"),
+                    "isReviewedByUser": True,
+                }
                 for item in property_issues
             ),
             key=lambda item: int(item["id"]),
@@ -392,8 +505,21 @@ def build_plan() -> dict[str, Any]:
 
 
 def apply_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    applied: dict[str, Any] = {"splits": [], "notes": [], "errors": []}
+    applied: dict[str, Any] = {"splits": [], "duplicate_deletes": [], "notes": [], "errors": []}
     for action in plan["split_actions"]:
+        if action["action"] == "delete_duplicate_children":
+            try:
+                applied["duplicate_deletes"].extend(
+                    mutation_update_transactions(
+                        [
+                            {"id": tx_id, "isDeleted": True, "isReviewedByUser": True}
+                            for tx_id in action["transaction_ids"]
+                        ]
+                    )
+                )
+            except Exception as exc:
+                applied["errors"].append({"parent_id": action["parent_id"], "error": str(exc)})
+            continue
         if action["action"] != "split":
             continue
         try:
@@ -420,16 +546,27 @@ def main(argv: list[str]) -> int:
     mode.add_argument("--dry-run", action="store_true", help="show planned fixes without writes")
     parser.add_argument("--report", type=Path, default=ROOT / "reports" / "baselane_alawa_loandepot_cleanup_report.json")
     parser.add_argument("--json", action="store_true", help="print JSON report")
+    parser.add_argument("--require-plan-digest", help="exact digest emitted by the live preview")
     args = parser.parse_args(argv)
 
     if not args.apply and not args.dry_run:
         args.dry_run = True
 
     plan = build_plan()
+    digest = plan_digest(plan)
     applied = None
     if args.apply:
-        applied = apply_plan(plan)
-        verify = build_plan()
+        if not args.require_plan_digest:
+            parser.error("--apply requires --require-plan-digest")
+        with exclusive_pipeline_lock():
+            plan = build_plan()
+            digest = plan_digest(plan)
+            if digest != args.require_plan_digest:
+                raise SystemExit(
+                    f"plan digest changed: expected {args.require_plan_digest}, current {digest}"
+                )
+            applied = apply_plan(plan)
+            verify = build_plan()
     else:
         verify = None
 
@@ -437,17 +574,21 @@ def main(argv: list[str]) -> int:
     if applied and applied.get("errors"):
         status = "failed"
     elif verify and (
-        any(action["action"] == "split" for action in verify["split_actions"])
+        any(action["action"] in {"split", "delete_duplicate_children"} for action in verify["split_actions"])
         or verify["note_ids"]
         or verify["property_issues"]
     ):
         status = "needs_review"
-    elif plan["property_issues"]:
+    elif (
+        any(action["action"] in {"split", "delete_duplicate_children"} for action in plan["split_actions"])
+        or plan["property_issues"]
+    ):
         status = "needs_review"
 
     report = {
         "status": status,
         "mode": "apply" if args.apply else "dry_run",
+        "plan_digest": digest,
         "plan": plan,
         "applied": applied,
         "verify": verify,

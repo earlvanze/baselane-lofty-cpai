@@ -4,10 +4,20 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+OPENCLAW_SCRIPTS = Path(
+    os.environ.get("OPENCLAW_WORKSPACE", Path(__file__).resolve().parents[3])
+) / "scripts"
+if OPENCLAW_SCRIPTS.is_dir():
+    # Keep this repository's monthly modules authoritative; shared OpenClaw
+    # scripts are fallback helpers (for example, the Discord route resolver).
+    sys.path.append(str(OPENCLAW_SCRIPTS))
 
 import post_property_update_discord as discord_route
 
@@ -45,9 +55,13 @@ FINANCIALS_SUMMARY_MARKERS = (
     "Financial summary from FINANCIALS.md:",
     "Financial summary as of ",
 )
-REQUIRED_FULL_GL_SUMMARY_SNIPPETS = (
+REQUIRED_SPENDABLE_CASH_SNIPPET = (
+    "ECO Net DAO Funds (spendable cash held by ECO)"
+)
+OBSOLETE_LEDGER_CASH_SNIPPETS = (
     "ECO Operating Cash is the full DAO-attributed Column E sum",
     "ECO General Ledger is the complete DAO-attributed Column E total",
+    "ECO GL Column E sum",
 )
 DISALLOWED_SUMMARY_SNIPPETS = (
     "This month's update is limited to verified cash-position data from Lofty and ECO records.",
@@ -157,8 +171,11 @@ def financial_summary_issue(record: dict[str, Any], plan_path: Path, run_month: 
     for snippet in DISALLOWED_SUMMARY_SNIPPETS:
         if snippet in text:
             return f"draft_contains_disallowed_limited_summary:{snippet}", text_source
-    if not any(snippet in text for snippet in REQUIRED_FULL_GL_SUMMARY_SNIPPETS):
-        return "draft_missing_complete_dao_gl_cash_policy", text_source
+    if REQUIRED_SPENDABLE_CASH_SNIPPET not in text:
+        return "draft_missing_verified_spendable_eco_cash", text_source
+    for snippet in OBSOLETE_LEDGER_CASH_SNIPPETS:
+        if snippet in text:
+            return f"draft_contains_obsolete_ledger_cash_wording:{snippet}", text_source
     return "", text_source
 
 

@@ -129,7 +129,7 @@ def query_parents(parent_ids: list[str]) -> dict[str, dict[str, Any]]:
               id amount date merchantName propertyId tagId bankAccountId note
               isSplit isDeleted parentId
               splitTransactions {{
-                id amount date merchantName propertyId tagId parentId isDeleted
+                id amount date merchantName propertyId tagId note parentId isDeleted
               }}
             }}
             """

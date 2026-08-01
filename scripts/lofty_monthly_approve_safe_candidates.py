@@ -102,19 +102,19 @@ def candidate_text_issues(text: str, section: str) -> list[str]:
         if not re.search(r"(?:\bas of\s+|\()\d{4}-\d{2}\b", text, re.I):
             issues.append("missing_as_of_month")
     if section == "financial":
-        complete_eco_gl_definitions = (
-            "ECO Operating Cash is the full DAO-attributed Column E sum",
-            "ECO General Ledger is the complete DAO-attributed Column E total",
+        misleading_definitions = (
+            "ECO Net DAO Funds is the full DAO-attributed Column E sum",
+            "ECO Net DAO Funds is the full property General Ledger net position",
+            "ECO Operating Cash is the current complete DAO-attributed total of Column E",
         )
-        generated_eco_gl_definition = (
-            "ECO Operating Cash is the current complete DAO-attributed total of Column E across every row "
-            "in the property-split ECO Systems GL, including accruals."
-        )
-        if not (
-            all(marker in text for marker in complete_eco_gl_definitions)
-            or generated_eco_gl_definition in text
-        ):
-            issues.append("missing_complete_eco_gl_definition")
+        if any(marker in text for marker in misleading_definitions):
+            issues.append("misleading_eco_net_dao_funds_definition")
+        if "ECO Net DAO Funds (spendable cash held by ECO)" not in text:
+            issues.append("missing_spendable_eco_cash_definition")
+        if re.search(r"ECO Net DAO Funds \(spendable cash held by ECO\)\s*\|\s*Pending reconciliation", text, re.I):
+            issues.append("eco_net_dao_funds_reconciliation_pending")
+        if re.search(r"Cash held by the mortgage servicer for taxes and insurance\s*\|\s*Pending reconciliation", text, re.I):
+            issues.append("mortgage_escrow_reconciliation_pending")
     return issues
 
 
@@ -616,6 +616,9 @@ def build_report(
         for packet_record in candidate_packet.get("records") or []:
             property_name = str(packet_record.get("property_name") or "").strip()
             property_key = normalized_key(property_name)
+            if packet_record.get("live_publish_excluded") is True:
+                excluded_properties.append(property_name)
+                continue
             if excluded_by_listing_update_policy(packet_record, exclusion_keys):
                 excluded_properties.append(property_name)
                 continue

@@ -153,6 +153,93 @@ def parse_date(value: str) -> str:
     raise ValueError(f"invalid date {value!r}")
 
 
+def normalized_text(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def planned_live_fingerprint(row: PlannedRow) -> tuple[str, str, Decimal, str, str]:
+    return (
+        row.property_id,
+        row.date,
+        row.amount,
+        normalized_text(row.merchant_name),
+        row.tag_id,
+    )
+
+
+def planned_manifest_fingerprint(row: PlannedRow) -> tuple[str, str, Decimal, str]:
+    return (
+        row.property_id,
+        row.date,
+        row.amount,
+        normalized_text(row.merchant_name),
+    )
+
+
+def manifest_row_fingerprint(row: dict[str, Any]) -> tuple[str, str, Decimal, str] | None:
+    try:
+        amount = parse_decimal(str(row.get("amount") or ""))
+        transaction_date = parse_date(str(row.get("date") or ""))
+    except ValueError:
+        return None
+    return (
+        str(row.get("propertyId") or ""),
+        transaction_date,
+        amount,
+        normalized_text(row.get("merchantName")),
+    )
+
+
+def live_transaction_fingerprint(row: dict[str, Any]) -> tuple[str, str, Decimal, str, str] | None:
+    try:
+        amount = parse_decimal(str(row.get("amount") or ""))
+        transaction_date = parse_date(str(row.get("date") or ""))
+    except ValueError:
+        return None
+    return (
+        str(row.get("propertyId") or ""),
+        transaction_date,
+        amount,
+        normalized_text(row.get("merchantName")),
+        str(row.get("tagId") or ""),
+    )
+
+
+def planned_ledger_fingerprint(row: PlannedRow) -> tuple[str, str, Decimal, str, str]:
+    return (
+        normalized_text(row.property_short),
+        row.date,
+        row.amount,
+        normalized_text(row.merchant_name),
+        normalized_text(row.rich_category),
+    )
+
+
+def existing_ledger_fingerprints(path: Path | None) -> set[tuple[str, str, Decimal, str, str]]:
+    if not path or not path.is_file():
+        return set()
+    fingerprints: set[tuple[str, str, Decimal, str, str]] = set()
+    with path.open(newline="", encoding="utf-8-sig", errors="ignore") as handle:
+        for row in csv.DictReader(handle):
+            if not key_from_note(str(row.get("Notes") or "")).startswith("aligned-"):
+                continue
+            try:
+                transaction_date = parse_date(str(row.get("Date") or ""))
+                amount = parse_decimal(str(row.get("Amount") or ""))
+            except ValueError:
+                continue
+            fingerprints.add(
+                (
+                    normalized_text(row.get("Property")),
+                    transaction_date,
+                    amount,
+                    normalized_text(row.get("Merchant")),
+                    normalized_text(row.get("Category")),
+                )
+            )
+    return fingerprints
+
+
 def key_from_note(note: str) -> str:
     match = KEY_RE.search(note)
     return match.group(1).strip() if match else ""
@@ -337,17 +424,23 @@ def discovery_roots(item: dict[str, Any]) -> list[Path]:
 
 
 def pdf_discovery_text(pdf: Path) -> str:
-    proc = subprocess.run(
-        ["pdftotext", "-layout", str(pdf), "-"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=90,
-    )
-    if proc.returncode != 0:
-        return ""
-    return normalize_for_match(proc.stdout)
+    pdftotext = shutil.which("pdftotext")
+    if pdftotext:
+        proc = subprocess.run(
+            [pdftotext, "-layout", str(pdf), "-"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=90,
+        )
+        if proc.returncode == 0:
+            return normalize_for_match(proc.stdout)
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(pdf)
+    return normalize_for_match("\n".join(page.extract_text() or "" for page in reader.pages))
 
 
 def pdf_matches_disallowed_source(pdf: Path, item: dict[str, Any]) -> tuple[bool, str | None]:
@@ -613,32 +706,51 @@ def run_graphql(payload: dict[str, Any]) -> dict[str, Any]:
     helper_timeout_ms = int(os.environ.get("BASELANE_GQL_TIMEOUT_MS") or "60000")
     command_timeout_ms = int(os.environ.get("BASELANE_GQL_COMMAND_TIMEOUT_MS") or "15000")
     helper_timeout_seconds = max(15, (helper_timeout_ms + (2 * command_timeout_ms) + 10000 + 999) // 1000)
+    is_read_only = not str(payload.get("query") or "").lstrip().lower().startswith("mutation")
+    attempts = 3 if is_read_only else 1
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
         json.dump(payload, handle)
         handle.flush()
         payload_path = handle.name
     try:
-        try:
-            proc = subprocess.run(
-                ["node", str(GRAPHQL_HELPER), payload_path],
-                check=False,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=os.environ.copy(),
-                timeout=helper_timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout or ""
-            stderr = exc.stderr or ""
-            parts = [f"GraphQL helper timed out after {helper_timeout_seconds}s"]
-            if stderr:
-                parts.append(str(stderr).strip())
-            if stdout:
-                parts.append(str(stdout).strip())
-            raise RuntimeError("\n".join(parts)) from exc
+        proc: subprocess.CompletedProcess[str] | None = None
+        data: dict[str, Any] | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                proc = subprocess.run(
+                    ["node", str(GRAPHQL_HELPER), payload_path],
+                    check=False,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=os.environ.copy(),
+                    timeout=helper_timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                stdout = exc.stdout or ""
+                stderr = exc.stderr or ""
+                parts = [f"GraphQL helper timed out after {helper_timeout_seconds}s"]
+                if stderr:
+                    parts.append(str(stderr).strip())
+                if stdout:
+                    parts.append(str(stdout).strip())
+                raise RuntimeError("\n".join(parts)) from exc
+            if proc.returncode != 0:
+                break
+            try:
+                data = json.loads(proc.stdout)
+                break
+            except json.JSONDecodeError as exc:
+                if attempt == attempts:
+                    stderr = proc.stderr.strip()
+                    detail = f"{exc}; helper stderr: {stderr}" if stderr else str(exc)
+                    raise RuntimeError(
+                        f"GraphQL helper returned invalid JSON after {attempts} attempts: {detail}"
+                    ) from exc
     finally:
         Path(payload_path).unlink(missing_ok=True)
+    if proc is None:
+        raise RuntimeError("GraphQL helper did not run")
     if proc.returncode != 0:
         stderr = proc.stderr.strip()
         stdout = proc.stdout.strip()
@@ -648,13 +760,14 @@ def run_graphql(payload: dict[str, Any]) -> dict[str, Any]:
         if stdout:
             parts.append(stdout)
         raise RuntimeError("\n".join(parts) or f"GraphQL helper rc={proc.returncode}")
-    data = json.loads(proc.stdout)
+    if data is None:
+        raise RuntimeError("GraphQL helper returned no data")
     if data.get("errors"):
         raise RuntimeError(json.dumps(data["errors"], indent=2))
     return data
 
 
-def query_transactions(search: str, page_limit: int = 500) -> list[dict[str, Any]]:
+def query_transactions(search: str, page_limit: int = 25) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     page = 1
     total = None
@@ -767,9 +880,13 @@ def keys_from_manifest_path(path: Path) -> tuple[set[str], dict[str, Any]]:
         return set(), record
 
 
-def existing_keys_from_manifests(items: list[dict[str, Any]], extra_manifest_dirs: list[Path] | None = None) -> tuple[set[str], list[dict[str, Any]]]:
+def existing_keys_from_manifests(
+    items: list[dict[str, Any]],
+    extra_manifest_dirs: list[Path] | None = None,
+) -> tuple[set[str], list[dict[str, Any]], set[tuple[str, str, Decimal, str]]]:
     keys: set[str] = set()
     manifests: list[dict[str, Any]] = []
+    fingerprints: set[tuple[str, str, Decimal, str]] = set()
     seen_paths: set[Path] = set()
     seen_dirs: set[Path] = set()
 
@@ -779,6 +896,14 @@ def existing_keys_from_manifests(items: list[dict[str, Any]], extra_manifest_dir
         seen_paths.add(path)
         manifest_keys, record = keys_from_manifest_path(path)
         keys.update(manifest_keys)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            rows = payload.get("rows") if isinstance(payload, dict) else payload
+            for row in rows if isinstance(rows, list) else []:
+                if isinstance(row, dict) and (fingerprint := manifest_row_fingerprint(row)) is not None:
+                    fingerprints.add(fingerprint)
+        except Exception:
+            pass
         manifests.append(record)
 
     for item in items:
@@ -813,7 +938,7 @@ def existing_keys_from_manifests(items: list[dict[str, Any]], extra_manifest_dir
             load_path(path)
         dir_record.update({"status": "ok_dir", "key_count": len(keys) - before, "manifest_count": len(manifest_files)})
         manifests.append(dir_record)
-    return keys, manifests
+    return keys, manifests, fingerprints
 
 
 def existing_keys_from_ledger(path: Path | None) -> tuple[set[str], dict[str, Any]]:
@@ -835,21 +960,20 @@ def existing_keys_from_ledger(path: Path | None) -> tuple[set[str], dict[str, An
 
 def planned_row_to_ledger_row(row: PlannedRow, fieldnames: list[str]) -> dict[str, str]:
     ledger_row = {field: "" for field in fieldnames}
-    ledger_row.update(
-        {
-            "Account": "",
-            "Date": row.date,
-            "Merchant": row.merchant_name,
-            "Description": row.description,
-            "Amount": f"{row.amount:.2f}",
-            "Type": row.source_type,
-            "Category": row.source_category,
-            "Sub-category": row.source_subcategory,
-            "Property": row.property_short,
-            "Unit": "",
-            "Notes": row.note,
-        }
-    )
+    values = {
+        "Account": "",
+        "Date": row.date,
+        "Merchant": row.merchant_name,
+        "Description": row.description,
+        "Amount": f"{row.amount:.2f}",
+        "Type": row.source_type,
+        "Category": row.source_category,
+        "Sub-category": row.source_subcategory,
+        "Property": row.property_short,
+        "Unit": "",
+        "Notes": row.note,
+    }
+    ledger_row.update({field: values[field] for field in fieldnames if field in values})
     return ledger_row
 
 
@@ -1225,7 +1349,14 @@ def main() -> int:
     issues.extend(plan_issues)
 
     extra_manifest_dirs = [args.manifest_dir] if args.manifest_dir else []
-    manifest_existing_keys, existing_manifest_reports = existing_keys_from_manifests(resolved_items, extra_manifest_dirs=extra_manifest_dirs)
+    (
+        manifest_existing_keys,
+        existing_manifest_reports,
+        existing_manifest_fingerprints,
+    ) = existing_keys_from_manifests(
+        resolved_items,
+        extra_manifest_dirs=extra_manifest_dirs,
+    )
     existing_keys: set[str] = set(manifest_existing_keys)
     stage_ledger_existing_keys, stage_ledger_existing_report = existing_keys_from_ledger(args.stage_ledger)
     existing_keys.update(stage_ledger_existing_keys)
@@ -1259,8 +1390,30 @@ def main() -> int:
                 print(json.dumps(report, indent=2, sort_keys=True))
                 return 1
 
-    to_create = [row for row in planned_rows if row.idempotency_key not in existing_keys]
+    existing_live_fingerprints = {
+        fingerprint
+        for row in existing_key_transactions
+        if (fingerprint := live_transaction_fingerprint(row)) is not None
+    }
+    existing_stage_fingerprints = existing_ledger_fingerprints(args.stage_ledger)
     skipped_existing = [row for row in planned_rows if row.idempotency_key in existing_keys]
+    skipped_semantic_duplicates = [
+        row
+        for row in planned_rows
+        if row.idempotency_key not in existing_keys
+        and (
+            planned_live_fingerprint(row) in existing_live_fingerprints
+            or planned_manifest_fingerprint(row) in existing_manifest_fingerprints
+            or planned_ledger_fingerprint(row) in existing_stage_fingerprints
+        )
+    ]
+    skipped_semantic_duplicate_keys = {row.idempotency_key for row in skipped_semantic_duplicates}
+    to_create = [
+        row
+        for row in planned_rows
+        if row.idempotency_key not in existing_keys
+        and row.idempotency_key not in skipped_semantic_duplicate_keys
+    ]
 
     created: list[dict[str, Any]] = []
     updated_settlements: list[dict[str, Any]] = []
@@ -1325,6 +1478,7 @@ def main() -> int:
         "label_guard": label_guard,
         "expected_plan_check": plan_check,
         "skipped_existing_count": len(skipped_existing),
+        "skipped_semantic_duplicate_count": len(skipped_semantic_duplicates),
         "to_create_count": len(to_create),
         "to_create_amount_sum": f"{amount_sum:.2f}",
         "created_count": len(created),
@@ -1335,6 +1489,9 @@ def main() -> int:
         "issues": issues,
         "planned_rows": [row.report_dict() for row in planned_rows],
         "skipped_existing_keys": [row.idempotency_key for row in skipped_existing],
+        "skipped_semantic_duplicate_keys": [
+            row.idempotency_key for row in skipped_semantic_duplicates
+        ],
         "created": created,
         "settlement_relabel_candidates": settlement_candidates,
         "settlement_relabel_updates": updated_settlements,

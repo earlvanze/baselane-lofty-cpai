@@ -4,11 +4,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+OPENCLAW_SCRIPTS = Path(
+    os.environ.get("OPENCLAW_WORKSPACE", Path(__file__).resolve().parents[3])
+) / "scripts"
+if OPENCLAW_SCRIPTS.is_dir():
+    # Keep this repository's monthly modules authoritative; shared OpenClaw
+    # scripts are fallback helpers (for example, the Discord route resolver).
+    sys.path.append(str(OPENCLAW_SCRIPTS))
 
 import post_property_update_discord as discord_route
 

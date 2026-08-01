@@ -589,6 +589,12 @@ def cash_source_guard_sources(
 
 
 def eco_operating_cash_for_distribution(prop: dict[str, Any], summary: dict[str, Any]) -> tuple[float | None, str]:
+    total_spendable = parse_accounting_money(summary.get("total_dao_spendable_cash"))
+    if total_spendable is not None:
+        return total_spendable, "total_dao_spendable_cash"
+    eco_unrestricted = parse_accounting_money(summary.get("eco_held_unrestricted_cash"))
+    if eco_unrestricted is not None:
+        return eco_unrestricted, "eco_held_unrestricted_cash"
     if coownership_distribution_state(prop):
         net_of_accruals = parse_accounting_money(summary.get("eco_gl_column_e_net_of_accruals"))
         if net_of_accruals is not None:
@@ -2412,7 +2418,8 @@ def update_send_lock(path: Path | None, updates: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Publish guarded monthly Lofty UPDATES.md and FINANCIALS.md entries to Lofty PM. "
+            "Publish guarded monthly Lofty UPDATES.md entries to Lofty PM. "
+            "Direct live financial corrections require a separate explicit gate. "
             "Native Lofty owner email is disabled; owner email must use the reviewed non-native packet flow."
         )
     )
@@ -2425,6 +2432,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skill-map", type=Path)
     parser.add_argument("--publish-script", required=True, type=Path)
     parser.add_argument("--financial-patch-script", type=Path)
+    parser.add_argument(
+        "--live-financial-corrective",
+        action="store_true",
+        help="Explicitly authorize corrective writes to the currently live listing financial fields",
+    )
     parser.add_argument("--live-financial-capture-report", type=Path)
     parser.add_argument("--payload-builder-script", type=Path)
     parser.add_argument("--save-send-script", type=Path)
@@ -2464,13 +2476,19 @@ def main(argv: list[str] | None = None) -> int:
         issues.append("--email-only requires --send-owner-emails")
     if not args.publish_script.is_file():
         issues.append(f"publish script missing: {args.publish_script}")
-    financial_publish_enabled = args.financial_patch_script is not None and not args.email_only
+    financial_publish_enabled = (
+        args.live_financial_corrective
+        and args.financial_patch_script is not None
+        and not args.email_only
+    )
     payload_builder_script = args.payload_builder_script or (args.publish_script.parent / "build_lofty_pm_payloads.py")
     save_send_script = args.save_send_script or (args.publish_script.parent / "save_and_send_lofty_pm_update.py")
     if args.email_only and args.financial_only:
         issues.append("--email-only conflicts with --financial-only")
     if args.financial_only and not financial_publish_enabled:
-        issues.append("--financial-only requires --financial-patch-script")
+        issues.append("--financial-only requires --live-financial-corrective and --financial-patch-script")
+    if args.financial_patch_script is not None and not args.live_financial_corrective:
+        issues.append("--financial-patch-script requires --live-financial-corrective")
     if args.financial_only and args.send_owner_emails:
         issues.append("--financial-only refuses --send-owner-emails")
     if args.email_only and not save_send_script.is_file():

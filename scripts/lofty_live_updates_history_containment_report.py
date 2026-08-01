@@ -162,7 +162,9 @@ def manager_properties(path: Path) -> list[dict[str, Any]]:
     if not isinstance(rows, list) and isinstance(data, dict):
         rows = ((data.get("data") or {}).get("properties") if isinstance(data.get("data"), dict) else None)
     if not isinstance(rows, list) and isinstance(data, dict):
-        rows = ((data.get("response") or {}).get("data") or {}).get("properties")
+        response = data.get("response") if isinstance(data.get("response"), dict) else data
+        payload = response.get("data") if isinstance(response.get("data"), dict) else response
+        rows = payload.get("properties") if isinstance(payload, dict) else None
     return [row for row in (rows or []) if isinstance(row, dict)]
 
 
@@ -264,7 +266,7 @@ def resolve_updates_md(path: Path) -> tuple[Path, str]:
 def containment_for_updates(module: Any, markdown_module: Any, updates_md: Path, live_text: str) -> dict[str, Any]:
     try:
         entries = module.parse_entries(updates_md.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
+    except (Exception, SystemExit) as exc:  # noqa: BLE001
         return {
             "containment_ok": False,
             "parse_error": f"{type(exc).__name__}: {exc}",

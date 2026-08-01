@@ -29,13 +29,25 @@ PATTERNS = [
         re.compile(r"No tenant ledger rows are included\.", re.I),
         "Monthly communications must not include the no-tenant-ledger limitation disclaimer.",
     ),
+    (
+        "disallowed_internal_ledger_control_in_summary",
+        "high",
+        re.compile(
+            r"ECO GL Column E sum|Full property-ledger accounting position|"
+            r"ECO Net DAO Funds is the full (?:DAO-attributed Column E|property General Ledger)",
+            re.I,
+        ),
+        "Investor-facing summaries must not present the internal full-ledger control as cash.",
+    ),
 ]
 
 REQUIRED_UPDATE_SUMMARY_PATTERNS = [
     (
         "missing_lofty_curr_maintenance_reserve",
         re.compile(
-            r"(?:^\s*-\s*Lofty-held current maintenance reserve:\s*(?:-?\$[\d,]+\.\d{2})\s*$"
+            r"(?:^\s*-\s*Lofty maintenance reserve balance:\s*(?:-?\$[\d,]+\.\d{2})\s*$"
+            r"|^\s*Lofty maintenance reserve balance:\s*(?:-?\$[\d,]+\.\d{2})(?:\s*\([^\n]*\))?\s*$"
+            r"|^\s*-\s*Lofty-held current maintenance reserve:\s*(?:-?\$[\d,]+\.\d{2})\s*$"
             r"|^\s*Lofty Operating Cash:\s*-?\$[\d,]+\.\d{2}\s*\(Lofty curr_maintenance_reserve\)\s*$"
             r"|^\s*\|\s*Lofty Operating Cash\s*\|\s*-?\$[\d,]+\.\d{2}\s*\|"
             r"|^\s*.*\bLofty-held reserve\s+is\s*-?\$[\d,]+\.\d{2}.*$)",
@@ -44,16 +56,12 @@ REQUIRED_UPDATE_SUMMARY_PATTERNS = [
         "Monthly update must include the Lofty-held current maintenance reserve.",
     ),
     (
-        "missing_eco_gl_column_e_sum",
+        "missing_eco_net_dao_funds",
         re.compile(
-            r"(?:^\s*-\s*ECO GL Column E sum:\s*(?:-?\$[\d,]+\.\d{2})(?:\s+\(\d+\s+rows\))?\s*$"
-            r"|^\s*ECO General Ledger:\s*-?\$[\d,]+\.\d{2}\s*\(ECO Systems General Ledger Column E(?:\s+\(\d+\s+rows\))?\)\s*$"
-            r"|^\s*\|\s*ECO General Ledger\s*\|\s*-?\$[\d,]+\.\d{2}\s*\|\s*ECO Systems General Ledger Column E(?:\s+\(\d+\s+rows\))?\s*\|"
-            r"|^\s*.*\bECO Operating Cash\s+(?:is|:)\s*-?\$[\d,]+\.\d{2}.*\bECO Systems General Ledger Column E\b.*$"
-            r"|^\s*\|\s*ECO Operating Cash\s*\|\s*-?\$[\d,]+\.\d{2}\s*\|\s*ECO Systems General Ledger Column E(?:\s+\(\d+\s+rows\))?\s*\|)",
+            r"^\s*(?:-\s*)?ECO Net DAO Funds \(spendable cash held by ECO\):\s*\$[\d,]+\.\d{2}(?:\s*\([^\n]*\))?\s*$",
             re.I | re.M,
         ),
-        "Monthly update must include the sum of ECO GL Column E.",
+        "Monthly update must include verified spendable cash held by ECO for the DAO.",
     ),
 ]
 
@@ -65,22 +73,13 @@ REQUIRED_FINANCIAL_SUMMARY_PATTERNS = [
     ),
     (
         "missing_lofty_operating_cash",
-        re.compile(r"^\s*\|\s*Lofty Operating Cash\s*\|\s*-?\$[\d,]+\.\d{2}\s*\|", re.I | re.M),
-        "FINANCIALS.md must include Lofty Operating Cash from curr_maintenance_reserve.",
+        re.compile(r"^\s*\|\s*Lofty maintenance reserve balance\s*\|\s*-?\$[\d,]+\.\d{2}\s*\|", re.I | re.M),
+        "FINANCIALS.md must show Lofty-held cash separately from ECO-held cash.",
     ),
     (
-        "missing_eco_operating_cash",
-        re.compile(r"^\s*\|\s*ECO Operating Cash\s*\|\s*-?\$[\d,]+\.\d{2}\s*\|", re.I | re.M),
-        "FINANCIALS.md must include full Column E ECO Operating Cash.",
-    ),
-    (
-        "missing_eco_general_ledger",
-        re.compile(
-            r"^\s*\|\s*ECO (?:General Ledger|Operating Cash)\s*\|\s*-?\$[\d,]+\.\d{2}\s*\|\s*"
-            r"ECO Systems General Ledger Column E(?:\s+\(\d+\s+rows\))?\s*\|",
-            re.I | re.M,
-        ),
-        "FINANCIALS.md must identify ECO Operating Cash as the full ECO General Ledger Column E balance.",
+        "missing_eco_net_dao_funds",
+        re.compile(r"^\s*\|\s*ECO Net DAO Funds \(spendable cash held by ECO\)\s*\|\s*\$[\d,]+\.\d{2}\s*\|", re.I | re.M),
+        "FINANCIALS.md must include verified spendable cash held by ECO for the DAO.",
     ),
 ]
 
@@ -248,6 +247,10 @@ def scan_manifest(manifest: dict[str, Any], candidate_packet: dict[str, Any] | N
         update_status = str(record.get("update_status") or "")
         financial_status = str(record.get("financial_status") or "")
         if is_excluded_status(update_status) and is_excluded_status(financial_status):
+            skipped_count += 1
+            continue
+        candidate_record = candidates_by_property.get(str(record.get("property_path") or "")) or {}
+        if candidate_record.get("live_publish_excluded") is True:
             skipped_count += 1
             continue
         update_source, financial_source, source_mode = choose_sources(record, candidates_by_property)

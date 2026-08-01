@@ -241,7 +241,7 @@ SYNC_RECOVERY_REPORT=""
 HUMAN_PACED_FALLBACK_STATUS="not_started"
 UTILITY_STATUS="not_started"
 TOKENOMICS_STATUS="not_started"
-ALAWA_LOANDEPOT_STATUS="skipped"
+NO_DAO_MORTGAGE_CASH_BASIS_STATUS="not_started"
 HEMLANE_LIVE_STATUS="not_started"
 HEMLANE_AUTO_TAG_STATUS="not_started"
 HEMLANE_AUTO_TAG_APPLIED_COUNT="0"
@@ -560,7 +560,7 @@ write_run_report() {
   BASELANE_HUMAN_PACED_FALLBACK_STATUS="$HUMAN_PACED_FALLBACK_STATUS" \
   BASELANE_UTILITY_STATUS="$UTILITY_STATUS" \
   BASELANE_TOKENOMICS_STATUS="$TOKENOMICS_STATUS" \
-  BASELANE_ALAWA_LOANDEPOT_STATUS="$ALAWA_LOANDEPOT_STATUS" \
+  BASELANE_NO_DAO_MORTGAGE_CASH_BASIS_STATUS="$NO_DAO_MORTGAGE_CASH_BASIS_STATUS" \
   BASELANE_HEMLANE_LIVE_STATUS="$HEMLANE_LIVE_STATUS" \
   BASELANE_HEMLANE_AUTO_TAG_STATUS="$HEMLANE_AUTO_TAG_STATUS" \
   BASELANE_HEMLANE_AUTO_TAG_APPLIED_COUNT="$HEMLANE_AUTO_TAG_APPLIED_COUNT" \
@@ -612,7 +612,7 @@ step_statuses = {
     "human_paced_sync_fallback": os.environ.get("BASELANE_HUMAN_PACED_FALLBACK_STATUS"),
     "utility_overage": os.environ.get("BASELANE_UTILITY_STATUS"),
     "tokenomics": os.environ.get("BASELANE_TOKENOMICS_STATUS"),
-    "alawa_loandepot_cleanup": os.environ.get("BASELANE_ALAWA_LOANDEPOT_STATUS"),
+    "no_dao_mortgage_cash_basis": os.environ.get("BASELANE_NO_DAO_MORTGAGE_CASH_BASIS_STATUS"),
     "hemlane_live_transaction_evidence": os.environ.get("BASELANE_HEMLANE_LIVE_STATUS"),
     "hemlane_auto_tag_source_fix": os.environ.get("BASELANE_HEMLANE_AUTO_TAG_STATUS"),
     "hemlane_auto_tag_reexport": os.environ.get("BASELANE_HEMLANE_AUTO_TAG_REEXPORT_STATUS"),
@@ -749,7 +749,7 @@ finish_run_report() {
       failed_step="baselane_disk_space_preflight"
     elif [ "$SESSION_SEED_STATUS" = "in_progress" ]; then
       status="failed"
-      failed_step="baselane_manual_session_preflight"
+      failed_step="baselane_seed_session"
     elif [ "$SYNC_STATUS" = "in_progress" ]; then
       status="failed"
       failed_step="baselane_sync_cdp_deterministic"
@@ -834,6 +834,10 @@ if [ -f "$SCOPE_GUARD_SCRIPT" ]; then
   fi
 fi
 
+if [ -z "${BW_ENV:-}" ]; then
+  export BW_ENV="$ROOT/.secrets/bw.env"
+fi
+
 CURRENT_STEP="baselane_disk_space_preflight"
 soft_timeout_check
 DISK_PREFLIGHT_STATUS="in_progress"
@@ -907,9 +911,9 @@ configure_baselane_cdp
 # baselane_brave_utils.py when not set.
 # The Python script finds the active Brave tab, exports all transactions in one
 # CDP call, then runs the split pipeline.
-# Require a human-provided, already authenticated visible session before export.
-# This repository intentionally has no credential, MFA, CAPTCHA, or login
-# automation. A failed preflight stops before the ledger can be refreshed.
+# Self-heal: ensure an authenticated Baselane CDP session before the export.
+# No-op if session valid; re-seeds via Bitwarden creds if expired. Non-fatal: a
+# seed failure leaves the export to 401 as before (does not abort the cron).
 CURRENT_STEP="baselane_local_model_preflight"
 soft_timeout_check
 if [ -x "$ROOT/scripts/baselane_local_model_preflight.py" ]; then
@@ -949,8 +953,43 @@ set -e
 if [ "$auth_preflight_rc" -eq 0 ]; then
   AUTH_PREFLIGHT_STATUS="ok"
 else
-  SESSION_SEED_STATUS="manual_session_required"
-  AUTH_PREFLIGHT_STATUS="manual_session_required_rc_${auth_preflight_rc}"
+  CURRENT_STEP="baselane_seed_session"
+  soft_timeout_check
+  seed_timeout_seconds="${BASELANE_SESSION_SEED_TIMEOUT_SECONDS:-180}"
+  SESSION_SEED_STATUS="in_progress"
+  if "$ROOT/scripts/baselane_seed_session.sh"; then
+    SESSION_SEED_STATUS="ok"
+  else
+    seed_rc="$?"
+    if [ "$seed_rc" -eq 124 ]; then
+      SESSION_SEED_STATUS="timeout_nonfatal_${seed_timeout_seconds}s"
+      echo "[baselane] session seed timed out after ${seed_timeout_seconds}s; continuing" >&2
+    else
+      SESSION_SEED_STATUS="failed_nonfatal"
+      echo "[baselane] session seed failed (rc=$seed_rc); continuing" >&2
+    fi
+  fi
+
+  CURRENT_STEP="baselane_auth_preflight"
+  soft_timeout_check
+  AUTH_PREFLIGHT_STATUS="recovery_in_progress"
+  set +e
+  timeout --kill-after=5s "${auth_preflight_timeout_seconds}s" \
+    "$PY" "$ROOT/scripts/baselane_cdp_auth_recovery.py" \
+    --cdp-url "$BASELANE_CDP_VERSION_URL" \
+    --recover-login \
+    --graphql-auth-smoke \
+    --recovery-wait-seconds 0 \
+    --report "$AUTH_PREFLIGHT_REPORT" >/dev/null
+  auth_preflight_rc="$?"
+  set -e
+  if [ "$auth_preflight_rc" -eq 0 ]; then
+    AUTH_PREFLIGHT_STATUS="ok_recovered"
+  elif [ "$auth_preflight_rc" -eq 124 ]; then
+    AUTH_PREFLIGHT_STATUS="failed_timeout_${auth_preflight_timeout_seconds}s"
+  else
+    AUTH_PREFLIGHT_STATUS="failed_rc_${auth_preflight_rc}"
+  fi
 fi
 if [[ "$AUTH_PREFLIGHT_STATUS" != ok* ]]; then
   echo "[baselane] refusing ledger export: authenticated Baselane content was not verified; see $AUTH_PREFLIGHT_REPORT" >&2
@@ -960,36 +999,26 @@ if [ "$SESSION_SEED_STATUS" = "not_started" ]; then
   SESSION_SEED_STATUS="skipped_existing_authenticated_session"
 fi
 
-ALAWA_LOANDEPOT_CLEANUP="$ROOT/scripts/baselane_alawa_loandepot_cleanup.py"
-ALAWA_LOANDEPOT_STATE_DIR="$ROOT/scripts/.baselane_alawa_loandepot_cleanup_state"
-ALAWA_LOANDEPOT_STATE_FILE="$ALAWA_LOANDEPOT_STATE_DIR/last_run"
-ALAWA_LOANDEPOT_WEEK_KEY="$(date -u +%G-W%V)"
-if [ "${BASELANE_CRON_SKIP_ALAWA_LOANDEPOT_CLEANUP:-0}" = "1" ]; then
-  ALAWA_LOANDEPOT_STATUS="skipped_by_env"
-elif [ -x "$ALAWA_LOANDEPOT_CLEANUP" ]; then
-  mkdir -p "$ALAWA_LOANDEPOT_STATE_DIR"
-  ALAWA_LOANDEPOT_LAST_RUN=""
-  if [ -f "$ALAWA_LOANDEPOT_STATE_FILE" ]; then
-    ALAWA_LOANDEPOT_LAST_RUN="$(cat "$ALAWA_LOANDEPOT_STATE_FILE" 2>/dev/null || true)"
-  fi
-  if [ "${FORCE_ALAWA_LOANDEPOT_CLEANUP:-0}" = "1" ] || [ "$ALAWA_LOANDEPOT_LAST_RUN" != "$ALAWA_LOANDEPOT_WEEK_KEY" ]; then
-    CURRENT_STEP="baselane_alawa_loandepot_cleanup"
-    set +e
-    "$PY" "$ALAWA_LOANDEPOT_CLEANUP" --apply --json >/dev/null
-    alawa_loandepot_rc="$?"
-    set -e
-    if [ "$alawa_loandepot_rc" -eq 0 ]; then
-      echo "$ALAWA_LOANDEPOT_WEEK_KEY" > "$ALAWA_LOANDEPOT_STATE_FILE"
-      ALAWA_LOANDEPOT_STATUS="ok"
-    else
-      ALAWA_LOANDEPOT_STATUS="failed_nonfatal_rc_${alawa_loandepot_rc}"
-      echo "[baselane] Alawa LoanDepot cleanup returned rc=$alawa_loandepot_rc; continuing daily sync" >&2
-    fi
+NO_DAO_MORTGAGE_CASH_BASIS="$ROOT/scripts/baselane_no_dao_mortgage_cash_basis.py"
+if [ "${BASELANE_CRON_SKIP_NO_DAO_MORTGAGE_CASH_BASIS:-0}" = "1" ]; then
+  NO_DAO_MORTGAGE_CASH_BASIS_STATUS="skipped_by_env"
+elif [ -f "$NO_DAO_MORTGAGE_CASH_BASIS" ]; then
+  CURRENT_STEP="baselane_no_dao_mortgage_cash_basis_preview"
+  "$PY" "$NO_DAO_MORTGAGE_CASH_BASIS" >/dev/null
+  no_dao_action_count="$("$PY" -c 'import json,sys; print(int(json.load(open(sys.argv[1])).get("action_count") or 0))' "$ROOT/reports/no_dao_mortgage_cash_basis_live.json")"
+  if [ "$no_dao_action_count" -gt 0 ]; then
+    no_dao_digest="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["action_digest"])' "$ROOT/reports/no_dao_mortgage_cash_basis_live.json")"
+    CURRENT_STEP="baselane_no_dao_mortgage_cash_basis_apply"
+    "$PY" "$NO_DAO_MORTGAGE_CASH_BASIS" \
+      --apply \
+      --require-action-digest "$no_dao_digest" >/dev/null
+    NO_DAO_MORTGAGE_CASH_BASIS_STATUS="ok_applied_${no_dao_action_count}"
   else
-    ALAWA_LOANDEPOT_STATUS="already_done_for_week"
+    NO_DAO_MORTGAGE_CASH_BASIS_STATUS="ok_no_actions"
   fi
 else
-  ALAWA_LOANDEPOT_STATUS="skipped_missing_script"
+  echo "[baselane] required no-DAO mortgage cash-basis reconciler is missing" >&2
+  exit 1
 fi
 
 CURRENT_STEP="baselane_sync_cdp_deterministic"

@@ -384,16 +384,24 @@ def cash_source_distribution_guard_sources(financials_md: Path, property_name: s
     if cash_source_guard_disabled(property_name, financials_md):
         return []
     text = financials_md.read_text(encoding="utf-8", errors="ignore")
-    lofty_cash = financials_table_value(text, "Lofty Operating Cash")
-    eco_cash = financials_table_value(text, "ECO Operating Cash")
-    eco_cash_for_distribution = eco_cash
-    eco_cash_source = "eco_operating_cash_full_column_e"
-    if coownership_state_for_path(financials_md):
-        accrual_requirement = open_accrual_requirement(text)
-        if eco_cash is not None and accrual_requirement is not None:
-            eco_cash_for_distribution = round(eco_cash - accrual_requirement, 2)
-            eco_cash_source = "eco_operating_cash_net_of_accruals"
-    combined_cash, reserve_clear = combined_operating_cash_clearance(lofty_cash, eco_cash_for_distribution)
+    lofty_cash = financials_table_value(text, "Lofty maintenance reserve balance")
+    if lofty_cash is None:
+        lofty_cash = financials_table_value(text, "Cash held separately by Lofty")
+    if lofty_cash is None:
+        lofty_cash = financials_table_value(text, "Lofty Operating Cash")
+    eco_cash = financials_table_value(text, "ECO Net DAO Funds (spendable cash held by ECO)")
+    if eco_cash is None:
+        eco_cash = financials_table_value(text, "Spendable cash ECO owes this DAO (ECO Net DAO Funds)")
+    if eco_cash is None:
+        eco_cash = financials_table_value(text, "ECO Operating Cash")
+    physical_bank_cash = financials_table_value(text, "Cash in this DAO's own Baselane bank account")
+    dao_spendable_cash = (
+        round(eco_cash + physical_bank_cash, 2)
+        if eco_cash is not None and physical_bank_cash is not None
+        else eco_cash
+    )
+    eco_cash_source = "total_dao_spendable_cash" if physical_bank_cash is not None else "eco_held_unrestricted_cash"
+    combined_cash, reserve_clear = combined_operating_cash_clearance(lofty_cash, dao_spendable_cash)
     if reserve_clear is True:
         return []
     sources: list[str] = []
@@ -405,7 +413,7 @@ def cash_source_distribution_guard_sources(financials_md: Path, property_name: s
         guard_value = financials_table_value(text, label)
         if guard_value is not None and guard_value <= 0 and source not in sources:
             sources.append(source)
-    if eco_cash_for_distribution is not None and eco_cash_for_distribution <= 0:
+    if dao_spendable_cash is not None and dao_spendable_cash <= 0:
         sources.append(eco_cash_source)
     if reserve_clear is False and "combined_operating_cash_below_maintenance_reserve" not in sources:
         sources.append("combined_operating_cash_below_maintenance_reserve")

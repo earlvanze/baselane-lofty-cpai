@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,8 +35,23 @@ def iso_z() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def openclaw_workspace_root(root: Path) -> Path:
+    configured = os.environ.get("OPENCLAW_WORKSPACE")
+    if configured:
+        candidate = Path(configured).expanduser()
+        if candidate.is_dir():
+            return candidate
+    for candidate in (root, *root.parents):
+        if candidate.name == "workspace" and candidate.parent.name == ".openclaw":
+            return candidate
+    return root
+
+
 def default_auth_file(root: Path) -> Path:
-    return root / ".secrets" / "hemlane_auth.json"
+    local = root / ".secrets" / "hemlane_auth.json"
+    if local.is_file():
+        return local
+    return openclaw_workspace_root(root) / ".secrets" / "hemlane_auth.json"
 
 
 def load_headers(path: Path) -> dict[str, str]:
@@ -58,7 +74,15 @@ def redacted_header_keys(headers: dict[str, str]) -> list[str]:
 
 
 def capture_auth(root: Path, out_file: Path) -> dict[str, Any]:
-    script = root / "skills" / "hemlane" / "scripts" / "capture_hemlane_auth_via_cdp.py"
+    local_script = root / "skills" / "hemlane" / "scripts" / "capture_hemlane_auth_via_cdp.py"
+    workspace_script = (
+        openclaw_workspace_root(root)
+        / "skills"
+        / "hemlane"
+        / "scripts"
+        / "capture_hemlane_auth_via_cdp.py"
+    )
+    script = local_script if local_script.is_file() else workspace_script
     if not script.is_file():
         return {"status": "missing_capture_script", "script": str(script)}
     out_file.parent.mkdir(parents=True, exist_ok=True)

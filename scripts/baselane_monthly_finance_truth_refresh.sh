@@ -9,6 +9,10 @@ DRY_RUN="${DRY_RUN:-0}"
 APPLY_LIVE="${APPLY_BASELANE_MONTHLY_ACCRUALS_LIVE:-0}"
 VALIDATE_ONLY="${BASELANE_MONTHLY_FINANCE_TRUTH_VALIDATE_ONLY:-0}"
 RUN_WEEKLY="${RUN_BASELANE_MONTHLY_WEEKLY_REFRESH:-1}"
+WEEKLY_CF_MONTH="${CF_MONTH:-$RUN_MONTH}"
+WEEKLY_LIVE_ACTIONS_APPROVED="${BASELANE_WEEKLY_LIVE_ACTIONS_APPROVED:-$APPLY_LIVE}"
+WEEKLY_CF_BALANCE_SHEET_CASH_APPLY="${CF_BALANCE_SHEET_CASH_APPLY:-$APPLY_LIVE}"
+WEEKLY_ALLOW_INCOMPLETE_MONTH="${BASELANE_WEEKLY_ALLOW_INCOMPLETE_MONTH:-${BASELANE_MONTHLY_ALLOW_CURRENT_MONTH_TRANSACTION_EXPORT_CLOSE:-0}}"
 REPORT_DIR="${BASELANE_REPORT_DIR:-$ROOT/reports}"
 LEDGER="${BASELANE_LEDGER_PATH:-/mnt/c/Users/digit/Dropbox/Projects/assetrail/ECO Systems General Ledger.csv}"
 # Creating a fresh CDP target opens another visible Baselane tab. Reuse the
@@ -779,10 +783,9 @@ if [ "$DRY_RUN" != "1" ]; then
       --apply >/dev/null 2>"$STEP_ERROR_FILE"
     live_apply_status="ok"
 
-    BASELANE_ENABLE_LEGACY_HUMAN_PACED=1 \
     BASELANE_LEDGER_PATH="$LEDGER" \
     BASELANE_PAGE_LIMIT="${BASELANE_PAGE_LIMIT:-1000}" \
-    "$PY" "$ROOT/scripts/baselane_sync_cdp_human_paced.py" >/dev/null
+    "$PY" "$ROOT/scripts/baselane_sync_cdp_deterministic.py" >/dev/null
     sync_status="ok"
 
     CURRENT_STEP="post_apply_live_verify"
@@ -834,7 +837,12 @@ PY
 
   if [ "$RUN_WEEKLY" = "1" ]; then
     CURRENT_STEP="weekly_split_cf_refresh"
-    FORCE_WEEKLY_PASS=1 "$ROOT/scripts/baselane_weekly_file_updates_cron.sh" >/dev/null
+    CF_MONTH="$WEEKLY_CF_MONTH" \
+      BASELANE_WEEKLY_LIVE_ACTIONS_APPROVED="$WEEKLY_LIVE_ACTIONS_APPROVED" \
+      CF_BALANCE_SHEET_CASH_APPLY="$WEEKLY_CF_BALANCE_SHEET_CASH_APPLY" \
+      BASELANE_WEEKLY_ALLOW_INCOMPLETE_MONTH="$WEEKLY_ALLOW_INCOMPLETE_MONTH" \
+      FORCE_WEEKLY_PASS=1 \
+      "$ROOT/scripts/baselane_weekly_file_updates_cron.sh" >/dev/null
     weekly_status="ok"
   else
     weekly_status="skipped_disabled"
@@ -866,6 +874,7 @@ report = {
     "post_apply_sync_status": sys.argv[10],
     "weekly_split_cf_refresh_status": sys.argv[11],
     "canonical_local_accrual_write": False,
+    "downstream_generation_allowed": True,
 }
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -123,12 +123,19 @@ PY
 # deliberate run-level approval in addition to their individual opt-in flags.
 BASELANE_WEEKLY_LIVE_ACTIONS_APPROVED="${BASELANE_WEEKLY_LIVE_ACTIONS_APPROVED:-0}"
 CF_SYNC_MODE_ARGS=()
+CF_SYNC_PERIOD_ARGS=()
 if [ "$BASELANE_WEEKLY_LIVE_ACTIONS_APPROVED" != "1" ]; then
   export YHOME_GSHEET_APPLY=0
   export CF_BALANCE_SHEET_CASH_APPLY=0
   export CF_BALANCE_SHEET_CREATE_MISSING_ROWS=0
   export BASELANE_NATIVE_SPLIT_APPLY=0
   CF_SYNC_MODE_ARGS=(--audit)
+fi
+if [ -n "${REPORTING_CUTOFF_DATE:-}" ]; then
+  CF_SYNC_PERIOD_ARGS+=(--cutoff-date "$REPORTING_CUTOFF_DATE")
+fi
+if [ "${BASELANE_WEEKLY_ALLOW_INCOMPLETE_MONTH:-0}" = "1" ]; then
+  CF_SYNC_PERIOD_ARGS+=(--allow-incomplete-month)
 fi
 
 if [ ! -f "$REPORT_SCRIPT" ]; then
@@ -453,7 +460,7 @@ run_cf_balance_sheet_cash_apply_report() {
   fi
   local apply_arg=()
   if [ "${CF_BALANCE_SHEET_CASH_APPLY:-0}" = "1" ]; then
-    apply_arg+=(--apply)
+    apply_arg+=(--apply --apply-physical-eco-cash)
   fi
   if [ "${CF_BALANCE_SHEET_CREATE_MISSING_ROWS:-0}" = "1" ]; then
     apply_arg+=(--create-missing-rows)
@@ -1299,6 +1306,7 @@ if [ -f "$CF_SYNC_SCRIPT" ]; then
     --gl-csv "$BASELANE_CF_REPORTING_LEDGER_PATH" \
     --month "$CF_MONTH" \
     "${CF_SYNC_MODE_ARGS[@]}" \
+    "${CF_SYNC_PERIOD_ARGS[@]}" \
     --source-cash-gl-csv "$BASELANE_CF_REPORTING_LEDGER_PATH" \
     --skip-source-cash-balance-row \
     --output-dir "$DROPBOX_ROOT/Real Estate" \
@@ -1402,6 +1410,7 @@ PY
           --gl-csv "$BASELANE_CF_REPORTING_LEDGER_PATH" \
           --month "$CF_MONTH" \
           "${CF_SYNC_MODE_ARGS[@]}" \
+          "${CF_SYNC_PERIOD_ARGS[@]}" \
           --source-cash-gl-csv "$BASELANE_CF_REPORTING_LEDGER_PATH" \
           --skip-source-cash-balance-row \
           --output-dir "$DROPBOX_ROOT/Real Estate" \
@@ -1481,6 +1490,7 @@ PY
           --gl-csv "$BASELANE_CF_REPORTING_LEDGER_PATH" \
           --month "$CF_MONTH" \
           "${CF_SYNC_MODE_ARGS[@]}" \
+          "${CF_SYNC_PERIOD_ARGS[@]}" \
           --source-cash-gl-csv "$BASELANE_CF_REPORTING_LEDGER_PATH" \
           --skip-source-cash-balance-row \
           --output-dir "$DROPBOX_ROOT/Real Estate" \

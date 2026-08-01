@@ -36,8 +36,6 @@ let _captureFailureArtifacts = async () => {};
 async function main() {
   fs.mkdirSync(REPORTS, { recursive: true });
   fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
-  const email = getCred('username');
-  const password = getCred('password');
   const before = new Set(fs.readdirSync(DOWNLOAD_DIR).filter(f => f.endsWith('.pdf')));
 
   const version = await (await fetch(VERSION_URL)).json();
@@ -231,6 +229,8 @@ async function main() {
   }
 
   if (!usingExistingAuthedTab) {
+    const email = getCred('username');
+    const password = getCred('password');
     currentStage = 'navigate-login';
     await send('Page.navigate', { url: 'https://app.baselane.com/login' }, sessionId);
     await new Promise(r => setTimeout(r, 3000));

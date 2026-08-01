@@ -544,24 +544,17 @@ def execute_transfer(
                     "query": CREATE_TRANSFER_MUTATION,
                 }
             )
-        except TransferValidationError as exc:
-            state["transfers"][expected_token] = {
-                "status": "rejected",
-                "plan": plan,
-                "error": str(exc),
-            }
-            _write_state(state_path, state)
-            raise
         except Exception as exc:
             normalized_error = str(exc).upper()
             if "OTP_REQUIRED" in normalized_error or (
+                "BANK OTP HAS NOT BEEN COMPLETED" in normalized_error
+            ) or (
                 "OTP FOR USER" in normalized_error
                 and "HAS NOT BEEN COMPLETED" in normalized_error
             ):
-                # Baselane's bank service rejects createTransfer before a
-                # transfer exists when its SMS gate is incomplete. Preserve a
-                # resumable, non-terminal state instead of falsely recording
-                # an unknown cash-movement outcome.
+                # Baselane rejects createTransfer before creating a transfer
+                # when its SMS gate is incomplete. The CDP bridge may surface
+                # this as either a validation error or a generic transfer error.
                 state["transfers"][expected_token] = {
                     "status": "authentication_challenge",
                     "challenge_type": "bank_sms_otp",
@@ -572,6 +565,31 @@ def execute_transfer(
                     "Baselane bank SMS OTP is required; complete MFA and retry "
                     "this exact confirmation token"
                 ) from exc
+            if "REQUEST IS ALREADY IN PROGRESS" in normalized_error:
+                state["transfers"][expected_token] = {
+                    "status": "verification_failed",
+                    "plan": plan,
+                    "error": str(exc),
+                }
+                _write_state(state_path, state)
+                raise TransferStateError(
+                    "Baselane reports this idempotent request is already in progress; "
+                    "reconcile before retrying"
+                ) from exc
+            if isinstance(exc, TransferValidationError):
+                state["transfers"][expected_token] = {
+                    "status": "rejected",
+                    "plan": plan,
+                    "error": str(exc),
+                }
+                _write_state(state_path, state)
+                raise
+            state["transfers"][expected_token] = {
+                "status": "verification_failed",
+                "plan": plan,
+                "error": str(exc),
+            }
+            _write_state(state_path, state)
             raise TransferStateError(
                 "transfer submission outcome is unknown; reconcile before retrying"
             ) from exc

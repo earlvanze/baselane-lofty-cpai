@@ -24,6 +24,10 @@ from lofty_monthly_exclusions import (
     match_exclusion_guard,
     monthly_exclusion_guards,
 )
+from lofty_live_updates_history_containment_report import (
+    load_markdown_module,
+    normalize_update_text_for_containment,
+)
 from lofty_property_paths import display_name_for_property_path, public_dir_for_property, resolve_index_property_path
 
 UPDATES_DIR_NAME = "00 - README & Property Snapshot"
@@ -98,6 +102,7 @@ def full_history_containment(updates_md: Path, live_text: str, skill_scripts_dir
             "entry_count": 0,
             "missing_entries": [],
         }
+    markdown_module = load_markdown_module(skill_scripts_dir)
     try:
         entries = module.parse_entries(updates_md.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
@@ -110,18 +115,20 @@ def full_history_containment(updates_md: Path, live_text: str, skill_scripts_dir
             "missing_entries": [],
         }
     live = (live_text or "").strip()
+    normalized_live = normalize_update_text_for_containment(markdown_module, live)
     expected_texts: list[dict[str, Any]] = []
     missing_entries: list[dict[str, Any]] = []
     for entry in entries:
         expected = str(module.entry_lofty_text(entry) or "").strip()
-        digest = hashlib.sha256(expected.encode("utf-8")).hexdigest() if expected else ""
+        normalized_expected = normalize_update_text_for_containment(markdown_module, expected)
+        digest = hashlib.sha256(normalized_expected.encode("utf-8")).hexdigest() if normalized_expected else ""
         row = {
             "date": entry.get("date"),
             "char_count": len(expected),
             "sha256": digest,
         }
         expected_texts.append(row)
-        if expected and expected not in live:
+        if normalized_expected and normalized_expected not in normalized_live:
             missing_entries.append(row)
     return {
         "ok": not missing_entries,
@@ -137,6 +144,23 @@ def full_history_containment(updates_md: Path, live_text: str, skill_scripts_dir
 def load_index(index_csv: Path) -> list[dict[str, str]]:
     with index_csv.open(newline="", encoding="utf-8") as handle:
         return [row for row in csv.DictReader(handle)]
+
+
+def filter_rows_by_property(rows: list[dict[str, str]], property_names: list[str]) -> list[dict[str, str]]:
+    wanted = {normalize(value) for value in property_names if normalize(value)}
+    if not wanted:
+        return rows
+    selected: list[dict[str, str]] = []
+    for row in rows:
+        property_path, path_resolution = resolve_index_property_path(row)
+        candidates = {
+            normalize(property_path.name),
+            normalize(display_name_for_property_path(property_path, path_resolution)),
+            normalize(str(row.get("managed_name") or "")),
+        }
+        if wanted & candidates:
+            selected.append(row)
+    return selected
 
 
 def property_id_candidates(portfolio_map: Path | None, skill_map: Path | None) -> list[dict[str, str]]:
@@ -625,6 +649,7 @@ def main() -> int:
     parser.add_argument("--year", type=int, default=datetime.now().year)
     parser.add_argument("--month", type=int, default=datetime.now().month)
     parser.add_argument("--max-properties", type=int, default=0)
+    parser.add_argument("--property", action="append", default=[], help="Limit capture to an exact normalized property name; repeatable.")
     parser.add_argument("--yhome-transition-csv", type=Path)
     parser.add_argument("--manual-excluded-property", action="append", default=[])
     parser.add_argument("--transfer-reconciliation-report", type=Path)
@@ -642,6 +667,7 @@ def main() -> int:
         issues.append(f"Lofty PM helper missing: {args.skill_scripts_dir / 'update_lofty_pm_property.py'}")
 
     rows = load_index(args.index_csv) if args.index_csv.is_file() else []
+    rows = filter_rows_by_property(rows, args.property)
     if args.index_csv.is_file() and not rows:
         issues.append(f"monthly index has no property rows: {args.index_csv}")
     skipped_records = skipped_index_records(rows)

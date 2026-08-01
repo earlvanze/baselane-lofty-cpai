@@ -1,0 +1,112 @@
+{
+  "property": "90 Madison Ave",
+  "property_id": "31525",
+  "marker": "AOPS-90-CURTAILMENT",
+  "policy": "Only the approved 50% NOI principal curtailment is a DAO mortgage-principal expense. Ordinary mortgage principal and interest are ECO reimbursement items. Mortgage escrow remains a DAO operating expense and must be represented exactly once by its insurance, tax, and general-escrow components.",
+  "recognition_schedule": [
+    {
+      "month": "2024-06",
+      "amount": "550.00",
+      "status": "mapped",
+      "transaction_id": "323478332"
+    },
+    {
+      "month": "2024-07",
+      "amount": "2950.00",
+      "status": "mapped",
+      "transaction_id": "323478336"
+    },
+    {
+      "month": "2024-08",
+      "amount": "1150.00",
+      "status": "mapped",
+      "transaction_id": "323478340"
+    },
+    {
+      "month": "2024-09",
+      "amount": "800.00",
+      "status": "mapped",
+      "transaction_id": "323478345"
+    },
+    {
+      "month": "2024-10",
+      "amount": "1700.00",
+      "status": "mapped",
+      "transaction_id": "323043008",
+      "bank_root_id": "121017123"
+    },
+    {
+      "month": "2024-11",
+      "amount": "950.00",
+      "status": "mapped",
+      "transaction_id": "126615478"
+    },
+    {
+      "month": "2024-12",
+      "amount": "0.00",
+      "status": "approved_zero"
+    },
+    {
+      "month": "2025-01",
+      "amount": "350.00",
+      "status": "mapped",
+      "transaction_id": "137322433",
+      "bank_root_id": "136380083"
+    },
+    {
+      "month": "2025-02",
+      "amount": "450.00",
+      "status": "mapped",
+      "transaction_id": "149684350",
+      "bank_root_id": "144361602"
+    },
+    {
+      "month": "2025-03",
+      "amount": "1000.00",
+      "status": "mapped",
+      "transaction_id": "150109446",
+      "bank_root_id": "149864683"
+    },
+    {
+      "month": "2025-04",
+      "amount": "450.00",
+      "status": "mapped",
+      "transaction_id": "167483719",
+      "bank_root_id": "160330978"
+    },
+    {
+      "month": "2025-05",
+      "amount": "250.00",
+      "status": "mapped",
+      "transaction_id": "323033775",
+      "bank_root_id": "170408632"
+    },
+    {
+      "month": "2025-06",
+      "amount": "750.00",
+      "status": "mapped",
+      "transaction_id": "323033782",
+      "bank_root_id": "175660215"
+    },
+    {
+      "month": "2025-07",
+      "amount": "0.00",
+      "status": "approved_zero"
+    }
+  ],
+  "july_2025_evidence": {
+    "bank_root_id": "175660215",
+    "bank_posted_date": "2025-07-21",
+    "statement_date": "2025-07-18",
+    "statement_total": "3355.98",
+    "regular_principal": "220.53",
+    "interest": "1548.68",
+    "escrow": "801.39",
+    "fee": "35.38",
+    "additional_principal": "750.00",
+    "additional_principal_recognition_month": "2025-06",
+    "july_noi_principal_curtailment": "0.00",
+    "rationale": "The July-posted $750 was the approved June NOI curtailment. The August and September statements show regular payments without another principal curtailment."
+  },
+  "approved_total_through_2025_06": "11350.00"
+}

@@ -144,6 +144,28 @@ def main() -> int:
             print(json.dumps(report, indent=2))
             return 75
 
+        if not (plan.get("rows") or []):
+            report = {
+                "status": "ok",
+                "generated_at": coverage.iso_z(),
+                "mode": "apply" if args.apply else "dry_run",
+                "plan": str(args.plan),
+                "plan_digest": digest,
+                "live_transaction_count": 0,
+                "live_fetch_skipped_reason": "empty_plan",
+                "plan_row_count": 0,
+                "ready_count": 0,
+                "already_applied_count": 0,
+                "applied_verified_count": 0,
+                "blocked_count": 0,
+                "failed_count": 0,
+                "status_counts": {},
+                "records": [],
+            }
+            write_report(args.report, report)
+            print(json.dumps({key: value for key, value in report.items() if key != "records"}, indent=2))
+            return 0
+
         property_ids, tag_ids, _ = coverage.fetch_metadata()
         live_rows, live_total = coverage.fetch_all_transactions()
         records = classify(plan, live_rows, property_ids, tag_ids)

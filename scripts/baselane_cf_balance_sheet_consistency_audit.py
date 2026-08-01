@@ -99,8 +99,8 @@ def parse_month(value: str | None) -> tuple[int, int]:
 
 
 def source_cash_mode_for_month(year: int, month: int, today: date | None = None) -> str:
-    # ECO Net DAO Funds is a current balance-sheet work product: always use the
-    # full canonical property GL, including accruals, regardless of report month.
+    # The full canonical property GL is an internal accounting control,
+    # including accruals, regardless of report month. It is not custody cash.
     return "full_column_e"
 
 
@@ -856,8 +856,12 @@ def validate_operating_cash_authority(
         year, month = (int(part) for part in str(requested_month).split("-"))
         next_month = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
         expected_as_of = (next_month - timedelta(days=1)).isoformat()
+    accepted_source_modes = {
+        "verified_eco_cash_custody_reconciliation",
+        "property_gl_cash_basis_net_open_obligations",
+    }
     valid = (
-        source_mode == "live_baselane_dao_bank_accounts"
+        source_mode in accepted_source_modes
         and source_status == "ok"
         and bool(as_of_text)
         and (expected_as_of is None or as_of_text == expected_as_of)
@@ -869,7 +873,7 @@ def validate_operating_cash_authority(
     output["eco_operating_cash_authority_status"] = (
         "historical_month_end_bank_snapshot_missing"
         if expected_as_of and as_of_text != expected_as_of
-        else "live_dao_bank_source_missing_or_invalid"
+        else "eco_cash_custody_source_missing_or_invalid"
     )
     output["eco_operating_cash_required_as_of_date"] = expected_as_of
     return output
@@ -1146,9 +1150,12 @@ def audit_workbook(
     report_month = f"{year:04d}-{month:02d}"
     retained_earnings_exemption = (normalize_property_name(property_name), report_month) in RETAINED_EARNINGS_LOFTY_EXEMPTIONS
     local_financials_only = canonical_reserve_property(property_name) in set(LOCAL_FINANCIALS_ONLY_PROPERTIES)
+    lofty_pm_access_unavailable = bool(record.get("lofty_pm_access_unavailable_advisory"))
     if local_financials_only:
         lofty_expected = None
         lofty_authority_status = "not_required_local_financials_only"
+    elif lofty_pm_access_unavailable and lofty_expected is None:
+        lofty_authority_status = "not_verified_pm_access_unavailable"
     eco_expected = parse_money(source.get("eco_operating_cash"))
     eco_gl_expected = parse_money(source.get("eco_gl_column_e_sum"))
     if eco_gl_expected is None:
@@ -1291,7 +1298,9 @@ def audit_workbook(
         ("ECO General Ledger", ECO_GL_LABEL, eco_gl_expected),
     ]
     for source_name, fallback_label, expected in row_specs:
-        if source_name == "Lofty Operating Cash" and (local_financials_only or retained_earnings_exemption):
+        if source_name == "Lofty Operating Cash" and (
+            local_financials_only or retained_earnings_exemption or (lofty_pm_access_unavailable and expected is None)
+        ):
             continue
         if source_name == "ECO Operating Cash" and expected is None:
             summary["eco_operating_cash_verification_status"] = "not_verified_no_mapped_bank_authority"
@@ -1394,9 +1403,10 @@ def build_yhome_plan(
         status = inactive_status(row, new_pm_column)
         for target_name, column_name, expected_raw in (
             (YHOME_LOFTY_CASH_COLUMN, lofty_column, source.get("lofty_curr_maintenance_reserve")),
-            # ECO Net DAO Funds is an accounting entitlement, not the physical
-            # balance of a mapped bank account.
-            (YHOME_ECO_CASH_COLUMN, eco_column, source.get("eco_general_ledger_sum")),
+            # ECO Net DAO Funds is spendable cash in ECO custody after accrued
+            # obligations and other restrictions. The full GL remains a
+            # separate accounting control and must never be presented as cash.
+            (YHOME_ECO_CASH_COLUMN, eco_column, source.get("eco_operating_cash")),
         ):
             expected = parse_money(expected_raw)
             actual = parse_money(row.get(column_name))
@@ -1412,6 +1422,11 @@ def build_yhome_plan(
                 "property": property_name,
                 "yhome_row_number": row_number,
                 "column": target_name,
+                "eco_cash_policy": (
+                    "eco_held_unrestricted_cash_v1"
+                    if target_name == YHOME_ECO_CASH_COLUMN
+                    else "lofty_curr_maintenance_reserve_v1"
+                ),
                 "matched_header": column_name,
                 "new_pm": row.get(new_pm_column),
                 "current_value": actual,
@@ -1420,10 +1435,6 @@ def build_yhome_plan(
                 "diff": difference,
                 "action": action,
             }
-            if target_name == YHOME_ECO_CASH_COLUMN:
-                entry["eco_cash_policy"] = (
-                    "full_property_split_ecogl_column_e_all_rows_v1"
-                )
             if row.get(YHOME_SHEET_TITLE_COLUMN):
                 entry["yhome_sheet_title"] = row.get(YHOME_SHEET_TITLE_COLUMN)
             if row.get(YHOME_SHEET_GID_COLUMN):
@@ -1465,6 +1476,7 @@ def write_plan_csv(path: Path, plan: list[dict[str, Any]]) -> None:
         "yhome_lofty_operating_cash_column_index",
         "yhome_eco_net_dao_funds_column_index",
         "column",
+        "eco_cash_policy",
         "matched_header",
         "new_pm",
         "current_value",
@@ -1653,14 +1665,15 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "cf_balance_sheet_policy": (
             "Lofty Operating Cash comes from curr_maintenance_reserve. ECO Operating Cash comes from a dated live "
             "Baselane DAO bank snapshot, while ECO General Ledger comes from canonical property-split Column E. "
-            "Closed-month workbooks require an exact month-end bank snapshot. The separate Yhome ECO Net DAO Funds "
-            "work-product column always uses the current canonical General Ledger."
+            "Closed-month workbooks require an exact month-end bank snapshot. Column E is an internal accounting "
+            "control and must not be relabeled as custody or spendable cash."
         ),
         "yhome_weekly_policy": (
-            "Weekly Yhome Transition Reconciliation updates are limited to Lofty Operating Cash and ECO Net DAO Funds. "
-            "ECO Net DAO Funds is the current canonical property-split General Ledger balance, not mapped bank cash; "
-            "rows marked sold/selling/closed/delisted in New PM are skipped. This sheet is a non-authoritative work "
-            "product: missing rows, pending updates, and write failures do not block CF, Lofty, or investor outputs."
+            "Weekly Yhome Transition Reconciliation cash updates use transaction-backed ECO custody less recorded "
+            "unpaid obligations. Verified DAO A/P to ECO is reported separately with reciprocal ECO A/R; Column E "
+            "is not a cash source. Rows marked sold/selling/closed/delisted in New PM are skipped. This sheet is a "
+            "non-authoritative work product: missing rows, pending updates, and write failures do not block CF, "
+            "Lofty, or investor outputs."
         ),
         "summaries": workbook_summaries,
         "issues": authoritative_issues[:200],

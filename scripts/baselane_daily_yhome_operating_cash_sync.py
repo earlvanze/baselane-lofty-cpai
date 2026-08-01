@@ -4,11 +4,11 @@
 The monthly candidate packet provides property and canonical GL coverage.  This
 daily wrapper replaces only the Lofty reserve fields with a fresh, read-only
 get-manager-properties response before delegating the guarded Google Sheets
-apply/verify workflow. Before a sheet write, the verifier replaces legacy
-full-property-GL ECO rows with the ECO-custody policy: ECO-owned bank activity
-plus only negative Yhome Net Due TO DAO balances. An unavailable or incomplete
-live Lofty response is a hard write gate, not a reason to reuse an old reserve
-snapshot.
+apply/verify workflow. ECO Net DAO Funds remains spendable free cash in ECO
+custody after accrued obligations and other restrictions; the full property GL
+is a separate accounting control. An unavailable or incomplete live Lofty
+response is a hard write gate for Lofty cash only, not authority to substitute
+stale or accounting-basis values.
 """
 from __future__ import annotations
 

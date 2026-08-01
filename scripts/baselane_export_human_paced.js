@@ -2,11 +2,11 @@
 /**
  * baselane_export_human_paced.js
  *
- * Anti-bot-detection export:
+ * Authenticated browser-session export:
  * - Assumes a human has already authenticated the visible Baselane browser
- * - Uses human-like delays between API calls
+ * - Uses a deterministic, configurable throttle between API calls
  * - Triggers GraphQL to capture fresh appcheck token
- * - Batches GraphQL calls with 2-5s delays
+ * - Keeps one CDP attachment for the complete paginated export
  */
 const fs = require('fs');
 const path = require('path');
@@ -26,18 +26,14 @@ const maxPages = Number(process.env.BASELANE_MAX_PAGES || 200);
 const pageLimit = Number(process.env.BASELANE_PAGE_LIMIT || 200);
 const MIN_ROWS = Number(process.env.BASELANE_MIN_ROWS || 6000);
 const MAX_ROWS = Number(process.env.BASELANE_MAX_ROWS || 25000);
+const commandTimeoutMs = Math.max(1000, Number(process.env.BASELANE_EXPORT_CDP_COMMAND_TIMEOUT_MS || 30000));
+const fetchTimeoutMs = Math.max(1000, Number(process.env.BASELANE_EXPORT_FETCH_TIMEOUT_MS || 20000));
 
-// Human-like delay: 2-5 seconds with randomization
-function humanDelay() {
-  const base = 2000 + Math.random() * 3000; // 2-5 seconds
-  return new Promise(r => setTimeout(r, base));
-}
-
-// Short delay: 500-1500ms
-function shortDelay() {
-  const base = 500 + Math.random() * 1000;
-  return new Promise(r => setTimeout(r, base));
-}
+const requestDelayMs = Math.max(0, Number(process.env.BASELANE_EXPORT_REQUEST_DELAY_MS || 250));
+const authPollDelayMs = Math.max(100, Number(process.env.BASELANE_EXPORT_AUTH_POLL_DELAY_MS || 250));
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const requestDelay = () => delay(requestDelayMs);
+const authPollDelay = () => delay(authPollDelayMs);
 
 const EXCLUDE_RAW = [
   '3880 Dover St.', '3880 Dover St', 'Crypto Investments',
@@ -56,7 +52,6 @@ function ecoAccrualTargetProperty(row) {
   const amount = Number(row.Amount);
   const markerAmount = Number(marker[4]);
   const merchant = String(row.Merchant || '').trim();
-  const description = String(row.Description || '').trim();
   const expectedPrefix = marker[1] === 'dao_eco'
     ? 'ECO Systems LLC DAO Registration Fee Revenue | '
     : 'ECO Systems LLC PM Fee Revenue | ';
@@ -67,7 +62,6 @@ function ecoAccrualTargetProperty(row) {
     || String(row.Type || '').trim() !== 'Revenue'
     || String(row.Category || '').trim() !== 'Fees & Other Revenue'
     || !merchant.startsWith(expectedPrefix)
-    || (description && !description.startsWith(expectedPrefix))
   ) return '';
   return marker[2].trim();
 }
@@ -131,7 +125,18 @@ async function main() {
     const msg = {id: ++id, method, params};
     if (sessionId) msg.sessionId = sessionId;
     ws.send(JSON.stringify(msg));
-    return new Promise((resolve, reject) => pending.set(id, {resolve, reject, method}));
+    const requestId = id;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(requestId);
+        reject(new Error(`CDP ${method} timed out after ${commandTimeoutMs}ms`));
+      }, commandTimeoutMs);
+      pending.set(requestId, {
+        method,
+        resolve: value => { clearTimeout(timer); resolve(value); },
+        reject: error => { clearTimeout(timer); reject(error); },
+      });
+    });
   }
 
   // Handle messages from both ws package (Buffer) and built-in WebSocket (ev.data)
@@ -230,14 +235,14 @@ async function main() {
   console.log('[CDP] Waiting for x-firebase-appcheck token...');
   const appCheckStart = Date.now();
   while (!lastAppCheck && (Date.now() - appCheckStart) < 30000) {
-    await shortDelay();
+    await authPollDelay();
   }
 
   if (!lastAppCheck) {
     // Try triggering with page navigation/reload as fallback
     console.log('[CDP] No appcheck yet, refreshing transactions page...');
     await send('Page.navigate', {url: 'https://app.baselane.com/transactions'}, sessionId);
-    await humanDelay();
+    await delay(1000);
 
     // Try another trigger after navigation
     evalExpr(`
@@ -263,7 +268,7 @@ async function main() {
 
     const waitStart = Date.now();
     while (!lastAppCheck && (Date.now() - waitStart) < 30000) {
-      await shortDelay();
+      await authPollDelay();
     }
   }
 
@@ -273,13 +278,16 @@ async function main() {
   console.log('[CDP] Got appcheck token');
 
   async function gql(operationName, query, variables = {}) {
-    await shortDelay(); // Brief pause before each GraphQL call
+    await requestDelay();
+    console.log(`[CDP] GraphQL ${operationName}...`);
 
     const payload = {operationName, variables, query};
     const outer = await evalExpr(`(async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ${fetchTimeoutMs});
       try {
         const resp = await fetch('https://orchestration.baselane.com/graphql', {
-          method: 'POST', credentials: 'include', headers: {
+          method: 'POST', credentials: 'include', signal: controller.signal, headers: {
             'accept': '*/*',
             'content-type': 'application/json',
             'x-firebase-appcheck': ${JSON.stringify(lastAppCheck)}
@@ -289,6 +297,8 @@ async function main() {
         return { ok: resp.ok, status: resp.status, text };
       } catch (err) {
         return { fetchError: true, errorMessage: err?.message || String(err) };
+      } finally {
+        clearTimeout(timer);
       }
     })()`);
 
@@ -314,7 +324,7 @@ async function main() {
   const selectedPropertyIds = new Set(props.filter(p => !excludedIds.has(String(p.id))).map(p => String(p.id)));
   console.log(`[CDP] Selected ${selectedPropertyIds.size} properties (excluded ${excludedIds.size})`);
 
-  await humanDelay(); // Human pause before next query
+  await requestDelay();
 
   // Get tags
   console.log('[CDP] Fetching tags...');
@@ -328,7 +338,7 @@ async function main() {
   }
   for (const tag of tags) mapTagSubTypes(tag.subType || [], tag.type || '');
 
-  await humanDelay();
+  await requestDelay();
 
   // Fetch transactions with human-paced pagination
   console.log('[CDP] Fetching transactions...');
@@ -347,7 +357,7 @@ async function main() {
   let total = null;
 
   while (page < maxPages) {
-    if (page > 1) await humanDelay(); // Delay between pagination calls
+    if (page > 1) await requestDelay();
 
     const input = {
       sort: {direction: 'DESC', field: 'date'},
@@ -371,7 +381,7 @@ async function main() {
       const row = {
         Amount: tx.amount || '',
         Merchant: tx.merchantName || '',
-        Description: tx.description || tx.name || '',
+        Description: tx.description || tx.name || tx.merchantName || '',
         Type: tagPair[0],
         Category: tagPair[1],
         Notes: noteText(tx.note),

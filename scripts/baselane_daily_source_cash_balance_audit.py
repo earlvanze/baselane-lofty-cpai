@@ -854,6 +854,81 @@ def discover_cf_files_fast(cf: Any, real_estate_root: Path) -> tuple[dict[str, P
     }
 
 
+def cf_files_from_manifest(cf: Any, manifest_path: Path) -> tuple[dict[str, Path], dict[str, Any]]:
+    """Load canonical CF paths from a prior complete source-cash audit."""
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    records = payload.get("checked_workbooks") or payload.get("checked_workbooks_bounded") or []
+    declared_count = int(payload.get("checked_workbook_count") or 0)
+    if declared_count != len(records):
+        raise ValueError(
+            f"CF manifest is bounded or incomplete: declared {declared_count}, contains {len(records)}"
+        )
+    cf_files: dict[str, Path] = {}
+    missing: list[str] = []
+    retired: list[str] = []
+    for record in records:
+        path = Path(str(record.get("file") or ""))
+        property_name = str(record.get("property") or "").strip()
+        if not property_name or not str(path):
+            continue
+        if not path.is_file():
+            statement_dir = next(
+                (parent for parent in path.parents if parent.name == cf.OWNER_STATEMENTS_DIR),
+                None,
+            )
+            replacements: list[Path] = []
+            statement_dirs: list[Path] = []
+            if statement_dir is not None:
+                statement_dirs.append(statement_dir)
+                property_dir = statement_dir.parent
+                package_parent = property_dir.parent.parent
+                if property_dir.name != "Public" and package_parent.is_dir():
+                    statement_dirs.extend(
+                        sibling / property_dir.name / cf.OWNER_STATEMENTS_DIR
+                        for sibling in package_parent.iterdir()
+                        if sibling.is_dir() and sibling != property_dir.parent
+                    )
+            for candidate_statement_dir in statement_dirs:
+                if not candidate_statement_dir.is_dir():
+                    continue
+                for directory in (
+                    candidate_statement_dir,
+                    candidate_statement_dir / "P&L Statements",
+                    candidate_statement_dir / "Statements",
+                ):
+                    if directory.is_dir():
+                        replacements.extend(
+                            candidate
+                            for candidate in directory.glob("Cash Flow Statement*.xlsx")
+                            if "conflict" not in candidate.name.lower()
+                        )
+            if replacements:
+                path = sorted(
+                    replacements,
+                    key=lambda candidate: cf.cf_candidate_priority_for_property(candidate, property_name),
+                )[0]
+            elif not any(Path(str(source)).is_file() for source in record.get("source_cash_sources") or []):
+                retired.append(str(path))
+                continue
+            else:
+                missing.append(str(path))
+                continue
+        cf_files[cf.normalize_property_name(property_name)] = path
+    if missing:
+        raise ValueError(f"CF manifest references {len(missing)} missing canonical workbooks")
+    return cf_files, {
+        "discovery_mode": "complete_source_cash_manifest",
+        "manifest": str(manifest_path),
+        "manifest_status": payload.get("status"),
+        "manifest_checked_property_count": payload.get("checked_property_count"),
+        "canonical_property_count": len(cf_files),
+        "missing_manifest_files": missing,
+        "missing_manifest_file_count": len(missing),
+        "retired_manifest_files": retired,
+        "retired_manifest_file_count": len(retired),
+    }
+
+
 def build_report(
     *,
     month: str,
@@ -863,12 +938,21 @@ def build_report(
     apply: bool,
     apply_requires_property_split_source: bool = False,
     source_cash_mode: str = "full_column_e",
+    reporting_cutoff_date: str | None = None,
     yhome_transition_csv: Path | None = None,
     data_quality_report: Path | None = None,
     source_fix_plan: Path | None = None,
     split_report: Path | None = None,
+    cf_manifest_report: Path | None = None,
 ) -> dict[str, Any]:
     year, month_number = map(int, month.split("-"))
+    parsed_reporting_cutoff = None
+    if reporting_cutoff_date:
+        parsed_reporting_cutoff = datetime.strptime(reporting_cutoff_date, "%Y-%m-%d").date()
+        if (parsed_reporting_cutoff.year, parsed_reporting_cutoff.month) != (year, month_number):
+            raise ValueError(
+                f"reporting cutoff {reporting_cutoff_date} must be within target month {month}"
+            )
     cf = load_cf_module()
     cf.GL_PATH = gl_csv
     cf.REAL_ESTATE_BASE = real_estate_root
@@ -883,8 +967,11 @@ def build_report(
         return source_digest_cache[path]
 
     gl_properties = {transaction["_property"] for transaction in transactions if transaction.get("_property")}
-    cf_files, discovery_metadata = discover_cf_files_fast(cf, real_estate_root)
-    if not cf_files:
+    if cf_manifest_report is not None:
+        cf_files, discovery_metadata = cf_files_from_manifest(cf, cf_manifest_report)
+    else:
+        cf_files, discovery_metadata = discover_cf_files_fast(cf, real_estate_root)
+    if not cf_files and cf_manifest_report is None:
         cf_files, discovery_metadata = cf.discover_cf_files(include_metadata=True)
         discovery_metadata = {**discovery_metadata, "discovery_mode": "recursive_fallback"}
     exclusion_guards, yhome_guard, manual_exclusions = monthly_exclusion_guards(
@@ -1384,10 +1471,17 @@ def build_report(
         "source_quality_held_property_count": len(source_quality_held_properties),
         "source_quality_held_properties_bounded": bounded(source_quality_held_properties),
         "month": month,
+        "reporting_cutoff_date": reporting_cutoff_date,
+        "reporting_cutoff_scope": (
+            "provenance_only_for_full_column_e; ordinary transaction cutoff and month-end AOPS retention "
+            "are applied by the CF statement generator"
+            if source_cash_mode == "full_column_e"
+            else "historical source cash remains measured through target month-end"
+        ),
         "source_cash_balance_policy": (
-            "ECO Net DAO Funds equals the full property-split ECO GL Column E balance, including "
-            "manual accruals and actual bank-transfer rows. Physical bank cash remains a separate row; "
-            "closed historical CF columns use the GL balance through month-end."
+            "The full property-split ECO GL Column E balance is an internal accounting control that may include "
+            "manual accruals and bank-transfer rows. It is not ECO-held DAO cash or spendable cash; custody, "
+            "unpaid obligations, and verified DAO A/P to ECO are reconciled separately."
         ),
         "source_cash_balance_mode": source_cash_mode,
         "gl_csv": str(gl_csv),
@@ -1397,6 +1491,7 @@ def build_report(
         "source_cash_ledger_evidence_bounded": bounded(source_cash_evidence_records, limit=50),
         "real_estate_root": str(real_estate_root),
         "checked_workbook_count": checked_count,
+        "checked_workbooks": checked_workbooks,
         "checked_workbooks_bounded": bounded(checked_workbooks, limit=50),
         "checked_property_count": len(unique_checked_properties),
         "checked_properties": unique_checked_properties,
@@ -1459,6 +1554,18 @@ def main() -> int:
     parser.add_argument("--source-fix-plan", type=Path, default=DEFAULT_SOURCE_FIX_PLAN)
     parser.add_argument("--split-report", type=Path, default=DEFAULT_SPLIT_REPORT)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--cf-manifest-report",
+        type=Path,
+        help="Prior complete source-cash report whose checked workbooks define canonical CF scope.",
+    )
+    parser.add_argument(
+        "--reporting-cutoff-date",
+        help=(
+            "Close cutoff in YYYY-MM-DD. Recorded as source-cash provenance; full_column_e still uses the "
+            "complete canonical property GL, including month-end AOPS rows."
+        ),
+    )
     parser.add_argument("--apply", action="store_true", help="Update local CF workbook source-cash cells before auditing.")
     parser.add_argument(
         "--apply-requires-property-split-source",
@@ -1469,7 +1576,7 @@ def main() -> int:
         "--source-cash-mode",
         choices=("full_column_e", "as_of_month_end"),
         default="full_column_e",
-        help="Use the current full Column E balance or the closed-month balance through month-end.",
+        help="Use the current full Column E accounting control or its closed-month value through month-end.",
     )
     args = parser.parse_args()
 
@@ -1481,10 +1588,12 @@ def main() -> int:
         apply=args.apply,
         apply_requires_property_split_source=args.apply_requires_property_split_source,
         source_cash_mode=args.source_cash_mode,
+        reporting_cutoff_date=args.reporting_cutoff_date,
         yhome_transition_csv=args.yhome_transition_csv,
         data_quality_report=args.data_quality_report,
         source_fix_plan=args.source_fix_plan,
         split_report=args.split_report,
+        cf_manifest_report=args.cf_manifest_report,
     )
     write_json(args.report, report)
     clear_progress(args.report)

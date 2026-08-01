@@ -13,6 +13,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -23,7 +24,7 @@ from typing import Any
 SPREADSHEET_ID = "1HerPv9U7IB47ipCpJ-XshajQWouCUEwfDdkHSfVCwfc"
 SHEET_GID = 1187056671
 TARGET_COLUMNS = ("Lofty Operating Cash", "ECO Net DAO Funds")
-ECO_CASH_POLICY = "full_property_split_ecogl_column_e_all_rows_v1"
+ECO_CASH_POLICY = "eco_held_unrestricted_cash_v1"
 SHEET_COLUMN_METADATA = {
     "Lofty Operating Cash": (
         "yhome_lofty_operating_cash_column_index",
@@ -43,6 +44,33 @@ def generated_at() -> str:
 
 def normalize_header(value: Any) -> str:
     return " ".join(str(value or "").strip().lower().split())
+
+
+def normalize_property_name(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("&", " and ")
+    replacements = {
+        "avenue": "ave",
+        "street": "st",
+        "road": "rd",
+        "lane": "ln",
+        "drive": "dr",
+        "place": "pl",
+        "north": "n",
+        "south": "s",
+        "east": "e",
+        "west": "w",
+    }
+    for source, target in replacements.items():
+        text = re.sub(rf"\b{source}\b", target, text)
+    street_match = re.match(
+        r"^\s*(.*?\b(?:st|ave|rd|ln|dr|blvd|pl|ct|pkwy|ter)\b)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if street_match:
+        text = street_match.group(1)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def column_number_to_letters(column_number: int) -> str:
@@ -321,7 +349,7 @@ def validate_live_row_payload(
             if property_values and property_values[0]
             else ""
         )
-        if normalize_header(live_property) != normalize_header(item["property"]):
+        if normalize_property_name(live_property) != normalize_property_name(item["property"]):
             issues.append(
                 {
                     "type": "live_row_property_mismatch",

@@ -52,6 +52,7 @@ export CF_MONTH
 # actions. Individual write flags remain required when the global approval is on.
 BASELANE_WEEKLY_LIVE_ACTIONS_APPROVED="${BASELANE_WEEKLY_LIVE_ACTIONS_APPROVED:-0}"
 BASELANE_FUTURE_CF_VALUES_APPLY="${BASELANE_FUTURE_CF_VALUES_APPLY:-0}"
+BASELANE_WEEKLY_ALLOW_INCOMPLETE_MONTH="${BASELANE_WEEKLY_ALLOW_INCOMPLETE_MONTH:-0}"
 if [ "$BASELANE_WEEKLY_LIVE_ACTIONS_APPROVED" != "1" ]; then
   export YHOME_GSHEET_APPLY=0
   export CF_BALANCE_SHEET_CASH_APPLY=0
@@ -60,6 +61,7 @@ if [ "$BASELANE_WEEKLY_LIVE_ACTIONS_APPROVED" != "1" ]; then
   BASELANE_FUTURE_CF_VALUES_APPLY=0
 fi
 export BASELANE_WEEKLY_LIVE_ACTIONS_APPROVED BASELANE_FUTURE_CF_VALUES_APPLY
+export BASELANE_WEEKLY_ALLOW_INCOMPLETE_MONTH
 REPORT_DIR="$ROOT/reports"
 STATE_FILE="$ROOT/scripts/.baselane_weekly_state"
 RUN_REPORT_FILE="$REPORT_DIR/baselane_weekly_file_updates_run_report.json"
@@ -72,7 +74,7 @@ BASELANE_DISK_PREFLIGHT_TIMEOUT_SECONDS="${BASELANE_DISK_PREFLIGHT_TIMEOUT_SECON
 BASELANE_DISK_PREFLIGHT_KILL_AFTER_SECONDS="${BASELANE_DISK_PREFLIGHT_KILL_AFTER_SECONDS:-15}"
 export BASELANE_DISK_PREFLIGHT_TIMEOUT_SECONDS BASELANE_DISK_PREFLIGHT_KILL_AFTER_SECONDS
 STALE_FINANCIAL_ARTIFACT_GUARD_FILE="${STALE_FINANCIAL_ARTIFACT_GUARD_FILE:-$REPORT_DIR/baselane_stale_financial_artifact_guard.json}"
-STALE_FINANCIAL_ARTIFACT_GUARD_TIMEOUT_SECONDS="${BASELANE_STALE_FINANCIAL_ARTIFACT_GUARD_TIMEOUT_SECONDS:-60}"
+STALE_FINANCIAL_ARTIFACT_GUARD_TIMEOUT_SECONDS="${BASELANE_STALE_FINANCIAL_ARTIFACT_GUARD_TIMEOUT_SECONDS:-300}"
 HOOK="$ROOT/scripts/baselane_weekly_unprocessed_pass.sh"
 MORTGAGE_WORKFLOW_SCRIPT="${BASELANE_MORTGAGE_WORKFLOW_SCRIPT:-$ROOT/scripts/baselane_monthly_mortgage_workflow_idempotent.sh}"
 MORTGAGE_WORKFLOW_REPORT="$REPORT_DIR/baselane_monthly_mortgage_workflow_gate_report.json"
@@ -4972,18 +4974,36 @@ set +e
   if [ -f "$ROOT/scripts/clear_future_cf_statement_values.py" ]; then
     set +e
     future_cf_values_apply_args=()
+    future_cf_values_period_args=()
     if [ "$BASELANE_FUTURE_CF_VALUES_APPLY" = "1" ]; then
       future_cf_values_apply_args=(--apply)
+    fi
+    if [ "$BASELANE_WEEKLY_ALLOW_INCOMPLETE_MONTH" = "1" ]; then
+      read -r future_cf_values_year future_cf_values_start_month < <(
+        "$PY" - "$CF_MONTH" <<'PY'
+import sys
+
+year, month = map(int, sys.argv[1].split("-"))
+if month == 12:
+    year, month = year + 1, 1
+else:
+    month += 1
+print(year, month)
+PY
+      )
+      future_cf_values_period_args=(--year "$future_cf_values_year" --start-month "$future_cf_values_start_month")
     fi
     "$PY" "$ROOT/scripts/clear_future_cf_statement_values.py" \
       --include-archive \
       --include-conflicts \
+      "${future_cf_values_period_args[@]}" \
       "${future_cf_values_apply_args[@]}" \
       --report "$ROOT/reports/future_cf_statement_values_apply_report.json" >/dev/null
     future_cf_values_apply_rc="$?"
     "$PY" "$ROOT/scripts/clear_future_cf_statement_values.py" \
       --include-archive \
       --include-conflicts \
+      "${future_cf_values_period_args[@]}" \
       --report "$ROOT/reports/future_cf_statement_values_clear_report.json" >/dev/null
     future_cf_values_rc="$?"
     if [ "$future_cf_values_apply_rc" -ne 0 ]; then

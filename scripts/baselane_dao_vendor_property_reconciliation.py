@@ -14,7 +14,7 @@ import json
 import os
 import sys
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -29,6 +29,9 @@ from baselane_mcp.transfers import run_graphql_via_cdp  # noqa: E402
 # Evidence: same vendor and amount recur in the source ledger with this exact
 # property. These are single-property charges, not invoice composites.
 RESOLVED = {
+    # Matches the recurring 139.91 OSC premium already assigned to this
+    # property on 2026-05-01, 2026-05-05, and 2026-07-03.
+    "322478885": ("OSC - RISK SECURE", "-139.91", "9634 S Green St", "82374"),
     "307166823": ("OSC - RISK SECURE", "-91.17", "7411 Elton Ave", "83237"),
     "307166299": ("OSC - RISK SECURE", "-139.91", "9634 S Green St", "82374"),
     "307165619": ("OSC - RISK SECURE", "-277.99", "1456 W 85th St.", "81428"),
@@ -62,6 +65,7 @@ RESOLVED = {
     "295207310": ("Hemlane", "425.00", "428 Cross St.", "81425"),
 }
 EXPECTED_TAGS = {
+    "322478885": "65",  # Insurance.
     "289575243": "1",   # Rents: 700.00 less 70.00 PM fee.
     "289586310": "29",  # Security Deposits.
     "293520604": "1",
@@ -72,6 +76,7 @@ EXPECTED_TAGS = {
     "295207310": "1",
 }
 EXPECTED_DATES = {
+    "322478885": "2026-07-30",
     "289575243": "2026-05-28",
     "289586310": "2026-05-28",
     "293520604": "2026-06-04",
@@ -155,6 +160,13 @@ def live_rows() -> dict[str, dict[str, Any]]:
         for row in query_transactions(term):
             rows[str(row.get("id"))] = row
     return rows
+
+
+def parse_iso_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected YYYY-MM-DD") from exc
 
 
 def lawnstarter_actions(
@@ -288,8 +300,15 @@ def validate_hemlane_evidence(
 def build_report(
     evidence_path: Path = DEFAULT_LAWNSTARTER_EVIDENCE,
     hemlane_evidence_path: Path = DEFAULT_HEMLANE_EVIDENCE,
+    reporting_cutoff_date: date | None = None,
 ) -> dict[str, Any]:
     rows = live_rows()
+    if reporting_cutoff_date is not None:
+        rows = {
+            transaction_id: row
+            for transaction_id, row in rows.items()
+            if str(row.get("date") or "")[:10] <= reporting_cutoff_date.isoformat()
+        }
     dynamic, dynamic_dates, dynamic_notes, split_records, evidence_failures = lawnstarter_actions(rows, evidence_path)
     resolved = {**RESOLVED, **dynamic}
     hemlane_failures, hemlane_digest = validate_hemlane_evidence(resolved, hemlane_evidence_path)
@@ -365,6 +384,7 @@ def build_report(
     return {
         "generated_at": iso_z(),
         "status": "ok" if not guard_failures and not unresolved else "review",
+        "reporting_cutoff_date": reporting_cutoff_date.isoformat() if reporting_cutoff_date else None,
         "policy": "Only stable single-property vendor evidence may update Baselane. LawnStarter composites require invoice property splits.",
         "ready_count": len(ready),
         "verified_count": len(verified),
@@ -403,6 +423,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--digest")
+    parser.add_argument("--reporting-cutoff-date", type=parse_iso_date)
     parser.add_argument("--report", type=Path, default=ROOT / "reports" / "baselane_dao_vendor_property_reconciliation.json")
     parser.add_argument("--lawnstarter-evidence", type=Path, default=DEFAULT_LAWNSTARTER_EVIDENCE)
     parser.add_argument("--hemlane-evidence", type=Path, default=DEFAULT_HEMLANE_EVIDENCE)
@@ -412,7 +433,11 @@ def main() -> int:
         if not acquired:
             print(json.dumps({"status": "locked", "lock": str(LOCK)}))
             return 75
-        report = build_report(args.lawnstarter_evidence, args.hemlane_evidence)
+        report = build_report(
+            args.lawnstarter_evidence,
+            args.hemlane_evidence,
+            args.reporting_cutoff_date,
+        )
         if args.apply:
             if args.digest != report["plan_digest"]:
                 raise SystemExit("apply requires the exact current dry-run digest")

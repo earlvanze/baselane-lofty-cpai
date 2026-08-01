@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from coownership_mortgage_policy import is_approved_madison_90_curtailment
 from split_ledger_public_financials import REAL_ESTATE_BASE, normalize
 
 ROOT = Path(__file__).absolute().parents[1]
@@ -221,6 +222,18 @@ def principal_curtailment_text(row: dict[str, str]) -> str:
     return " ".join(str(row.get(key) or "") for key in ("Merchant", "Description", "Category", "Sub-category", "Type"))
 
 
+def is_approved_dao_principal_curtailment(prop: str, row: dict[str, str], amount: float) -> bool:
+    """Return whether a no-P&I DAO row is an explicitly approved exception."""
+    if prop != "90 Madison Ave" or amount >= 0:
+        return False
+    return is_approved_madison_90_curtailment(
+        {
+            "amount": amount,
+            "note": row.get("Notes") or "",
+        }
+    )
+
+
 def audit_property(prop: str, path: Path | None) -> dict[str, Any]:
     policy = COOWNERSHIP_POLICIES[prop]
     record: dict[str, Any] = {
@@ -278,7 +291,13 @@ def audit_property(prop: str, path: Path | None) -> dict[str, Any]:
             category = str(row.get("Category") or "").strip()
             text = row_text(row)
             mortgage_like = bool(MORTGAGE_TEXT_RE.search(text))
-            principal_curtailment_like = bool(PRINCIPAL_CURTAILMENT_RE.search(principal_curtailment_text(row)))
+            # Principal curtailments are expenses. A positive internal-transfer
+            # receipt whose label explains the destination is not another
+            # principal payment.
+            principal_curtailment_like = amount < 0 and bool(
+                PRINCIPAL_CURTAILMENT_RE.search(principal_curtailment_text(row))
+            )
+            approved_dao_curtailment = is_approved_dao_principal_curtailment(prop, row, amount)
             if category == "Mortgage Principal Payments" or principal_curtailment_like:
                 record["principal_curtailment_row_count"] += 1 if principal_curtailment_like else 0
                 if principal_curtailment_like:
@@ -296,12 +315,21 @@ def audit_property(prop: str, path: Path | None) -> dict[str, Any]:
                             "category": category,
                             "amount": amount,
                             "notes": row.get("Notes") or "",
-                            "dao_attributed": bool(policy["dao_p_and_i"]),
+                            "dao_attributed": bool(policy["dao_p_and_i"]) or approved_dao_curtailment,
+                            "approved_exception": approved_dao_curtailment,
                         }
                     )
-            if not policy["dao_p_and_i"] and category in GL_CATEGORIES_P_AND_I:
+            if (
+                not policy["dao_p_and_i"]
+                and category in GL_CATEGORIES_P_AND_I
+                and not approved_dao_curtailment
+            ):
                 record["disallowed_mortgage_p_and_i_row_count"] += 1
-            if not policy["dao_p_and_i"] and principal_curtailment_like:
+            if (
+                not policy["dao_p_and_i"]
+                and principal_curtailment_like
+                and not approved_dao_curtailment
+            ):
                 record["disallowed_principal_curtailment_row_count"] += 1
             if not policy["dao_p_and_i"] and mortgage_like and category not in GL_CATEGORIES_ESCROW_COMPAT:
                 record["mortgage_artifact_review_row_count"] += 1
@@ -352,7 +380,12 @@ def build_report(real_estate_base: Path, retag_report_path: Path | None = DEFAUL
             "ny_hi_start_rule": "For NY/HI co-ownerships, ECO GL rows begin on the first day of the month before the first token sale; earlier source transactions belong to their actual payer or ECO Systems LLC, not the DAO.",
             "mortgage_p_and_i_allowed_properties": [prop for prop, policy in COOWNERSHIP_POLICIES.items() if policy["dao_p_and_i"]],
             "mortgage_escrow_only_properties": [prop for prop, policy in COOWNERSHIP_POLICIES.items() if not policy["dao_p_and_i"]],
-            "principal_curtailment_policy": "Principal curtailment rows are DAO-attributed only for mortgage principal/interest allowed DAOs; 86, 88, 90 Madison, 724 3rd Ave, and Alawa are excluded.",
+            "principal_curtailment_policy": (
+                "Principal curtailment rows are DAO-attributed only for mortgage principal/interest allowed DAOs, "
+                "except 90 Madison's exact configured June 2024-June 2025 50% NOI curtailments. Positive cash-transfer "
+                "receipts are never counted as principal expenses. Ordinary P&I remains excluded for 86, 88, 90 "
+                "Madison, 724 3rd Ave, and Alawa."
+            ),
         },
         "record_count": len(records),
         "blocked_count": len(blocked),

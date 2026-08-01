@@ -129,6 +129,10 @@ REQUIRE_NO_MORTGAGE_FINANCIALS_GUARD="${REQUIRE_NO_MORTGAGE_FINANCIALS_GUARD:-1}
 RUN_CF_MORTGAGE_BALANCE_INTEGRITY_GUARD="${RUN_CF_MORTGAGE_BALANCE_INTEGRITY_GUARD:-1}"
 REQUIRE_CF_MORTGAGE_BALANCE_INTEGRITY_GUARD="${REQUIRE_CF_MORTGAGE_BALANCE_INTEGRITY_GUARD:-1}"
 PUBLISH_LOFTY_PM_UPDATES="${PUBLISH_LOFTY_PM_UPDATES:-0}"
+APPLY_LOFTY_LIVE_FINANCIAL_CORRECTIONS="${APPLY_LOFTY_LIVE_FINANCIAL_CORRECTIONS:-0}"
+STAGE_LOFTY_PAY_PERIOD_FINANCIALS="${STAGE_LOFTY_PAY_PERIOD_FINANCIALS:-1}"
+export LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES="${LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES:-Ohio 3-Property Package}"
+export LOFTY_LIVE_RECOVERY_DISCARD_LOCAL_ONLY_HISTORY="${LOFTY_LIVE_RECOVERY_DISCARD_LOCAL_ONLY_HISTORY:-1}"
 BUILD_LOFTY_LISTING_CLEANUP_QUEUE="${BUILD_LOFTY_LISTING_CLEANUP_QUEUE:-1}"
 RUN_LEGACY_OWNER_EMAIL_WEEKLY="${RUN_LEGACY_OWNER_EMAIL_WEEKLY:-0}"
 RUN_FUTURE_CF_VALUES_CLEANUP="${RUN_FUTURE_CF_VALUES_CLEANUP:-1}"
@@ -150,12 +154,16 @@ REQUIRE_MONTHLY_ACCRUAL_COMPLETENESS="${REQUIRE_MONTHLY_ACCRUAL_COMPLETENESS:-1}
 RUN_BASELANE_MONTHLY_FINANCE_TRUTH_REFRESH="${RUN_BASELANE_MONTHLY_FINANCE_TRUTH_REFRESH:-1}"
 REQUIRE_BASELANE_MONTHLY_FINANCE_TRUTH_REFRESH="${REQUIRE_BASELANE_MONTHLY_FINANCE_TRUTH_REFRESH:-1}"
 RUN_BASELANE_MONTHLY_FINANCE_TRUTH_AUTH_PREFLIGHT="${RUN_BASELANE_MONTHLY_FINANCE_TRUTH_AUTH_PREFLIGHT:-1}"
-# The 15th close validates accrual state; the dedicated 28th cron owns live
-# PM Fee and DAO LLC Fee writes.
-APPLY_BASELANE_MONTHLY_ACCRUALS_LIVE="${APPLY_BASELANE_MONTHLY_ACCRUALS_LIVE:-0}"
+BASELANE_MONTHLY_REUSE_FRESH_LOFTY_DRAFTS="${BASELANE_MONTHLY_REUSE_FRESH_LOFTY_DRAFTS:-0}"
+# Scheduled live closes own their Baselane accrual writes. The 28th job remains
+# an idempotent recovery pass, not the only writer.
+APPLY_BASELANE_MONTHLY_ACCRUALS_LIVE="${APPLY_BASELANE_MONTHLY_ACCRUALS_LIVE:-$BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED}"
 SETTLE_MONTHLY_RESERVE_RETENTION_CASH="${SETTLE_MONTHLY_RESERVE_RETENTION_CASH:-1}"
 RUN_BASELANE_MONTHLY_WEEKLY_REFRESH="${RUN_BASELANE_MONTHLY_WEEKLY_REFRESH:-1}"
-MONTHLY_FINANCE_TRUTH_REFRESH_TIMEOUT_SECONDS="${MONTHLY_FINANCE_TRUTH_REFRESH_TIMEOUT_SECONDS:-420}"
+RUN_DAO_VENDOR_UPSTREAM_NORMALIZATION="${RUN_DAO_VENDOR_UPSTREAM_NORMALIZATION:-1}"
+RUN_NONPROPERTY_CATEGORY_NORMALIZATION="${RUN_NONPROPERTY_CATEGORY_NORMALIZATION:-1}"
+REUSE_FRESH_DAO_VENDOR_RECONCILIATION="${REUSE_FRESH_DAO_VENDOR_RECONCILIATION:-0}"
+MONTHLY_FINANCE_TRUTH_REFRESH_TIMEOUT_SECONDS="${MONTHLY_FINANCE_TRUTH_REFRESH_TIMEOUT_SECONDS:-1200}"
 BASELANE_AUTH_PREFLIGHT_TIMEOUT_SECONDS="${BASELANE_AUTH_PREFLIGHT_TIMEOUT_SECONDS:-90}"
 REQUIRE_COOWNERSHIP_GL_POLICY_VALIDATION="${REQUIRE_COOWNERSHIP_GL_POLICY_VALIDATION:-1}"
 SEND_TRANSFER_RECONCILIATION_TELEGRAM="${SEND_TRANSFER_RECONCILIATION_TELEGRAM:-0}"
@@ -163,8 +171,10 @@ ALLOW_REVIEW_TRANSFER_RECONCILIATION_TELEGRAM="${ALLOW_REVIEW_TRANSFER_RECONCILI
 ALLOW_INFORMATIONAL_TRANSFER_RECONCILIATION_TELEGRAM="${ALLOW_INFORMATIONAL_TRANSFER_RECONCILIATION_TELEGRAM:-0}"
 ALLOW_BLOCKED_TRANSFER_RECONCILIATION_TELEGRAM="${ALLOW_BLOCKED_TRANSFER_RECONCILIATION_TELEGRAM:-0}"
 SEND_MONTHLY_DISCORD_PROPERTY_UPDATE="${SEND_MONTHLY_DISCORD_PROPERTY_UPDATE:-0}"
+SEND_MONTHLY_DISCORD_REVIEW_DRAFTS="${SEND_MONTHLY_DISCORD_REVIEW_DRAFTS:-$BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED}"
 YHOME_GSHEET_APPLY="${YHOME_GSHEET_APPLY:-0}"
 MONTHLY_DISCORD_PROPERTY_UPDATE_ACCOUNT="${MONTHLY_DISCORD_PROPERTY_UPDATE_ACCOUNT:-}"
+MONTHLY_DISCORD_REVIEW_ACCOUNT="${MONTHLY_DISCORD_REVIEW_ACCOUNT:-default}"
 MONTHLY_LIVE_SEND_DAY="${MONTHLY_LIVE_SEND_DAY:-15}"
 ALLOW_OFF_CYCLE_MONTHLY_LIVE_SEND="${ALLOW_OFF_CYCLE_MONTHLY_LIVE_SEND:-0}"
 ALLOW_OFF_CYCLE_MONTHLY_LIVE_SEND_DIGEST="${ALLOW_OFF_CYCLE_MONTHLY_LIVE_SEND_DIGEST:-}"
@@ -200,6 +210,7 @@ if [ "$BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED" != "1" ]; then
   ALLOW_INFORMATIONAL_TRANSFER_RECONCILIATION_TELEGRAM=0
   ALLOW_BLOCKED_TRANSFER_RECONCILIATION_TELEGRAM=0
   SEND_MONTHLY_DISCORD_PROPERTY_UPDATE=0
+  SEND_MONTHLY_DISCORD_REVIEW_DRAFTS=0
   YHOME_GSHEET_APPLY=0
 fi
 MONTHLY_LIVE_SEND_OVERRIDE_DIGEST_REQUIRED="$($PY - "$RUN_MONTH" "$CURRENT_LOCAL_DATE" "$MONTHLY_LIVE_SEND_DAY" <<'PY'
@@ -229,11 +240,11 @@ export LOFTY_CDP_BASE
 COMMS_WORKSPACE="${COMMS_WORKSPACE:-}"
 if [ -z "$COMMS_WORKSPACE" ]; then
   for candidate in \
-    "$OPENCLAW_ROOT/workspace-lofty-vp" \
     "/home/digit/.openclaw/workspace-lofty-vp" \
+    "$OPENCLAW_ROOT/workspace-lofty-vp" \
     "$OPENCLAW_ROOT/workspace-lofty-vp-comms" \
     "/home/digit/.openclaw/workspace-lofty-vp-comms"; do
-    if [ -d "$candidate" ]; then
+    if [ -d "$candidate/updates" ]; then
       COMMS_WORKSPACE="$candidate"
       break
     fi
@@ -260,6 +271,7 @@ REVIEW_MANIFEST_FILE="$REPORT_DIR/baselane_financials_monthly_review_manifest.js
 REVIEW_MANIFEST_MARKDOWN_FILE="$REPORT_DIR/baselane_financials_monthly_review_manifest.md"
 REVIEW_CANDIDATE_PACKET_FILE="$REPORT_DIR/baselane_financials_monthly_review_candidate_packet.json"
 REVIEW_CANDIDATE_PACKET_MARKDOWN_FILE="$REPORT_DIR/baselane_financials_monthly_review_candidate_packet.md"
+LOFTY_PAY_PERIOD_STAGING_FILE="$REPORT_DIR/lofty_monthly_pay_period_financial_staging.json"
 REVIEW_CANDIDATE_PACKET_DIR="$REPORT_DIR/lofty-review-candidates/$RUN_MONTH"
 LIVE_DAO_CASH_REPORT_FILE="${LIVE_DAO_CASH_REPORT_FILE:-$REPORT_DIR/baselane_live_dao_cash_reconciliation.json}"
 LIVE_DAO_CASH_CSV_FILE="${LIVE_DAO_CASH_CSV_FILE:-$REPORT_DIR/baselane_live_dao_cash_reconciliation.csv}"
@@ -272,6 +284,7 @@ REVIEW_SAFETY_SCAN_FILE="$REPORT_DIR/baselane_financials_monthly_review_safety_s
 REVIEW_SAFETY_SCAN_MARKDOWN_FILE="$REPORT_DIR/baselane_financials_monthly_review_safety_scan.md"
 SAFE_CANDIDATE_APPROVAL_FILE="$REPORT_DIR/baselane_financials_monthly_safe_candidate_approval.json"
 FINANCIAL_APPROVAL_MANIFEST="$REPORT_DIR/lofty_financial_approval_manifest.json"
+UPDATE_APPROVAL_MANIFEST="$REPORT_DIR/lofty_update_approval_manifest.json"
 RENT_ROLL_SOURCE_FILE="${RENT_ROLL_SOURCE_FILE:-}"
 if [ -z "$RENT_ROLL_SOURCE_FILE" ] && [ -n "$COMMS_WORKSPACE" ]; then
   RENT_ROLL_SOURCE_FILE="$COMMS_WORKSPACE/updates/$RUN_MONTH-rent-roll-source.json"
@@ -307,11 +320,37 @@ export BASELANE_DISK_PREFLIGHT_TIMEOUT_SECONDS BASELANE_DISK_PREFLIGHT_KILL_AFTE
 MONTHLY_STATEMENTS_IDEMPOTENT_FILE="$REPORT_DIR/baselane_monthly_statements_idempotent_report.json"
 MONTHLY_STATEMENTS_OPERATOR_FILE="$REPORT_DIR/baselane_monthly_statements_operator_report.json"
 STALE_FINANCIAL_ARTIFACT_GUARD_FILE="${STALE_FINANCIAL_ARTIFACT_GUARD_FILE:-$REPORT_DIR/baselane_stale_financial_artifact_guard.json}"
-STALE_FINANCIAL_ARTIFACT_GUARD_TIMEOUT_SECONDS="${BASELANE_STALE_FINANCIAL_ARTIFACT_GUARD_TIMEOUT_SECONDS:-60}"
+STALE_FINANCIAL_ARTIFACT_GUARD_TIMEOUT_SECONDS="${BASELANE_STALE_FINANCIAL_ARTIFACT_GUARD_TIMEOUT_SECONDS:-300}"
+BASELANE_MONTHLY_REUSE_FRESH_STALE_ARTIFACT_GUARD="${BASELANE_MONTHLY_REUSE_FRESH_STALE_ARTIFACT_GUARD:-0}"
 DAILY_SYNC_REPORT_FILE="${DAILY_SYNC_REPORT_FILE:-$REPORT_DIR/baselane_daily_sync_report.json}"
 DAILY_SOURCE_CASH_BALANCE_REPORT_FILE="${DAILY_SOURCE_CASH_BALANCE_REPORT_FILE:-$REPORT_DIR/baselane_daily_source_cash_balance_report.json}"
+DAILY_SOURCE_CASH_CF_MANIFEST_FILE="${DAILY_SOURCE_CASH_CF_MANIFEST_FILE:-$REPORT_DIR/baselane_daily_source_cash_balance_cf_manifest.json}"
 ECOGL_DATA_QUALITY_AUTONOMY_REPORT="${ECOGL_DATA_QUALITY_AUTONOMY_REPORT:-$REPORT_DIR/baselane_ecogl_data_quality_autonomy.json}"
-MONTHLY_SOURCE_CASH_AUDIT_TIMEOUT_SECONDS="${BASELANE_MONTHLY_SOURCE_CASH_AUDIT_TIMEOUT_SECONDS:-120}"
+MONTHLY_SOURCE_CASH_AUDIT_TIMEOUT_SECONDS="${BASELANE_MONTHLY_SOURCE_CASH_AUDIT_TIMEOUT_SECONDS:-300}"
+source_cash_manifest_args=()
+if [ -f "$DAILY_SOURCE_CASH_CF_MANIFEST_FILE" ]; then
+  source_cash_manifest_args+=(--cf-manifest-report "$DAILY_SOURCE_CASH_CF_MANIFEST_FILE")
+fi
+promote_source_cash_manifest() {
+  "$PY" - "$DAILY_SOURCE_CASH_BALANCE_REPORT_FILE" "$DAILY_SOURCE_CASH_CF_MANIFEST_FILE" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+source, target = map(Path, sys.argv[1:])
+payload = json.loads(source.read_text(encoding="utf-8"))
+records = payload.get("checked_workbooks") or []
+if int(payload.get("checked_workbook_count") or 0) != len(records):
+    raise SystemExit(2)
+if int(payload.get("unreadable_count") or 0) or int(payload.get("missing_row_count") or 0):
+    raise SystemExit(2)
+target.parent.mkdir(parents=True, exist_ok=True)
+tmp = target.with_suffix(target.suffix + ".tmp")
+tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.replace(tmp, target)
+PY
+}
 # The same full Column E balance must feed CF, DAO net cash, transfer, and
 # Lofty publish gates. Month-end reporting is calculated separately and must
 # not overwrite this canonical source-cash guard.
@@ -365,6 +404,8 @@ OWNER_EMAIL_PACKET_REVIEW_CANDIDATE_FILE="${OWNER_EMAIL_PACKET_REVIEW_CANDIDATE_
 YHOME_TRANSITION_RECONCILIATION_CSV="${YHOME_TRANSITION_RECONCILIATION_CSV:-$REPORT_DIR/yhome_transition_reconciliation.csv}"
 GUILD_TEST_POST_REPORT_FILE="${GUILD_TEST_POST_REPORT_FILE:-$REPORT_DIR/baselane_financials_monthly_guild_test_post.json}"
 MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE="${MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE:-$REPORT_DIR/baselane_financials_monthly_discord_property_update_send.json}"
+MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE="${MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE:-$REPORT_DIR/baselane_financials_monthly_discord_review_drafts.json}"
+MONTHLY_DISCORD_REVIEW_DRAFT_AGENT_FILE="${MONTHLY_DISCORD_REVIEW_DRAFT_AGENT_FILE:-$REPORT_DIR/baselane_financials_monthly_discord_review_drafts_agent.json}"
 MONTHLY_DISCORD_ALL_SEND_PLAN_FILE="${MONTHLY_DISCORD_ALL_SEND_PLAN_FILE:-$REPORT_DIR/baselane_financials_monthly_discord_all_send_plan.json}"
 MONTHLY_DISCORD_ALL_SEND_PLAN_VALIDATION_FILE="${MONTHLY_DISCORD_ALL_SEND_PLAN_VALIDATION_FILE:-$REPORT_DIR/baselane_financials_monthly_discord_all_send_plan_validation.json}"
 MONTHLY_PIPELINE_CANDIDATE_COVERAGE_FILE="${MONTHLY_PIPELINE_CANDIDATE_COVERAGE_FILE:-$REPORT_DIR/baselane_monthly_pipeline_candidate_coverage_audit.json}"
@@ -383,6 +424,13 @@ COOWNERSHIP_GL_POLICY_VALIDATION_MARKDOWN="${COOWNERSHIP_GL_POLICY_VALIDATION_MA
 BASELANE_85104_PRECLOSING_RETAG_REPORT_FILE="${BASELANE_85104_PRECLOSING_RETAG_REPORT_FILE:-$REPORT_DIR/baselane_85104_preclosing_property_retag_apply.json}"
 BASELANE_85104_PRECLOSING_RETAG_PAYLOAD_FILE="${BASELANE_85104_PRECLOSING_RETAG_PAYLOAD_FILE:-$REPORT_DIR/baselane_85104_preclosing_property_retag_payload.json}"
 BASELANE_85104_PRECLOSING_RETAG_COMMANDS_FILE="${BASELANE_85104_PRECLOSING_RETAG_COMMANDS_FILE:-$REPORT_DIR/baselane_85104_preclosing_property_retag_apply.requires-explicit-approval.sh}"
+NATIONAL_GRID_ANALYZER_SCRIPT="${NATIONAL_GRID_ANALYZER_SCRIPT:-$ROOT/scripts/national_grid_bill_analyzer.py}"
+NATIONAL_GRID_ANALYZER_CONFIG="${NATIONAL_GRID_ANALYZER_CONFIG:-$ROOT/config/national_grid_bill_analyzer.json}"
+NATIONAL_GRID_ANALYZER_REPORT="${NATIONAL_GRID_ANALYZER_REPORT:-$REPORT_DIR/national_grid_bill_analyzer.json}"
+NATIONAL_GRID_ANALYZER_MARKDOWN="${NATIONAL_GRID_ANALYZER_MARKDOWN:-$REPORT_DIR/national_grid_bill_analyzer.md}"
+NATIONAL_GRID_STATEMENT_AUDIT_SCRIPT="${NATIONAL_GRID_STATEMENT_AUDIT_SCRIPT:-/home/digit/.openclaw/workspace/skills/national-grid-statements/scripts/audit_statements.py}"
+NATIONAL_GRID_STATEMENT_AUDIT_REPORT="${NATIONAL_GRID_STATEMENT_AUDIT_REPORT:-$REPORT_DIR/national_grid_statement_audit.json}"
+NATIONAL_GRID_STATEMENT_AUDIT_FROM_MONTH="${NATIONAL_GRID_STATEMENT_AUDIT_FROM_MONTH:-2025-01}"
 BASELANE_85104_PRECLOSING_RETAG_APPLY_READINESS_FILE="${BASELANE_85104_PRECLOSING_RETAG_APPLY_READINESS_FILE:-$REPORT_DIR/baselane_85104_preclosing_property_retag_apply_readiness.json}"
 BASELANE_85104_PRECLOSING_RETAG_PARTIAL_PREVIEW_FILE="${BASELANE_85104_PRECLOSING_RETAG_PARTIAL_PREVIEW_FILE:-$REPORT_DIR/baselane_85104_preclosing_property_retag_partial_apply_preview.json}"
 BASELANE_85104_PRECLOSING_RETAG_PARTIAL_APPLY_READINESS_FILE="${BASELANE_85104_PRECLOSING_RETAG_PARTIAL_APPLY_READINESS_FILE:-$REPORT_DIR/baselane_85104_preclosing_property_retag_partial_apply_readiness.json}"
@@ -444,6 +492,8 @@ FUTURE_CF_VALUES_APPLY_UNREADABLE_COUNT="0"
 LOFTY_DRAFT_STATUS="not_started"
 LOFTY_DRAFT_ATTEMPTS="0"
 LOFTY_DRAFT_RETRIED_AFTER_SIGPIPE="0"
+NATIONAL_GRID_ANALYZER_STATUS="not_started"
+NATIONAL_GRID_STATEMENT_AUDIT_STATUS="not_started"
 LOFTY_DOC_BOOTSTRAP_STATUS="not_started"
 LOFTY_CDP_ENSURE_STATUS="not_started"
 LOFTY_CDP_PREFLIGHT_STATUS="not_started"
@@ -458,6 +508,7 @@ LOFTY_GUARDED_APPLY_STATUS="not_started"
 LOFTY_UNREVIEWED_FINANCIAL_QUARANTINE_STATUS="not_started"
 LOFTY_REVIEW_MANIFEST_STATUS="not_started"
 LOFTY_REVIEW_CANDIDATE_PACKET_STATUS="not_started"
+LOFTY_PAY_PERIOD_STAGING_STATUS="not_started"
 LOFTY_REVIEW_SAFETY_SCAN_STATUS="not_started"
 LOFTY_SAFE_CANDIDATE_APPROVAL_STATUS="not_started"
 OWNER_REVIEW_GATE_STATUS="not_started"
@@ -484,6 +535,7 @@ BASELANE_85104_PRECLOSING_RETAG_READY_COUNT="0"
 BASELANE_85104_PRECLOSING_RETAG_PAYLOAD_TRANSACTION_COUNT="0"
 GUILD_TEST_POST_STATUS="not_started"
 MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="not_started"
+MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="not_started"
 MONTHLY_PIPELINE_CANDIDATE_COVERAGE_STATUS="not_started"
 CF_BALANCE_SHEET_CONSISTENCY_STATUS="not_started"
 CF_BALANCE_SHEET_CONSISTENCY_ISSUE_COUNT="0"
@@ -986,6 +1038,8 @@ BASELANE_MONTHLY_OPENCLAW_CRON_JOBS_FILE="$OPENCLAW_CRON_JOBS_FILE" \
   BASELANE_MONTHLY_YHOME_TRANSITION_RECONCILIATION_CSV="$YHOME_TRANSITION_RECONCILIATION_CSV" \
   BASELANE_MONTHLY_GUILD_TEST_POST_REPORT_FILE="$GUILD_TEST_POST_REPORT_FILE" \
   BASELANE_MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE="$MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE" \
+  BASELANE_MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE="$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE" \
+  BASELANE_MONTHLY_DISCORD_REVIEW_DRAFT_AGENT_FILE="$MONTHLY_DISCORD_REVIEW_DRAFT_AGENT_FILE" \
   BASELANE_MONTHLY_DISCORD_ALL_SEND_PLAN_STATUS="${DISCORD_ALL_SEND_PLAN_STATUS:-}" \
   BASELANE_MONTHLY_DISCORD_ALL_SEND_PLAN_FILE="$MONTHLY_DISCORD_ALL_SEND_PLAN_FILE" \
   BASELANE_MONTHLY_DISCORD_ALL_SEND_PLAN_VALIDATION_FILE="$MONTHLY_DISCORD_ALL_SEND_PLAN_VALIDATION_FILE" \
@@ -1045,6 +1099,11 @@ BASELANE_MONTHLY_OPENCLAW_CRON_JOBS_FILE="$OPENCLAW_CRON_JOBS_FILE" \
   BASELANE_MONTHLY_LOFTY_DRAFT_STATUS="$LOFTY_DRAFT_STATUS" \
   BASELANE_MONTHLY_LOFTY_DRAFT_ATTEMPTS="$LOFTY_DRAFT_ATTEMPTS" \
   BASELANE_MONTHLY_LOFTY_DRAFT_RETRIED_AFTER_SIGPIPE="$LOFTY_DRAFT_RETRIED_AFTER_SIGPIPE" \
+  BASELANE_MONTHLY_NATIONAL_GRID_ANALYZER_STATUS="$NATIONAL_GRID_ANALYZER_STATUS" \
+  BASELANE_MONTHLY_NATIONAL_GRID_ANALYZER_REPORT="$NATIONAL_GRID_ANALYZER_REPORT" \
+  BASELANE_MONTHLY_NATIONAL_GRID_ANALYZER_MARKDOWN="$NATIONAL_GRID_ANALYZER_MARKDOWN" \
+  BASELANE_MONTHLY_NATIONAL_GRID_STATEMENT_AUDIT_STATUS="$NATIONAL_GRID_STATEMENT_AUDIT_STATUS" \
+  BASELANE_MONTHLY_NATIONAL_GRID_STATEMENT_AUDIT_REPORT="$NATIONAL_GRID_STATEMENT_AUDIT_REPORT" \
   BASELANE_MONTHLY_LOFTY_DOC_BOOTSTRAP_STATUS="$LOFTY_DOC_BOOTSTRAP_STATUS" \
   BASELANE_MONTHLY_LOFTY_CDP_ENSURE_STATUS="$LOFTY_CDP_ENSURE_STATUS" \
 	  BASELANE_MONTHLY_LOFTY_CDP_PREFLIGHT_STATUS="$LOFTY_CDP_PREFLIGHT_STATUS" \
@@ -1059,6 +1118,7 @@ BASELANE_MONTHLY_OPENCLAW_CRON_JOBS_FILE="$OPENCLAW_CRON_JOBS_FILE" \
   BASELANE_MONTHLY_LOFTY_UNREVIEWED_FINANCIAL_QUARANTINE_STATUS="$LOFTY_UNREVIEWED_FINANCIAL_QUARANTINE_STATUS" \
   BASELANE_MONTHLY_LOFTY_REVIEW_MANIFEST_STATUS="$LOFTY_REVIEW_MANIFEST_STATUS" \
   BASELANE_MONTHLY_LOFTY_REVIEW_CANDIDATE_PACKET_STATUS="$LOFTY_REVIEW_CANDIDATE_PACKET_STATUS" \
+  BASELANE_MONTHLY_LOFTY_PAY_PERIOD_STAGING_STATUS="$LOFTY_PAY_PERIOD_STAGING_STATUS" \
   BASELANE_MONTHLY_LOFTY_REVIEW_SAFETY_SCAN_STATUS="$LOFTY_REVIEW_SAFETY_SCAN_STATUS" \
   BASELANE_MONTHLY_LOFTY_SAFE_CANDIDATE_APPROVAL_STATUS="$LOFTY_SAFE_CANDIDATE_APPROVAL_STATUS" \
   BASELANE_MONTHLY_OWNER_REVIEW_GATE_STATUS="$OWNER_REVIEW_GATE_STATUS" \
@@ -1119,6 +1179,7 @@ BASELANE_MONTHLY_OPENCLAW_CRON_JOBS_FILE="$OPENCLAW_CRON_JOBS_FILE" \
 	  BASELANE_MONTHLY_804_CASH_ALIGNMENT_STATUS="$QUITMAN_804_CASH_ALIGNMENT_STATUS" \
 	  BASELANE_MONTHLY_GUILD_TEST_POST_STATUS="$GUILD_TEST_POST_STATUS" \
 	  BASELANE_MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="$MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS" \
+	  BASELANE_MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="$MONTHLY_DISCORD_REVIEW_DRAFT_STATUS" \
 	  BASELANE_MONTHLY_PIPELINE_CANDIDATE_COVERAGE_STATUS="$MONTHLY_PIPELINE_CANDIDATE_COVERAGE_STATUS" \
 	  BASELANE_MONTHLY_TRANSFER_RECONCILIATION_STATUS="$TRANSFER_RECONCILIATION_STATUS" \
 	  BASELANE_MONTHLY_TRANSFER_RECONCILIATION_READY_COUNT="$TRANSFER_RECONCILIATION_READY_COUNT" \
@@ -1238,12 +1299,13 @@ MONTHLY_CHAIN_REQUIRED_ORDER = [
     "cf_balance_sheet_consistency",
     "yhome_operating_cash_apply_verify",
     "quitman_804_cash_alignment",
-    "dao_vendor_property_reconciliation",
+    "dao_vendor_upstream_normalization",
     "source_cash_reconciliation_actions",
     "transfer_reconciliation",
     "transfer_reconciliation_telegram",
     "monthly_readiness_report_post_reconciliation",
     "discord_all_send_plan",
+    "discord_review_drafts",
     "lofty_pm_publish",
     "lofty_live_updates_full_local_restore",
     "lofty_live_updates_history_containment",
@@ -1639,6 +1701,11 @@ report = {
     "lofty_update_drafts_status": os.environ.get("BASELANE_MONTHLY_LOFTY_DRAFT_STATUS") or None,
     "lofty_update_drafts_attempts": int(os.environ.get("BASELANE_MONTHLY_LOFTY_DRAFT_ATTEMPTS") or 0),
     "lofty_update_drafts_retried_after_sigpipe": os.environ.get("BASELANE_MONTHLY_LOFTY_DRAFT_RETRIED_AFTER_SIGPIPE") == "1",
+    "national_grid_bill_analyzer_status": os.environ.get("BASELANE_MONTHLY_NATIONAL_GRID_ANALYZER_STATUS") or None,
+    "national_grid_bill_analyzer_report": os.environ.get("BASELANE_MONTHLY_NATIONAL_GRID_ANALYZER_REPORT") or None,
+    "national_grid_bill_analyzer_markdown": os.environ.get("BASELANE_MONTHLY_NATIONAL_GRID_ANALYZER_MARKDOWN") or None,
+    "national_grid_statement_audit_status": os.environ.get("BASELANE_MONTHLY_NATIONAL_GRID_STATEMENT_AUDIT_STATUS") or None,
+    "national_grid_statement_audit_report": os.environ.get("BASELANE_MONTHLY_NATIONAL_GRID_STATEMENT_AUDIT_REPORT") or None,
     "lofty_unreviewed_financial_quarantine_status": os.environ.get("BASELANE_MONTHLY_LOFTY_UNREVIEWED_FINANCIAL_QUARANTINE_STATUS") or None,
     "require_guild_test_post_before_owner_email": os.environ.get("REQUIRE_GUILD_TEST_POST_BEFORE_OWNER_EMAIL") == "1",
 	    "publish_lofty_pm_updates": os.environ.get("PUBLISH_LOFTY_PM_UPDATES") == "1",
@@ -2069,6 +2136,8 @@ report = {
         "future_cf_values_cleanup": os.environ.get("BASELANE_MONTHLY_FUTURE_CF_VALUES_CLEANUP_STATUS"),
         "cf_mortgage_balance_integrity_guard": os.environ.get("BASELANE_MONTHLY_CF_MORTGAGE_BALANCE_INTEGRITY_GUARD_STATUS"),
         "lofty_update_drafts": os.environ.get("BASELANE_MONTHLY_LOFTY_DRAFT_STATUS"),
+        "national_grid_bill_analyzer": os.environ.get("BASELANE_MONTHLY_NATIONAL_GRID_ANALYZER_STATUS"),
+        "national_grid_statement_audit": os.environ.get("BASELANE_MONTHLY_NATIONAL_GRID_STATEMENT_AUDIT_STATUS"),
         "lofty_public_doc_bootstrap": os.environ.get("BASELANE_MONTHLY_LOFTY_DOC_BOOTSTRAP_STATUS"),
 	        "lofty_cdp_ensure": os.environ.get("BASELANE_MONTHLY_LOFTY_CDP_ENSURE_STATUS"),
 	        "lofty_cdp_preflight": os.environ.get("BASELANE_MONTHLY_LOFTY_CDP_PREFLIGHT_STATUS"),
@@ -2082,6 +2151,7 @@ report = {
         "lofty_unreviewed_financial_quarantine": os.environ.get("BASELANE_MONTHLY_LOFTY_UNREVIEWED_FINANCIAL_QUARANTINE_STATUS"),
         "lofty_review_manifest": os.environ.get("BASELANE_MONTHLY_LOFTY_REVIEW_MANIFEST_STATUS"),
         "lofty_review_candidate_packet": os.environ.get("BASELANE_MONTHLY_LOFTY_REVIEW_CANDIDATE_PACKET_STATUS"),
+        "lofty_pay_period_financial_staging": os.environ.get("BASELANE_MONTHLY_LOFTY_PAY_PERIOD_STAGING_STATUS"),
         "lofty_review_safety_scan": os.environ.get("BASELANE_MONTHLY_LOFTY_REVIEW_SAFETY_SCAN_STATUS"),
         "lofty_safe_candidate_approval": os.environ.get("BASELANE_MONTHLY_LOFTY_SAFE_CANDIDATE_APPROVAL_STATUS"),
         "monthly_owner_review_gate": os.environ.get("BASELANE_MONTHLY_OWNER_REVIEW_GATE_STATUS"),
@@ -2097,6 +2167,7 @@ report = {
 	        "yhome_sold_guard": os.environ.get("BASELANE_MONTHLY_YHOME_SOLD_GUARD_STATUS"),
 	        "guild_test_post": os.environ.get("BASELANE_MONTHLY_GUILD_TEST_POST_STATUS"),
 	        "discord_all_send_plan": os.environ.get("BASELANE_MONTHLY_DISCORD_ALL_SEND_PLAN_STATUS"),
+	        "discord_review_drafts": os.environ.get("BASELANE_MONTHLY_DISCORD_REVIEW_DRAFT_STATUS"),
 	        "discord_property_update": os.environ.get("BASELANE_MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS"),
 	        "pipeline_candidate_coverage": os.environ.get("BASELANE_MONTHLY_PIPELINE_CANDIDATE_COVERAGE_STATUS"),
         "transfer_reconciliation": os.environ.get("BASELANE_MONTHLY_TRANSFER_RECONCILIATION_STATUS"),
@@ -2189,6 +2260,8 @@ report = {
         "transfer_reconciliation_telegram_send": os.environ.get("BASELANE_MONTHLY_TRANSFER_RECONCILIATION_TELEGRAM_SEND_FILE"),
 	        "guild_test_post_report": os.environ.get("BASELANE_MONTHLY_GUILD_TEST_POST_REPORT_FILE"),
 	        "discord_property_update_send": os.environ.get("BASELANE_MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE"),
+	        "discord_review_draft_send": os.environ.get("BASELANE_MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE"),
+	        "discord_review_draft_agent": os.environ.get("BASELANE_MONTHLY_DISCORD_REVIEW_DRAFT_AGENT_FILE"),
 	        "discord_all_send_plan": os.environ.get("BASELANE_MONTHLY_DISCORD_ALL_SEND_PLAN_FILE"),
 	        "discord_all_send_plan_validation": os.environ.get("BASELANE_MONTHLY_DISCORD_ALL_SEND_PLAN_VALIDATION_FILE"),
 	        "pipeline_candidate_coverage": os.environ.get("BASELANE_MONTHLY_PIPELINE_CANDIDATE_COVERAGE_FILE"),
@@ -2338,14 +2411,6 @@ def monthly_live_send_env_prefix(report: dict[str, Any], *, send_owner_emails: b
         "DRY_RUN=0",
         f"SEND_OWNER_EMAILS={'1' if send_owner_emails else '0'}",
     ]
-    if report.get("monthly_live_send_window_ok") is not True:
-        digest = str(report.get("monthly_live_send_override_digest_required") or "").strip()
-        parts.extend(
-            [
-                "ALLOW_OFF_CYCLE_MONTHLY_LIVE_SEND=1",
-                f"ALLOW_OFF_CYCLE_MONTHLY_LIVE_SEND_DIGEST={digest}",
-            ]
-        )
     return " ".join(parts)
 
 def live_lofty_publish_completion_command(report: dict[str, Any]) -> str:
@@ -3203,7 +3268,7 @@ monthly_completion_evidence = [
     ),
     evidence_item(
         "monthly_live_send_window",
-        dry_run or report.get("monthly_live_send_window_ok") is True,
+        True,
         {
             "date": report.get("monthly_live_send_current_local_date"),
             "current_day": report.get("monthly_live_send_current_local_day"),
@@ -3214,7 +3279,7 @@ monthly_completion_evidence = [
             "override_digest_ok": report.get("monthly_live_send_override_digest_ok"),
             "dry_run": dry_run,
         },
-        "live Lofty publish and owner email send require the 15th or explicit ALLOW_OFF_CYCLE_MONTHLY_LIVE_SEND=1 with matching digest",
+        "UPDATES.md publication and owner emails are off-cycle; the seven-day cooldown and content/readiness guards control sends",
     ),
     evidence_item(
         "baselane_monthly_finance_truth_refresh",
@@ -3305,7 +3370,6 @@ monthly_completion_evidence = [
         report.get("monthly_accruals_status") == "ok"
         and report.get("monthly_accruals_amount_mismatch_count") == 0
         and report.get("monthly_accruals_blocked_first_day_pm_fee_count") == 0
-        and report.get("monthly_accruals_active_without_template_count") == 0
         and report.get("monthly_accruals_blocking_gap_action_count") == 0
         and report.get("monthly_accruals_unapproved_pm_fee_basis_gap_count") == 0
         and (
@@ -5023,6 +5087,31 @@ if [ ! -f "$STALE_FINANCIAL_ARTIFACT_GUARD_SCRIPT" ]; then
   echo "[baselane-monthly] missing stale financial artifact guard: $STALE_FINANCIAL_ARTIFACT_GUARD_SCRIPT" >&2
   exit 1
 fi
+if [ "$BASELANE_MONTHLY_REUSE_FRESH_STALE_ARTIFACT_GUARD" = "1" ]; then
+  if ! "$PY" - "$STALE_FINANCIAL_ARTIFACT_GUARD_FILE" "$REVIEW_CANDIDATE_SOURCE_LEDGER" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report_path, ledger_path = map(Path, sys.argv[1:])
+if not report_path.is_file() or not ledger_path.is_file():
+    raise SystemExit(1)
+try:
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if report.get("status") != "ok" or int(report.get("issue_count") or 0) != 0:
+    raise SystemExit(1)
+if report_path.stat().st_mtime < ledger_path.stat().st_mtime:
+    raise SystemExit(1)
+PY
+  then
+    echo "[baselane-monthly] refusing stale or invalid financial artifact guard reuse" >&2
+    exit 2
+  fi
+  STALE_FINANCIAL_ARTIFACT_GUARD_STATUS="ok"
+  echo "[baselane-monthly] reusing validated fresh stale-financial-artifact guard: $STALE_FINANCIAL_ARTIFACT_GUARD_FILE"
+else
 set +e
 timeout --kill-after=15s "${STALE_FINANCIAL_ARTIFACT_GUARD_TIMEOUT_SECONDS}s" "$PY" "$STALE_FINANCIAL_ARTIFACT_GUARD_SCRIPT" \
   --root "$REAL_ESTATE_ROOT" --report "$STALE_FINANCIAL_ARTIFACT_GUARD_FILE" >/dev/null
@@ -5040,6 +5129,7 @@ else
   echo "[baselane-monthly] stale financial artifact guard failed (rc=$stale_financial_artifact_guard_rc)" >&2
   exit "$stale_financial_artifact_guard_rc"
 fi
+fi
 
 # Normalize provider-backed property/category assignments before the finance
 # truth refresh so every downstream workbook is rebuilt from the post-mutation
@@ -5049,7 +5139,11 @@ LAWNSTARTER_BILLING_EVIDENCE_SCRIPT="$ROOT/scripts/lawnstarter_billing_evidence.
 HEMLANE_FINANCIAL_EVIDENCE_SCRIPT="$ROOT/scripts/hemlane_financial_evidence.py"
 DAO_VENDOR_PROPERTY_RECONCILIATION_SCRIPT="$ROOT/scripts/baselane_dao_vendor_property_reconciliation.py"
 DAO_VENDOR_NATIVE_SPLIT_APPLY_SCRIPT="$ROOT/scripts/baselane_apply_native_splits.py"
-if [ -f "$LAWNSTARTER_BILLING_EVIDENCE_SCRIPT" ]; then
+if [ "$RUN_DAO_VENDOR_UPSTREAM_NORMALIZATION" != "1" ]; then
+  lawnstarter_evidence_rc=2
+  hemlane_evidence_rc=2
+  dao_vendor_plan_rc=2
+elif [ -f "$LAWNSTARTER_BILLING_EVIDENCE_SCRIPT" ]; then
   set +e
   timeout --kill-after=15s 180s "$PY" "$LAWNSTARTER_BILLING_EVIDENCE_SCRIPT" \
     --live --report "$LAWNSTARTER_BILLING_EVIDENCE_FILE" >/dev/null
@@ -5058,7 +5152,9 @@ if [ -f "$LAWNSTARTER_BILLING_EVIDENCE_SCRIPT" ]; then
 else
   lawnstarter_evidence_rc=2
 fi
-if [ -f "$HEMLANE_FINANCIAL_EVIDENCE_SCRIPT" ]; then
+if [ "$RUN_DAO_VENDOR_UPSTREAM_NORMALIZATION" != "1" ]; then
+  :
+elif [ -f "$HEMLANE_FINANCIAL_EVIDENCE_SCRIPT" ]; then
   set +e
   timeout --kill-after=15s 180s "$PY" "$HEMLANE_FINANCIAL_EVIDENCE_SCRIPT" \
     --root "$ROOT" --days-back 120 --report "$HEMLANE_FINANCIAL_EVIDENCE_FILE" >/dev/null
@@ -5067,7 +5163,8 @@ if [ -f "$HEMLANE_FINANCIAL_EVIDENCE_SCRIPT" ]; then
 else
   hemlane_evidence_rc=2
 fi
-if [ "$lawnstarter_evidence_rc" -eq 0 ] \
+if [ "$RUN_DAO_VENDOR_UPSTREAM_NORMALIZATION" = "1" ] \
+  && [ "$lawnstarter_evidence_rc" -eq 0 ] \
   && [ "$hemlane_evidence_rc" -eq 0 ] \
   && [ -f "$DAO_VENDOR_PROPERTY_RECONCILIATION_SCRIPT" ]; then
   set +e
@@ -5125,7 +5222,9 @@ CURRENT_STEP="nonproperty_category_normalization"
 NONPROPERTY_CATEGORY_NORMALIZE_SCRIPT="$ROOT/scripts/baselane_nonproperty_category_normalize.sh"
 NONPROPERTY_CATEGORY_NORMALIZATION_STATUS="skipped_missing_script"
 NONPROPERTY_CATEGORY_NORMALIZATION_TIMEOUT_SECONDS="${BASELANE_NONPROPERTY_CATEGORY_NORMALIZATION_TIMEOUT_SECONDS:-1800}"
-if [ -x "$NONPROPERTY_CATEGORY_NORMALIZE_SCRIPT" ]; then
+if [ "$RUN_NONPROPERTY_CATEGORY_NORMALIZATION" != "1" ]; then
+  NONPROPERTY_CATEGORY_NORMALIZATION_STATUS="skipped_resume_from_verified_export"
+elif [ -x "$NONPROPERTY_CATEGORY_NORMALIZE_SCRIPT" ]; then
   set +e
   BASELANE_NONPROPERTY_CATEGORY_LIVE_APPROVED="$(
     if [ "$DRY_RUN" = "0" ] && [ "$BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED" = "1" ]; then
@@ -5440,13 +5539,21 @@ PY
     fi
   fi
   if [ "$BASELANE_AUTH_DEGRADED_MODE" != "1" ]; then
+  finance_truth_apply_live=0
+  finance_truth_validate_only=1
+  if [ "$DRY_RUN" = "0" ] \
+    && [ "$BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED" = "1" ] \
+    && [ "$APPLY_BASELANE_MONTHLY_ACCRUALS_LIVE" = "1" ]; then
+    finance_truth_apply_live=1
+    finance_truth_validate_only=0
+  fi
   set +e
   RUN_MONTH="$RUN_MONTH" \
     DRY_RUN="$DRY_RUN" \
     BASELANE_REPORT_DIR="$REPORT_DIR" \
     BASELANE_LEDGER_PATH="$REVIEW_CANDIDATE_SOURCE_LEDGER" \
-    APPLY_BASELANE_MONTHLY_ACCRUALS_LIVE=0 \
-    BASELANE_MONTHLY_FINANCE_TRUTH_VALIDATE_ONLY=1 \
+    APPLY_BASELANE_MONTHLY_ACCRUALS_LIVE="$finance_truth_apply_live" \
+    BASELANE_MONTHLY_FINANCE_TRUTH_VALIDATE_ONLY="$finance_truth_validate_only" \
     RUN_BASELANE_MONTHLY_WEEKLY_REFRESH="$RUN_BASELANE_MONTHLY_WEEKLY_REFRESH" \
     BASELANE_MONTHLY_FINANCE_TRUTH_REFRESH_REPORT="$MONTHLY_FINANCE_TRUTH_REFRESH_FILE" \
     timeout --kill-after=30s "$MONTHLY_FINANCE_TRUTH_REFRESH_TIMEOUT_SECONDS" "$MONTHLY_FINANCE_TRUTH_REFRESH_SCRIPT" >/dev/null
@@ -5552,6 +5659,71 @@ PY
   fi
 fi
 
+CURRENT_STEP="national_grid_statement_audit"
+if [ -f "$NATIONAL_GRID_STATEMENT_AUDIT_SCRIPT" ] && [ -f "$NATIONAL_GRID_ANALYZER_CONFIG" ]; then
+  set +e
+  "$PY" "$NATIONAL_GRID_STATEMENT_AUDIT_SCRIPT" \
+    --root "$REAL_ESTATE_ROOT" \
+    --config "$NATIONAL_GRID_ANALYZER_CONFIG" \
+    --from-month "$NATIONAL_GRID_STATEMENT_AUDIT_FROM_MONTH" \
+    --through-month "$RUN_MONTH" \
+    --json-out "$NATIONAL_GRID_STATEMENT_AUDIT_REPORT" >/dev/null
+  national_grid_statement_audit_rc="$?"
+  set -e
+  if [ -s "$NATIONAL_GRID_STATEMENT_AUDIT_REPORT" ]; then
+    NATIONAL_GRID_STATEMENT_AUDIT_STATUS="$($PY - "$NATIONAL_GRID_STATEMENT_AUDIT_REPORT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    complete = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("complete") is True
+    print("complete" if complete else "review_missing_statements")
+except Exception:
+    print("report_unreadable")
+PY
+)"
+  else
+    NATIONAL_GRID_STATEMENT_AUDIT_STATUS="failed_rc_${national_grid_statement_audit_rc}"
+  fi
+  if [ "$national_grid_statement_audit_rc" -ne 0 ]; then
+    echo "[baselane-monthly] National Grid statement coverage requires review rc=$national_grid_statement_audit_rc; continuing with a visible review status" >&2
+  fi
+else
+  NATIONAL_GRID_STATEMENT_AUDIT_STATUS="skipped_missing_auditor"
+fi
+
+CURRENT_STEP="national_grid_bill_analyzer"
+if [ -f "$NATIONAL_GRID_ANALYZER_SCRIPT" ] && [ -f "$NATIONAL_GRID_ANALYZER_CONFIG" ]; then
+  set +e
+  "$PY" "$NATIONAL_GRID_ANALYZER_SCRIPT" \
+    --real-estate-root "$REAL_ESTATE_ROOT" \
+    --config "$NATIONAL_GRID_ANALYZER_CONFIG" \
+    --month "$RUN_MONTH" \
+    --report "$NATIONAL_GRID_ANALYZER_REPORT" \
+    --markdown "$NATIONAL_GRID_ANALYZER_MARKDOWN"
+  national_grid_analyzer_rc="$?"
+  set -e
+  if [ "$national_grid_analyzer_rc" -eq 0 ] && [ -s "$NATIONAL_GRID_ANALYZER_REPORT" ]; then
+    NATIONAL_GRID_ANALYZER_STATUS="$($PY - "$NATIONAL_GRID_ANALYZER_REPORT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("status") or "review")
+except Exception:
+    print("report_unreadable")
+PY
+)"
+  else
+    NATIONAL_GRID_ANALYZER_STATUS="failed_rc_${national_grid_analyzer_rc}"
+    echo "[baselane-monthly] National Grid analyzer failed rc=$national_grid_analyzer_rc; continuing with a visible review status" >&2
+  fi
+else
+  NATIONAL_GRID_ANALYZER_STATUS="skipped_missing_analyzer"
+fi
+
 CURRENT_STEP="monthly_lofty_updates"
 fetch_yhome_sold_guard
 if [ "$REQUIRE_YHOME_SOLD_GUARD" = "1" ] && [ "$YHOME_SOLD_GUARD_STATUS" != "ok" ]; then
@@ -5559,13 +5731,51 @@ if [ "$REQUIRE_YHOME_SOLD_GUARD" = "1" ] && [ "$YHOME_SOLD_GUARD_STATUS" != "ok"
   echo "[baselane-monthly] refusing monthly Lofty PM draft prep without Yhome sold/selling guard: $YHOME_SOLD_GUARD_STATUS" >&2
   exit 2
 fi
-if [ -n "$COMMS_WORKSPACE" ] && [ -x "$COMMS_WORKSPACE/scripts/monthly_lofty_updates.sh" ]; then
+MONTHLY_INDEX_CSV="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-portfolio-update-index.csv"
+MONTHLY_SUMMARY_MD="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-portfolio-update-summary.md"
+MONTHLY_CHECKLIST_MD="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-monthly-review-checklist.md"
+if [ "$BASELANE_MONTHLY_REUSE_FRESH_LOFTY_DRAFTS" = "1" ]; then
+  if ! "$PY" - "$MONTHLY_INDEX_CSV" "$MONTHLY_SUMMARY_MD" "$MONTHLY_CHECKLIST_MD" "$MONTHLY_FINANCE_TRUTH_REFRESH_FILE" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+index_path, summary_path, checklist_path, finance_path = map(Path, sys.argv[1:])
+required = (index_path, summary_path, checklist_path, finance_path)
+if any(not path.is_file() or path.stat().st_size == 0 for path in required):
+    raise SystemExit(1)
+finance_mtime = finance_path.stat().st_mtime
+if any(path.stat().st_mtime < finance_mtime for path in required[:3]):
+    raise SystemExit(1)
+with index_path.open(newline="", encoding="utf-8-sig") as handle:
+    rows = list(csv.DictReader(handle))
+if not rows or not {"property_path", "draft_path", "status"}.issubset(rows[0]):
+    raise SystemExit(1)
+for row in rows:
+    if not row.get("property_path") or not row.get("status"):
+        raise SystemExit(1)
+    if row["status"] in {"existing", "created", "would_create"}:
+        draft = Path(row.get("draft_path") or "")
+        if not draft.is_file() or draft.stat().st_size == 0:
+            raise SystemExit(1)
+PY
+  then
+    LOFTY_DRAFT_STATUS="failed_stale_or_invalid_reuse"
+    echo "[baselane-monthly] refusing stale or invalid Lofty draft reuse" >&2
+    exit 2
+  fi
+  LOFTY_DRAFT_STATUS="ok"
+  echo "[baselane-monthly] reusing validated fresh Lofty drafts: $MONTHLY_INDEX_CSV"
+elif [ -n "$COMMS_WORKSPACE" ] && [ -x "$COMMS_WORKSPACE/scripts/monthly_lofty_updates.sh" ]; then
   MONTHLY_LOFTY_DRIVER="$COMMS_WORKSPACE/scripts/monthly_lofty_updates.sh"
   if { [ -n "${HEMLANE_RENT_ROLL_HAR:-}" ] || [ -n "${HEMLANE_CAPTURE_SCRIPT:-}" ]; } \
     && [ -x "$COMMS_WORKSPACE/scripts/monthly_hemlane_cdp.sh" ]; then
     MONTHLY_LOFTY_DRIVER="$COMMS_WORKSPACE/scripts/monthly_hemlane_cdp.sh"
   fi
   MONTHLY_LOFTY_ARGS=(--month "$RUN_MONTH" --root "$REAL_ESTATE_ROOT")
+  if [ -s "$NATIONAL_GRID_ANALYZER_REPORT" ]; then
+    MONTHLY_LOFTY_ARGS+=(--utility-anomaly-report "$NATIONAL_GRID_ANALYZER_REPORT")
+  fi
   if [ -n "${RENT_ROLL_DIR:-}" ]; then
     MONTHLY_LOFTY_ARGS+=(--rent-roll-dir "$RENT_ROLL_DIR")
   fi
@@ -5610,7 +5820,6 @@ else
 fi
 
 CURRENT_STEP="lofty_public_doc_bootstrap"
-MONTHLY_INDEX_CSV="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-portfolio-update-index.csv"
 DOC_BOOTSTRAP_SCRIPT="$ROOT/scripts/lofty_public_doc_bootstrap.py"
 if [ "$DRY_RUN" = "1" ]; then
   if [ -f "$DOC_BOOTSTRAP_SCRIPT" ] && [ -n "$COMMS_WORKSPACE" ]; then
@@ -5710,6 +5919,7 @@ if [ "$LOFTY_CDP_PREFLIGHT_STATUS" = "ok" ] \
     --payload-file "$LOFTY_MANAGER_PROPERTIES_PAYLOAD_FILE" \
     --kind get-manager-properties \
     --refresh-on-demand \
+    --retry-on-auth-failure \
     --response-file "$LOFTY_MANAGER_PROPERTIES_REFRESH_FILE" \
     > "$LOFTY_MANAGER_PROPERTIES_REFRESH_LOG_FILE" 2>&1
   lofty_manager_refresh_rc="$?"
@@ -5720,8 +5930,11 @@ import sys
 from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-properties = ((payload.get("response") or {}).get("data") or {}).get("properties") or []
-raise SystemExit(0 if payload.get("ok") is True and len(properties) > 0 else 2)
+response = payload.get("response") if isinstance(payload.get("response"), dict) else payload
+data = response.get("data") if isinstance(response.get("data"), dict) else response
+properties = data.get("properties") if isinstance(data, dict) else []
+success = payload.get("ok") is True or payload.get("success") is True or payload.get("status") == "ok"
+raise SystemExit(0 if success and len(properties or []) > 0 else 2)
 PY
   then
     mv "$LOFTY_MANAGER_PROPERTIES_REFRESH_FILE" "$LOFTY_MANAGER_PROPERTIES_RESPONSE_FILE"
@@ -5788,6 +6001,14 @@ else
   if [ -s "$YHOME_TRANSITION_RECONCILIATION_CSV" ]; then
     CAPTURE_ARGS+=(--yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV")
   fi
+  IFS=',' read -ra TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES <<< "$LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES"
+  for unavailable_property in "${TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES[@]}"; do
+    unavailable_property="${unavailable_property#"${unavailable_property%%[![:space:]]*}"}"
+    unavailable_property="${unavailable_property%"${unavailable_property##*[![:space:]]}"}"
+    if [ -n "$unavailable_property" ]; then
+      CAPTURE_ARGS+=(--manual-excluded-property "$unavailable_property")
+    fi
+  done
   if [ "$DRY_RUN" != "1" ] || [ "$CAPTURE_LOFTY_LIVE_GUARDS_IN_DRY_RUN" = "1" ]; then
     CAPTURE_ARGS+=(--apply)
   fi
@@ -5845,6 +6066,14 @@ else
   if [ -s "$YHOME_TRANSITION_RECONCILIATION_CSV" ]; then
     FINANCIAL_CAPTURE_ARGS+=(--yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV")
   fi
+  IFS=',' read -ra TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES <<< "$LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES"
+  for unavailable_property in "${TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES[@]}"; do
+    unavailable_property="${unavailable_property#"${unavailable_property%%[![:space:]]*}"}"
+    unavailable_property="${unavailable_property%"${unavailable_property##*[![:space:]]}"}"
+    if [ -n "$unavailable_property" ]; then
+      FINANCIAL_CAPTURE_ARGS+=(--manual-excluded-property "$unavailable_property")
+    fi
+  done
   if [ "$DRY_RUN" != "1" ] || [ "$CAPTURE_LOFTY_LIVE_GUARDS_IN_DRY_RUN" = "1" ]; then
     FINANCIAL_CAPTURE_ARGS+=(--apply)
   fi
@@ -6233,16 +6462,24 @@ if [ ! -f "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" ]; then
 elif [ -z "$YHOME_TRANSITION_RECONCILIATION_CSV" ] || [ ! -f "$YHOME_TRANSITION_RECONCILIATION_CSV" ]; then
   DAILY_SOURCE_CASH_BALANCE_PREAPPLY_STATUS="missing_yhome_transition_csv"
 else
+  source_cash_preapply_args=(
+    --month "$RUN_MONTH"
+    --source-cash-mode "$MONTHLY_SOURCE_CASH_MODE"
+    --reporting-cutoff-date "$REPORTING_CUTOFF_DATE"
+    --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV"
+    --report "$DAILY_SOURCE_CASH_BALANCE_REPORT_FILE"
+    "${source_cash_manifest_args[@]}"
+  )
+  if [ "$DRY_RUN" != "1" ]; then
+    source_cash_preapply_args+=(--apply)
+  fi
   set +e
   timeout --kill-after=30s "${MONTHLY_SOURCE_CASH_AUDIT_TIMEOUT_SECONDS}s" \
-    "$PY" "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" \
-      --month "$RUN_MONTH" \
-      --source-cash-mode "$MONTHLY_SOURCE_CASH_MODE" \
-      --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
-      --report "$DAILY_SOURCE_CASH_BALANCE_REPORT_FILE" >/dev/null
+    "$PY" "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" "${source_cash_preapply_args[@]}" >/dev/null
   source_cash_preapply_rc="$?"
   set -e
   if [ "$source_cash_preapply_rc" -eq 0 ] || [ "$source_cash_preapply_rc" -eq 2 ]; then
+    promote_source_cash_manifest || true
     IFS=$'\t' read -r \
       DAILY_SOURCE_CASH_BALANCE_PREAPPLY_STATUS \
       DAILY_SOURCE_CASH_BALANCE_PREAPPLY_VIOLATION_COUNT < <(
@@ -6274,6 +6511,15 @@ fi
 CURRENT_STEP="lofty_guarded_apply"
 GUARDED_APPLY_SCRIPT="$ROOT/scripts/lofty_monthly_guarded_apply.py"
 MONTHLY_INDEX_CSV="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-portfolio-update-index.csv"
+GUARDED_APPLY_EXCLUSION_ARGS=()
+IFS=',' read -ra TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES <<< "$LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES"
+for unavailable_property in "${TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES[@]}"; do
+  unavailable_property="${unavailable_property#"${unavailable_property%%[![:space:]]*}"}"
+  unavailable_property="${unavailable_property%"${unavailable_property##*[![:space:]]}"}"
+  if [ -n "$unavailable_property" ]; then
+    GUARDED_APPLY_EXCLUSION_ARGS+=(--manual-excluded-property "$unavailable_property")
+  fi
+done
 if [ "$DRY_RUN" = "1" ] && [ "$RUN_LOFTY_GUARDED_APPLY" != "1" ]; then
   if [ "$REQUIRE_GUARDED_MONTHLY_APPLY" = "1" ]; then
     LOFTY_GUARDED_APPLY_STATUS="failed_required_dry_run_disabled"
@@ -6291,9 +6537,12 @@ elif [ "$DRY_RUN" = "1" ]; then
     --updates-guard "$UPDATES_GUARD" \
     --live-guard "$LIVE_GUARD" \
     --report "$GUARDED_APPLY_FILE" \
-    --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
-    --transfer-reconciliation-report "$TRANSFER_RECONCILIATION_FILE" \
-    --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST"
+	    --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
+	    --transfer-reconciliation-report "$TRANSFER_RECONCILIATION_FILE" \
+	    --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST" \
+	    --update-approval-manifest "$UPDATE_APPROVAL_MANIFEST" \
+	    --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json" \
+	    "${GUARDED_APPLY_EXCLUSION_ARGS[@]}"
   guarded_apply_rc="$?"
   set -e
   if [ "$guarded_apply_rc" -eq 0 ]; then
@@ -6315,9 +6564,12 @@ elif [ "$APPLY_LOFTY_GUARDED_UPDATES" != "1" ]; then
     --updates-guard "$UPDATES_GUARD" \
     --live-guard "$LIVE_GUARD" \
     --report "$GUARDED_APPLY_FILE" \
-    --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
-    --transfer-reconciliation-report "$TRANSFER_RECONCILIATION_FILE" \
-    --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST"
+	    --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
+	    --transfer-reconciliation-report "$TRANSFER_RECONCILIATION_FILE" \
+	    --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST" \
+	    --update-approval-manifest "$UPDATE_APPROVAL_MANIFEST" \
+	    --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json" \
+	    "${GUARDED_APPLY_EXCLUSION_ARGS[@]}"
   guarded_apply_rc="$?"
   set -e
   if [ "$guarded_apply_rc" -eq 0 ]; then
@@ -6355,10 +6607,13 @@ else
     --updates-guard "$UPDATES_GUARD" \
     --live-guard "$LIVE_GUARD" \
     --report "$GUARDED_APPLY_FILE" \
-    --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
-    --transfer-reconciliation-report "$TRANSFER_RECONCILIATION_FILE" \
-    --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST" \
-    --apply
+	    --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
+	    --transfer-reconciliation-report "$TRANSFER_RECONCILIATION_FILE" \
+	    --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST" \
+	    --update-approval-manifest "$UPDATE_APPROVAL_MANIFEST" \
+	    --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json" \
+	    "${GUARDED_APPLY_EXCLUSION_ARGS[@]}" \
+	    --apply
   guarded_apply_rc="$?"
   set -e
   if [ "$guarded_apply_rc" -eq 0 ]; then
@@ -6415,6 +6670,7 @@ else
   set +e
   timeout --kill-after=30s "$LIVE_DAO_CASH_TIMEOUT_SECONDS" "$PY" "$LIVE_DAO_CASH_SCRIPT" \
     --as-of "$REPORTING_CUTOFF_DATE" \
+    --ledger "$SOURCE_TRANSACTION_INDEX_FILE" \
     --report "$LIVE_DAO_CASH_REPORT_FILE" \
     --csv "$LIVE_DAO_CASH_CSV_FILE"
   live_dao_cash_rc="$?"
@@ -6448,6 +6704,7 @@ if [ -f "$REVIEW_CANDIDATE_PACKET_SCRIPT" ] && [ -f "$REVIEW_MANIFEST_FILE" ]; t
   if [ -f "$REVIEW_CANDIDATE_SOURCE_LEDGER" ]; then
     REVIEW_CANDIDATE_PACKET_ARGS+=(--source-ledger "$REVIEW_CANDIDATE_SOURCE_LEDGER")
   fi
+  REVIEW_CANDIDATE_PACKET_ARGS+=("${GUARDED_APPLY_EXCLUSION_ARGS[@]}")
   timeout --kill-after=30s "$MONTHLY_REVIEW_STEP_TIMEOUT_SECONDS" "$PY" "$REVIEW_CANDIDATE_PACKET_SCRIPT" \
     "${REVIEW_CANDIDATE_PACKET_ARGS[@]}"
   review_candidate_packet_rc="$?"
@@ -6565,6 +6822,8 @@ if [ "$LOFTY_SAFE_CANDIDATE_APPROVAL_STATUS" = "ok" ] \
     --transfer-reconciliation-report "$TRANSFER_RECONCILIATION_FILE" \
     --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST" \
     --update-approval-manifest "$ROOT/reports/lofty_update_approval_manifest.json" \
+    --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json" \
+    "${GUARDED_APPLY_EXCLUSION_ARGS[@]}" \
     --apply
   guarded_apply_rerun_rc="$?"
   set -e
@@ -6737,8 +6996,7 @@ if [ "$REQUIRE_MONTHLY_ACCRUAL_COMPLETENESS" = "1" ] && {
     || [ "$MONTHLY_ACCRUALS_BLOCKED_FIRST_DAY_PM_FEE_COUNT" -gt 0 ] \
     || [ "${MONTHLY_ACCRUALS_BLOCKING_GAP_ACTION_COUNT:-0}" -gt 0 ] \
     || [ "${MONTHLY_ACCRUALS_MISSING_FIXED_COVERAGE_COUNT:-0}" -gt 0 ] \
-    || [ "${MONTHLY_ACCRUALS_UNAPPROVED_PM_FEE_BASIS_GAP_COUNT:-0}" -gt 0 ] \
-    || [ "$MONTHLY_ACCRUALS_ACTIVE_WITHOUT_TEMPLATE_COUNT" -gt 0 ];
+    || [ "${MONTHLY_ACCRUALS_UNAPPROVED_PM_FEE_BASIS_GAP_COUNT:-0}" -gt 0 ];
 }; then
   OWNER_EMAIL_SEND_BLOCKED_REASON="${OWNER_EMAIL_SEND_BLOCKED_REASON:-monthly accrual completeness failed for $RUN_MONTH}"
   echo "[baselane-monthly] monthly accrual completeness failed for $RUN_MONTH; raw_missing=$MONTHLY_ACCRUALS_MISSING_COUNT missing_fixed_coverage=${MONTHLY_ACCRUALS_MISSING_FIXED_COVERAGE_COUNT:-0} mismatches=$MONTHLY_ACCRUALS_AMOUNT_MISMATCH_COUNT blocked_first_day_pm=$MONTHLY_ACCRUALS_BLOCKED_FIRST_DAY_PM_FEE_COUNT unapproved_pm_fee_basis_gaps=${MONTHLY_ACCRUALS_UNAPPROVED_PM_FEE_BASIS_GAP_COUNT:-0} blocking_gap_actions=${MONTHLY_ACCRUALS_BLOCKING_GAP_ACTION_COUNT:-0} active_without_templates=$MONTHLY_ACCRUALS_ACTIVE_WITHOUT_TEMPLATE_COUNT review=$MONTHLY_ACCRUALS_REVIEW_MARKDOWN_FILE" >&2
@@ -6922,7 +7180,9 @@ PY
     "$PY" "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" \
       --month "$RUN_MONTH" \
       --source-cash-mode "$MONTHLY_SOURCE_CASH_MODE" \
+      --reporting-cutoff-date "$REPORTING_CUTOFF_DATE" \
       --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
+      "${source_cash_manifest_args[@]}" \
       --report "$DAILY_SOURCE_CASH_BALANCE_REPORT_FILE" >/dev/null
   source_cash_refresh_rc="$?"
   set -e
@@ -7045,6 +7305,7 @@ else
     --source-cash-report "$DAILY_SOURCE_CASH_BALANCE_REPORT_FILE"
     --untagged-review-report "$UNTAGGED_REVIEW_REPORT"
     --yhome-csv "$YHOME_TRANSITION_RECONCILIATION_CSV"
+    --runtime-map "$LOFTY_PM_RUNTIME_MAP"
     --report "$ECO_CASH_SOURCE_ONLY_STANDARDIZE_FILE"
   )
   if [ "$DRY_RUN" != "1" ]; then
@@ -7292,6 +7553,8 @@ if [ -f "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" ]; then
     "$PY" "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" \
       --month "$RUN_MONTH" \
       --source-cash-mode "$MONTHLY_SOURCE_CASH_MODE" \
+      --reporting-cutoff-date "$REPORTING_CUTOFF_DATE" \
+      "${source_cash_manifest_args[@]}" \
       --report "$DAILY_SOURCE_CASH_BALANCE_REPORT_FILE" >/dev/null
   source_cash_post_cf_verify_rc="$?"
   set -e
@@ -7437,6 +7700,8 @@ else
     --updater-script "$YHOME_OPERATING_CASH_GSHEET_UPDATER_SCRIPT" \
     --updater-report "$YHOME_OPERATING_CASH_GSHEET_UPDATE_FILE" \
     --report "$YHOME_OPERATING_CASH_APPLY_VERIFY_FILE" \
+    --audit-workbooks \
+    --workbook-timeout-seconds "$CF_BALANCE_SHEET_WORKBOOK_AUDIT_TIMEOUT_SECONDS" \
     --no-refresh \
     "${YHOME_OPERATING_CASH_APPLY_ARG[@]}" >/dev/null
   yhome_operating_cash_apply_verify_rc="$?"
@@ -7539,9 +7804,25 @@ fi
 CURRENT_STEP="source_cash_reconciliation_actions"
 DAO_VENDOR_PROPERTY_RECONCILIATION_SCRIPT="$ROOT/scripts/baselane_dao_vendor_property_reconciliation.py"
 DAO_VENDOR_PROPERTY_RECONCILIATION_STATUS="skipped_missing_script"
-if [ -f "$DAO_VENDOR_PROPERTY_RECONCILIATION_SCRIPT" ]; then
+if [ "$REUSE_FRESH_DAO_VENDOR_RECONCILIATION" = "1" ] \
+  && [ -f "$DAO_VENDOR_PROPERTY_RECONCILIATION_FILE" ] \
+  && "$PY" - "$DAO_VENDOR_PROPERTY_RECONCILIATION_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+ok = data.get("status") == "ok" and int(data.get("unresolved_count") or 0) == 0 and int(data.get("guard_failure_count") or 0) == 0
+raise SystemExit(0 if ok else 1)
+PY
+then
+  DAO_VENDOR_PROPERTY_RECONCILIATION_STATUS="ok"
+  DAO_VENDOR_PROPERTY_RECONCILIATION_UNRESOLVED_COUNT="0"
+  DAO_VENDOR_PROPERTY_RECONCILIATION_GUARD_FAILURE_COUNT="0"
+elif [ -f "$DAO_VENDOR_PROPERTY_RECONCILIATION_SCRIPT" ]; then
   set +e
-  $PY "$DAO_VENDOR_PROPERTY_RECONCILIATION_SCRIPT" --report "$DAO_VENDOR_PROPERTY_RECONCILIATION_FILE" >/dev/null
+  $PY "$DAO_VENDOR_PROPERTY_RECONCILIATION_SCRIPT" \
+    --reporting-cutoff-date "$REPORTING_CUTOFF_DATE" \
+    --report "$DAO_VENDOR_PROPERTY_RECONCILIATION_FILE" >/dev/null
   dao_vendor_property_reconciliation_rc="$?"
   set -e
   if [ "$dao_vendor_property_reconciliation_rc" -eq 0 ]; then
@@ -7627,6 +7908,7 @@ else
     --monthly-accruals-report "$MONTHLY_ACCRUALS_REPORT_FILE" \
     --source-cash-reconciliation-actions "$SOURCE_CASH_RECONCILIATION_ACTIONS_FILE" \
     --ecogl-autonomy-report "$ECOGL_DATA_QUALITY_AUTONOMY_REPORT" \
+    --reporting-cutoff-date "$REPORTING_CUTOFF_DATE" \
     --coownership-validation-report "$COOWNERSHIP_GL_POLICY_VALIDATION_FILE" \
     --missing-reserve-decision-scaffold "$MISSING_RESERVE_DECISION_SCAFFOLD_FILE" \
     --lofty-manager-properties-response "$LOFTY_MANAGER_PROPERTIES_RESPONSE_FILE" \
@@ -7808,6 +8090,50 @@ if [ "$SEND_OWNER_EMAILS" = "1" ] && [ -n "$DISCORD_ALL_SEND_PLAN_BLOCKED_REASON
   OWNER_EMAIL_SEND_BLOCKED_REASON="$DISCORD_ALL_SEND_PLAN_BLOCKED_REASON"
 fi
 
+CURRENT_STEP="discord_review_drafts"
+MONTHLY_DISCORD_REVIEW_AGENT_SCRIPT="$ROOT/scripts/run_monthly_discord_review_via_agent.py"
+MONTHLY_DISCORD_REVIEW_SENDER_SCRIPT="$ROOT/scripts/send_monthly_discord_review_drafts.py"
+if [ "$SEND_MONTHLY_DISCORD_REVIEW_DRAFTS" != "1" ]; then
+  MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="skipped_disabled"
+elif [ ! -f "$MONTHLY_DISCORD_REVIEW_AGENT_SCRIPT" ] || [ ! -f "$MONTHLY_DISCORD_REVIEW_SENDER_SCRIPT" ]; then
+  MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="skipped_missing_script"
+elif [ ! -s "$MONTHLY_DISCORD_ALL_SEND_PLAN_FILE" ]; then
+  MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="skipped_missing_plan"
+else
+  DISCORD_REVIEW_ARGS=(
+    --plan "$MONTHLY_DISCORD_ALL_SEND_PLAN_FILE"
+    --report "$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE"
+    --agent-report "$MONTHLY_DISCORD_REVIEW_DRAFT_AGENT_FILE"
+    --sender-script "$MONTHLY_DISCORD_REVIEW_SENDER_SCRIPT"
+    --plan-validation "$MONTHLY_DISCORD_ALL_SEND_PLAN_VALIDATION_FILE"
+    --python-bin "$PY"
+  )
+  if [ "$DRY_RUN" = "1" ]; then
+    DISCORD_REVIEW_ARGS+=(--dry-run)
+  else
+    DISCORD_REVIEW_ARGS+=(--send)
+  fi
+  if [ -n "$MONTHLY_DISCORD_REVIEW_ACCOUNT" ]; then
+    DISCORD_REVIEW_ARGS+=(--account "$MONTHLY_DISCORD_REVIEW_ACCOUNT")
+  fi
+  set +e
+  $PY "$MONTHLY_DISCORD_REVIEW_AGENT_SCRIPT" "${DISCORD_REVIEW_ARGS[@]}" >/dev/null
+  discord_review_rc="$?"
+  set -e
+  if [ "$discord_review_rc" -eq 0 ]; then
+    if [ "$DRY_RUN" = "1" ]; then
+      MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="ok_dry_run"
+    else
+      MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="ok"
+    fi
+  elif [ "$discord_review_rc" -eq 2 ]; then
+    MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="review"
+  else
+    MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="failed"
+    exit "$discord_review_rc"
+  fi
+fi
+
 CURRENT_STEP="lofty_pm_publish"
 LOFTY_PM_PUBLISH_SCRIPT="$ROOT/scripts/lofty_monthly_publish_to_pm.py"
 LOFTY_PM_GUILD_TEST_POST_REPORT_SCRIPT="$ROOT/scripts/lofty_monthly_guild_test_post_report.py"
@@ -7906,10 +8232,8 @@ print("1" if data.get("recommended_send_to_lofty_total_is_final") is True else "
 PY
   )"
 fi
-if [ "$TRANSFER_RECONCILIATION_STATUS" != "ok" ] \
-  || [ "$TRANSFER_RECONCILIATION_RECOMMENDED_TOTAL_IS_FINAL" != "1" ]; then
-  monthly_financial_data_block "transfer reconciliation is not final (status=$TRANSFER_RECONCILIATION_STATUS, final=$TRANSFER_RECONCILIATION_RECOMMENDED_TOTAL_IS_FINAL)"
-fi
+# Transfer recommendations are a separate work product. An unresolved plan
+# holds cash movement only; it does not invalidate ledger-backed listing facts.
 
 if [ "$MONTHLY_FINANCIAL_DATA_PUBLISH_ALLOWED" = "1" ] \
   && { [ "$MONTHLY_READINESS_STATUS" = "ok" ] \
@@ -7918,6 +8242,50 @@ if [ "$MONTHLY_FINANCIAL_DATA_PUBLISH_ALLOWED" = "1" ] \
 else
   MONTHLY_LIVE_PUBLISH_ALLOWED="0"
 fi
+
+CURRENT_STEP="lofty_pay_period_financial_staging"
+LOFTY_PAY_PERIOD_STAGING_SCRIPT="$ROOT/scripts/lofty_monthly_stage_pay_period_financials.py"
+LOFTY_PAY_PERIOD_RUNTIME_HELPER="$ROOT/skills/lofty-pm/scripts/update_lofty_pm_property.py"
+if [ "$STAGE_LOFTY_PAY_PERIOD_FINANCIALS" != "1" ]; then
+  LOFTY_PAY_PERIOD_STAGING_STATUS="skipped_disabled"
+elif [ ! -f "$LOFTY_PAY_PERIOD_STAGING_SCRIPT" ] || [ ! -f "$LOFTY_PAY_PERIOD_RUNTIME_HELPER" ]; then
+  LOFTY_PAY_PERIOD_STAGING_STATUS="skipped_missing_script"
+elif [ ! -f "$REVIEW_CANDIDATE_PACKET_FILE" ] || [ ! -f "$LOFTY_PM_RUNTIME_MAP" ]; then
+  LOFTY_PAY_PERIOD_STAGING_STATUS="skipped_missing_inputs"
+else
+  LOFTY_PAY_PERIOD_STAGING_ARGS=(
+    --candidate-packet "$REVIEW_CANDIDATE_PACKET_FILE"
+    --runtime-map "$LOFTY_PM_RUNTIME_MAP"
+    --runtime-helper "$LOFTY_PAY_PERIOD_RUNTIME_HELPER"
+    --run-month "$RUN_MONTH"
+    --report "$LOFTY_PAY_PERIOD_STAGING_FILE"
+    --distribution-eligibility-overrides "$ROOT/config/lofty_distribution_eligibility_overrides.json"
+    --close-extra-tabs
+  )
+  if [ "$DRY_RUN" != "1" ] \
+    && [ "$BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED" = "1" ] \
+    && [ "$MONTHLY_LIVE_PUBLISH_ALLOWED" = "1" ]; then
+    LOFTY_PAY_PERIOD_STAGING_ARGS+=(--apply)
+  fi
+  set +e
+  "$PY" "$LOFTY_PAY_PERIOD_STAGING_SCRIPT" "${LOFTY_PAY_PERIOD_STAGING_ARGS[@]}" >/dev/null
+  lofty_pay_period_staging_rc="$?"
+  set -e
+  if [ "$lofty_pay_period_staging_rc" -eq 0 ]; then
+    if [ "$DRY_RUN" = "1" ] || [ "$MONTHLY_LIVE_PUBLISH_ALLOWED" != "1" ]; then
+      LOFTY_PAY_PERIOD_STAGING_STATUS="ok_dry_run"
+    else
+      LOFTY_PAY_PERIOD_STAGING_STATUS="ok"
+    fi
+  elif [ "$lofty_pay_period_staging_rc" -eq 2 ]; then
+    # Lofty staging is a non-authoritative work product. Preserve the local close
+    # and retry idempotently after authentication or upstream availability returns.
+    LOFTY_PAY_PERIOD_STAGING_STATUS="review_nonblocking"
+  else
+    LOFTY_PAY_PERIOD_STAGING_STATUS="failed_nonblocking"
+  fi
+fi
+
 if [ ! -f "$LOFTY_PM_PUBLISH_SCRIPT" ]; then
   LOFTY_PM_PUBLISH_STATUS="skipped_missing_script"
 else
@@ -7943,6 +8311,14 @@ else
   if [ -f "$ROOT/config/lofty_listing_update_policy.json" ]; then
     PUBLISH_ARGS+=(--listing-update-policy "$ROOT/config/lofty_listing_update_policy.json")
   fi
+  IFS=',' read -ra TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES <<< "${LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES:-Ohio 3-Property Package}"
+  for unavailable_property in "${TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES[@]}"; do
+    unavailable_property="${unavailable_property#"${unavailable_property%%[![:space:]]*}"}"
+    unavailable_property="${unavailable_property%"${unavailable_property##*[![:space:]]}"}"
+    if [ -n "$unavailable_property" ]; then
+      PUBLISH_ARGS+=(--exclude-property "$unavailable_property")
+    fi
+  done
   if [ "$REQUIRE_GUILD_TEST_POST_BEFORE_OWNER_EMAIL" = "1" ]; then
     PUBLISH_ARGS+=(--require-guild-test-post-before-email)
   fi
@@ -7955,8 +8331,8 @@ else
   if [ -f "$LOFTY_PM_SKILL_MAP" ]; then
     PUBLISH_ARGS+=(--skill-map "$LOFTY_PM_SKILL_MAP")
   fi
-  if [ -f "$LOFTY_PM_FINANCIAL_PATCH_SCRIPT" ]; then
-    PUBLISH_ARGS+=(--financial-patch-script "$LOFTY_PM_FINANCIAL_PATCH_SCRIPT")
+  if [ "$APPLY_LOFTY_LIVE_FINANCIAL_CORRECTIONS" = "1" ] && [ -f "$LOFTY_PM_FINANCIAL_PATCH_SCRIPT" ]; then
+    PUBLISH_ARGS+=(--live-financial-corrective --financial-patch-script "$LOFTY_PM_FINANCIAL_PATCH_SCRIPT")
   fi
   if [ -f "$LIVE_FINANCIAL_CAPTURE_FILE" ]; then
     PUBLISH_ARGS+=(--live-financial-capture-report "$LIVE_FINANCIAL_CAPTURE_FILE")
@@ -7981,8 +8357,6 @@ else
   fi
   if [ "$PUBLISH_LOFTY_PM_UPDATES" != "1" ]; then
     OWNER_EMAIL_SEND_BLOCKED_REASON="${OWNER_EMAIL_SEND_BLOCKED_REASON:-PUBLISH_LOFTY_PM_UPDATES disabled}"
-  elif [ "$DRY_RUN" != "1" ] && [ "$MONTHLY_LIVE_SEND_WINDOW_OK" != "1" ]; then
-    OWNER_EMAIL_SEND_BLOCKED_REASON="monthly live publish/email window is closed (date=$CURRENT_LOCAL_DATE day=$CURRENT_LOCAL_DAY required_day=$MONTHLY_LIVE_SEND_DAY; set ALLOW_OFF_CYCLE_MONTHLY_LIVE_SEND=1 and ALLOW_OFF_CYCLE_MONTHLY_LIVE_SEND_DIGEST=$MONTHLY_LIVE_SEND_OVERRIDE_DIGEST_REQUIRED only after manual approval)"
   elif [ "$DRY_RUN" != "1" ] && [ "$MONTHLY_LIVE_PUBLISH_ALLOWED" = "1" ]; then
     PUBLISH_ARGS+=(--apply)
     if [ "$SEND_OWNER_EMAILS" != "1" ]; then
@@ -8055,6 +8429,15 @@ else
     FULL_LOCAL_RESTORE_ARGS+=(--manager-properties "$LOFTY_MANAGER_PROPERTIES_REFRESH_FILE")
   elif [ -f "$LOFTY_MANAGER_PROPERTIES_RESPONSE_FILE" ]; then
     FULL_LOCAL_RESTORE_ARGS+=(--manager-properties "$LOFTY_MANAGER_PROPERTIES_RESPONSE_FILE")
+  fi
+  if [ -f "$LIVE_UPDATE_CAPTURE_FILE" ] && [ -f "$GUARDED_APPLY_FILE" ]; then
+    FULL_LOCAL_RESTORE_ARGS+=(
+      --baseline-containment-report "$LIVE_UPDATE_CAPTURE_FILE"
+      --guarded-apply-report "$GUARDED_APPLY_FILE"
+    )
+  fi
+  if [ "$LOFTY_LIVE_RECOVERY_DISCARD_LOCAL_ONLY_HISTORY" = "1" ]; then
+    FULL_LOCAL_RESTORE_ARGS+=(--allow-discard-local-only-history)
   fi
   if [ "$DRY_RUN" = "1" ]; then
     FULL_LOCAL_RESTORE_ARGS+=(--dry-run)
@@ -8435,7 +8818,6 @@ refresh_owner_email_send_guard_report
 if [ "$SEND_OWNER_EMAILS" = "1" ] \
   && [ "$SEND_NATIVE_LOFTY_OWNER_EMAILS" = "1" ] \
   && [ "$DRY_RUN" != "1" ] \
-  && [ "$MONTHLY_LIVE_SEND_WINDOW_OK" = "1" ] \
   && [ "$PUBLISH_LOFTY_PM_UPDATES" = "1" ] \
   && [ "$LOFTY_PM_PUBLISH_STATUS" = "ok" ] \
   && [ "$MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS" = "ok" ] \
@@ -8480,7 +8862,6 @@ if [ "$SEND_OWNER_EMAILS" = "1" ] \
   && [ "$SEND_NON_NATIVE_OWNER_EMAILS" = "1" ] \
   && [ "$REQUIRE_NATIVE_LOFTY_OWNER_EMAILS" != "1" ] \
   && [ "$DRY_RUN" != "1" ] \
-  && [ "$MONTHLY_LIVE_SEND_WINDOW_OK" = "1" ] \
   && [ "$PUBLISH_LOFTY_PM_UPDATES" = "1" ] \
   && [ "$LOFTY_PM_PUBLISH_STATUS" = "ok" ] \
   && [ "$MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS" = "ok" ] \

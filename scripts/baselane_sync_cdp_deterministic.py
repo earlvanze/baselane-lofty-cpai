@@ -22,7 +22,8 @@ from baselane_brave_utils import brave_port_candidates, cdp_diagnostics, resolve
 
 SCRIPT_PATH = Path(__file__).absolute()
 ROOT = Path(os.environ.get('WORKSPACE_ROOT') or os.environ.get('OPENCLAW_WORKSPACE') or SCRIPT_PATH.parents[1])
-REPORT = ROOT / 'reports' / 'baselane_sync_cdp_report.json'
+REPORT_DIR = Path(os.environ.get('BASELANE_REPORT_DIR') or ROOT / 'reports')
+REPORT = REPORT_DIR / 'baselane_sync_cdp_report.json'
 EXPORT_SCRIPT = ROOT / 'scripts' / 'baselane_export_human_paced.js'
 AUTH_PREFLIGHT = ROOT / 'scripts' / 'baselane_cdp_auth_recovery.py'
 SPLIT_SCRIPT = ROOT / 'scripts' / 'split_ledger_public_financials.py'
@@ -30,6 +31,7 @@ FIRST_DAY_PM_FEE_CLEANUP_SCRIPT = ROOT / 'scripts' / 'baselane_first_day_pm_fee_
 NATIVE_SPLIT_PLAN_SCRIPT = ROOT / 'scripts' / 'baselane_native_split_plan.py'
 NATIVE_SPLIT_APPLY_SCRIPT = ROOT / 'scripts' / 'baselane_apply_native_splits.py'
 NATIVE_SPLIT_LEDGER_OVERLAY_SCRIPT = ROOT / 'scripts' / 'baselane_apply_native_split_ledger_overlay.py'
+PENDING_TRANSACTION_AUDIT_SCRIPT = ROOT / 'scripts' / 'baselane_audit_recent_dao_eco_transactions.py'
 MONTHLY_ACCRUALS_SCRIPT = ROOT / 'scripts' / 'baselane_monthly_accruals_idempotent.py'
 ISSUE_CLASS = 'baselane-sync-cdp-deterministic'
 DEFAULT_EXPORT_TIMEOUT_SECONDS = 900
@@ -100,6 +102,18 @@ def diagnostic_command() -> str:
 DIAGNOSTIC_COMMAND = diagnostic_command()
 
 
+def auth_preflight_command(cdp_url: str, report_path: Path) -> list[str]:
+    return [
+        sys.executable,
+        str(AUTH_PREFLIGHT),
+        '--cdp-url',
+        cdp_url,
+        '--graphql-auth-smoke',
+        '--report',
+        str(report_path),
+    ]
+
+
 def ensure_cdp_running():
     # In Umbrel container, Brave runs on Windows host with CDP port forwarded.
     # Resolve the Windows host gateway and connect to port 19222.
@@ -136,6 +150,57 @@ def read_json_file(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def resolve_pipeline_storage_paths(
+    environment: dict[str, str] | None = None,
+    default_dropbox_candidates: tuple[Path, ...] | None = None,
+) -> dict[str, Path]:
+    """Resolve one canonical storage lane for export, cleanup, and splitting."""
+    env = os.environ if environment is None else environment
+    candidates = default_dropbox_candidates or (
+        Path('/mnt/c/Users/digit/Dropbox'),
+        Path('/data/Dropbox'),
+        Path.home() / 'Dropbox',
+        Path('/home/digit/Dropbox'),
+        ROOT / 'Dropbox',
+    )
+    explicit_ledger_path = str(env.get('BASELANE_LEDGER_PATH') or '').strip()
+    explicit_ledger_dir = str(env.get('BASELANE_LEDGER_DIR') or '').strip()
+    explicit_dropbox = str(env.get('DROPBOX_ROOT') or '').strip()
+    if explicit_dropbox:
+        dropbox_root = Path(explicit_dropbox)
+    else:
+        dropbox_root = next((path for path in candidates if path.exists()), candidates[0])
+    if explicit_ledger_dir:
+        ledger_dir = Path(explicit_ledger_dir)
+    elif explicit_ledger_path:
+        ledger_dir = Path(explicit_ledger_path).parent
+    else:
+        ledger_candidates = (
+            dropbox_root / 'Projects/assetrail',
+            dropbox_root / 'Projects/transaction_tracker',
+        )
+        ledger_dir = next((path for path in ledger_candidates if path.exists()), ledger_candidates[0])
+    ledger_path = (
+        Path(explicit_ledger_path)
+        if explicit_ledger_path
+        else ledger_dir / 'ECO Systems General Ledger.csv'
+    )
+    return {
+        'dropbox_root': dropbox_root,
+        'ledger_dir': ledger_dir,
+        'ledger_path': ledger_path,
+    }
+
+
+def configure_pipeline_storage_paths(report: dict) -> dict[str, Path]:
+    paths = resolve_pipeline_storage_paths()
+    os.environ['DROPBOX_ROOT'] = str(paths['dropbox_root'])
+    os.environ['BASELANE_LEDGER_DIR'] = str(paths['ledger_dir'])
+    os.environ['BASELANE_LEDGER_PATH'] = str(paths['ledger_path'])
+    report['pipeline_storage_paths'] = {key: str(value) for key, value in paths.items()}
+    return paths
+
+
 def file_sha256(path: Path) -> str | None:
     try:
         digest = hashlib.sha256()
@@ -148,12 +213,51 @@ def file_sha256(path: Path) -> str | None:
 
 
 def reconcile_canonical_ledger_from_login_report(root: Path, report: dict, settle_seconds: float | None = None) -> bool:
+    export_report = read_json_file(root / 'reports' / 'baselane_export_report.json')
+    export_output_raw = str(export_report.get('output') or '').strip()
+    export_checked_at_raw = str(export_report.get('checked_at') or '').strip()
+    try:
+        export_checked_at = datetime.fromisoformat(export_checked_at_raw.replace('Z', '+00:00')).timestamp()
+    except (TypeError, ValueError):
+        export_checked_at = 0.0
+    run_started_at = float(report.get('started_at') or 0)
+    configured_path_raw = str(
+        ((report.get('pipeline_storage_paths') or {}).get('ledger_path'))
+        or os.environ.get('BASELANE_LEDGER_PATH')
+        or ''
+    ).strip()
+    current_export = {
+        'ok': export_report.get('ok') is True,
+        'output': export_output_raw or None,
+        'checked_at': export_checked_at_raw or None,
+        'run_started_at': run_started_at or None,
+    }
+    if (
+        export_report.get('ok') is True
+        and export_output_raw
+        and export_checked_at >= run_started_at - 5
+    ):
+        export_output = Path(export_output_raw)
+        configured_path = Path(configured_path_raw) if configured_path_raw else export_output
+        current_export['output_matches_configured_ledger'] = export_output == configured_path
+        current_export['canonical_sha256'] = file_sha256(export_output)
+        if export_output == configured_path and current_export['canonical_sha256']:
+            current_export['status'] = 'ok_current_run_export_authoritative'
+            report['canonical_ledger_reconcile'] = {
+                'attempted': False,
+                'status': 'ok_current_run_export_authoritative',
+                'current_export': current_export,
+                'reason': 'the active CDP exporter wrote the configured canonical ledger directly',
+            }
+            return True
+
     login_report = read_json_file(root / 'reports' / 'baselane_login_export_report.json')
     canonical_path_raw = str(login_report.get('canonical_path') or '').strip()
     snapshot_path_raw = str(login_report.get('filtered_snapshot') or '').strip()
     expected_sha = str(login_report.get('canonical_sha256') or '').strip()
     reconcile = {
         'attempted': False,
+        'current_export': current_export,
         'login_report_ok': login_report.get('ok') is True,
         'canonical_path': canonical_path_raw or None,
         'filtered_snapshot': snapshot_path_raw or None,
@@ -436,7 +540,7 @@ def publish_native_split_overlay_baseline(report: dict, overlay_report: dict) ->
     baseline['pre_native_split_overlay_sha256'] = baseline.get('canonical_sha256')
     baseline['canonical_sha256'] = ledger_sha
     baseline['status'] = 'ok_native_split_overlay'
-    baseline['native_split_overlay_report'] = str(ROOT / 'reports' / 'baselane_native_split_ledger_overlay_report.json')
+    baseline['native_split_overlay_report'] = str(REPORT_DIR / 'baselane_native_split_ledger_overlay_report.json')
 
 
 def write_run_report(report: dict) -> None:
@@ -551,16 +655,57 @@ def run_native_split_plan_and_apply(report: dict) -> int:
             'script': str(NATIVE_SPLIT_PLAN_SCRIPT),
         }
         return 0
+    source_index = Path(
+        os.environ.get('BASELANE_SOURCE_TRANSACTION_INDEX')
+        or REPORT_DIR / 'baselane_source_transaction_index.csv'
+    )
+    pending_audit_report = REPORT_DIR / 'baselane_recent_dao_eco_transaction_audit.current.json'
+    if PENDING_TRANSACTION_AUDIT_SCRIPT.is_file():
+        audit_command = [
+            'python3',
+            str(PENDING_TRANSACTION_AUDIT_SCRIPT),
+            '--report',
+            str(pending_audit_report),
+        ]
+        run_month = str(os.environ.get('RUN_MONTH') or '').strip()
+        if len(run_month) == 7:
+            audit_command.extend(['--start-date', f'{run_month}-01'])
+        audit = subprocess.run(
+            audit_command,
+            text=True,
+            capture_output=True,
+            env={**os.environ.copy(), PIPELINE_LOCK_HELD_ENV: '1'},
+            timeout=300,
+        )
+        pending_audit = read_json_file(pending_audit_report)
+        report['pending_transaction_audit'] = {
+            'status': pending_audit.get('status') or ('ok' if audit.returncode == 0 else 'failed'),
+            'return_code': audit.returncode,
+            'pending_count': pending_audit.get('pending_count'),
+            'report': str(pending_audit_report),
+            'stdout_tail': redact_output(audit.stdout or '', 2000),
+            'stderr_tail': redact_output(audit.stderr or '', 2000),
+        }
+        if audit.returncode != 0:
+            return audit.returncode
+    plan_path = REPORT_DIR / 'baselane_native_split_plan.json'
     plan_command = [
         'python3',
         str(NATIVE_SPLIT_PLAN_SCRIPT),
+        '--source-index',
+        str(source_index),
         '--report',
-        str(ROOT / 'reports' / 'baselane_native_split_plan.json'),
+        str(plan_path),
         '--csv',
-        str(ROOT / 'reports' / 'baselane_native_split_plan.csv'),
+        str(REPORT_DIR / 'baselane_native_split_plan.csv'),
         '--markdown',
-        str(ROOT / 'reports' / 'baselane_native_split_plan.md'),
+        str(REPORT_DIR / 'baselane_native_split_plan.md'),
     ]
+    if pending_audit_report.is_file():
+        plan_command.extend([
+            '--pending-transactions-report',
+            str(pending_audit_report),
+        ])
     native_split_env = {
         **os.environ.copy(),
         'WORKSPACE_ROOT': str(ROOT),
@@ -576,7 +721,7 @@ def run_native_split_plan_and_apply(report: dict) -> int:
         env=native_split_env,
         timeout=300,
     )
-    plan_report = read_json_file(ROOT / 'reports' / 'baselane_native_split_plan.json')
+    plan_report = read_json_file(plan_path)
     report['native_split_plan'] = {
         'status': plan_report.get('status') or ('ok' if plan.returncode == 0 else 'review'),
         'return_code': plan.returncode,
@@ -584,7 +729,7 @@ def run_native_split_plan_and_apply(report: dict) -> int:
         'blocked_count': plan_report.get('blocked_count'),
         'rule_counts': plan_report.get('rule_counts'),
         'mutation_mode': plan_report.get('mutation_mode'),
-        'report': str(ROOT / 'reports' / 'baselane_native_split_plan.json'),
+        'report': str(plan_path),
         'stdout_tail': redact_output(plan.stdout or '', 2000),
         'stderr_tail': redact_output(plan.stderr or '', 2000),
     }
@@ -601,9 +746,9 @@ def run_native_split_plan_and_apply(report: dict) -> int:
         'python3',
         str(NATIVE_SPLIT_APPLY_SCRIPT),
         '--plan',
-        str(ROOT / 'reports' / 'baselane_native_split_plan.json'),
+        str(plan_path),
         '--report',
-        str(ROOT / 'reports' / 'baselane_native_split_apply_report.json'),
+        str(REPORT_DIR / 'baselane_native_split_apply_report.json'),
     ]
     if apply_enabled:
         apply_command.append('--apply')
@@ -614,7 +759,7 @@ def run_native_split_plan_and_apply(report: dict) -> int:
         env=native_split_env,
         timeout=900,
     )
-    apply_report = read_json_file(ROOT / 'reports' / 'baselane_native_split_apply_report.json')
+    apply_report = read_json_file(REPORT_DIR / 'baselane_native_split_apply_report.json')
     report['native_split_apply'] = {
         'status': apply_report.get('status') or ('ok' if applied.returncode == 0 else 'review'),
         'return_code': applied.returncode,
@@ -625,7 +770,7 @@ def run_native_split_plan_and_apply(report: dict) -> int:
         'blocked_count': apply_report.get('blocked_count'),
         'already_applied_count': apply_report.get('already_applied_count'),
         'dry_run_count': apply_report.get('dry_run_count'),
-        'report': str(ROOT / 'reports' / 'baselane_native_split_apply_report.json'),
+        'report': str(REPORT_DIR / 'baselane_native_split_apply_report.json'),
         'stdout_tail': redact_output(applied.stdout or '', 2000),
         'stderr_tail': redact_output(applied.stderr or '', 2000),
     }
@@ -634,7 +779,7 @@ def run_native_split_plan_and_apply(report: dict) -> int:
     reconcile_command = [
         *plan_command,
         '--apply-report',
-        str(ROOT / 'reports' / 'baselane_native_split_apply_report.json'),
+        str(REPORT_DIR / 'baselane_native_split_apply_report.json'),
     ]
     reconciled = subprocess.run(
         reconcile_command,
@@ -643,7 +788,7 @@ def run_native_split_plan_and_apply(report: dict) -> int:
         env=native_split_env,
         timeout=300,
     )
-    reconciled_plan_report = read_json_file(ROOT / 'reports' / 'baselane_native_split_plan.json')
+    reconciled_plan_report = read_json_file(plan_path)
     report['native_split_plan'].update(
         {
             'status': reconciled_plan_report.get('status') or report['native_split_plan'].get('status'),
@@ -665,9 +810,9 @@ def run_native_split_plan_and_apply(report: dict) -> int:
             'python3',
             str(NATIVE_SPLIT_LEDGER_OVERLAY_SCRIPT),
             '--plan',
-            str(ROOT / 'reports' / 'baselane_native_split_plan.json'),
+            str(plan_path),
             '--report',
-            str(ROOT / 'reports' / 'baselane_native_split_ledger_overlay_report.json'),
+            str(REPORT_DIR / 'baselane_native_split_ledger_overlay_report.json'),
         ]
         if apply_enabled:
             overlay_command.append('--apply')
@@ -678,7 +823,7 @@ def run_native_split_plan_and_apply(report: dict) -> int:
             env=native_split_env,
             timeout=300,
         )
-        overlay_report = read_json_file(ROOT / 'reports' / 'baselane_native_split_ledger_overlay_report.json')
+        overlay_report = read_json_file(REPORT_DIR / 'baselane_native_split_ledger_overlay_report.json')
         report['native_split_ledger_overlay'] = {
             'status': overlay_report.get('status') or ('ok' if overlay.returncode == 0 else 'review'),
             'return_code': overlay.returncode,
@@ -690,7 +835,7 @@ def run_native_split_plan_and_apply(report: dict) -> int:
             'output_written': overlay_report.get('output_written'),
             'ledger': overlay_report.get('ledger'),
             'ledger_sha256': overlay_report.get('ledger_sha256'),
-            'report': str(ROOT / 'reports' / 'baselane_native_split_ledger_overlay_report.json'),
+            'report': str(REPORT_DIR / 'baselane_native_split_ledger_overlay_report.json'),
             'stdout_tail': redact_output(overlay.stdout or '', 2000),
             'stderr_tail': redact_output(overlay.stderr or '', 2000),
         }
@@ -711,6 +856,7 @@ def run_native_split_plan_and_apply(report: dict) -> int:
 
 def run():
     report = {'started_at': time.time(), 'status': 'running', 'steps': []}
+    configure_pipeline_storage_paths(report)
     write_run_report(report)
 
     if not ensure_cdp_running():
@@ -735,7 +881,7 @@ def run():
 
     auth_report = ROOT / 'reports' / 'baselane_cdp_auth_recovery_report.json'
     preflight = subprocess.run(
-        [sys.executable, str(AUTH_PREFLIGHT), '--cdp-url', resolved_cdp['version_url'], '--report', str(auth_report)],
+        auth_preflight_command(resolved_cdp['version_url'], auth_report),
         text=True, capture_output=True, timeout=60,
     )
     report['steps'].append('human_session_preflight')
@@ -911,7 +1057,13 @@ def run():
     report['steps'].append('split_public_financials')
     report['current_step'] = 'split_public_financials'
     write_run_report(report)
-    rs = subprocess.run(['python3', str(SPLIT_SCRIPT)], text=True, capture_output=True, timeout=1800)
+    rs = subprocess.run(
+        ['python3', str(SPLIT_SCRIPT)],
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+        timeout=1800,
+    )
     report.pop('current_step', None)
     report['split_exit'] = rs.returncode
     report['split_stdout_tail'] = redact_output(rs.stdout or '', 2000)

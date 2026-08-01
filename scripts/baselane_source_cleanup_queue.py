@@ -93,16 +93,17 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def write_markdown(path: Path, report: dict[str, Any]) -> None:
+    scope_properties = report.get("scope_properties") or []
     lines = [
         "# Baselane Source Cleanup Queue",
         "",
-        f"- Status: `{report['status']}`",
-        f"- Scope properties: `{', '.join(report['scope_properties']) if report['scope_properties'] else 'all'}`",
-        f"- Action count: `{report['action_count']}`",
-        f"- Missing ID count: `{report['missing_id_count']}`",
-        f"- Live mutation attempted: `{str(report['live_mutation_attempted']).lower()}`",
-        f"- Ledger: `{report['ledger']}`",
-        f"- Source index: `{report['source_index']}`",
+        f"- Status: `{report.get('status', 'unknown')}`",
+        f"- Scope properties: `{', '.join(scope_properties) if scope_properties else 'all'}`",
+        f"- Action count: `{report.get('action_count', 0)}`",
+        f"- Missing ID count: `{report.get('missing_id_count', 0)}`",
+        f"- Live mutation attempted: `{str(bool(report.get('live_mutation_attempted'))).lower()}`",
+        f"- Ledger: `{report.get('ledger', '')}`",
+        f"- Source index: `{report.get('source_index', '')}`",
         "",
         "## Action Counts",
     ]
@@ -133,9 +134,21 @@ def amount_key(value: object) -> str:
         return raw
 
 
+def date_key(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y-%m-%d", "%B %d, %Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(raw[:10] if fmt == "%Y-%m-%d" else raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return normalize(raw)
+
+
 def row_key(row: dict[str, str]) -> tuple[str, ...]:
     return (
-        normalize(row.get("Date")),
+        date_key(row.get("ISODate") or row.get("Date")),
         amount_key(row.get("Amount")),
         normalize(row.get("Account")),
         normalize(row.get("Merchant")),
@@ -150,6 +163,16 @@ def row_key(row: dict[str, str]) -> tuple[str, ...]:
 
 def row_key_without_notes(row: dict[str, str]) -> tuple[str, ...]:
     return row_key({**row, "Notes": ""})
+
+
+def source_identity_key(row: dict[str, str]) -> tuple[str, ...]:
+    return (
+        date_key(row.get("ISODate") or row.get("Date")),
+        amount_key(row.get("Amount")),
+        normalize(row.get("Merchant")),
+        normalize(row.get("Description")),
+        normalize(row.get("Property")),
+    )
 
 
 def scoped(row: dict[str, str], properties: set[str], merchant_needles: tuple[str, ...]) -> bool:
@@ -168,6 +191,16 @@ def source_index_by_key(source_rows: list[dict[str, str]]) -> dict[tuple[str, ..
     for rows in by_key.values():
         rows.sort(key=lambda row: int(row.get("BaselaneId") or "0"))
     return by_key
+
+
+def unique_source_identity_match(
+    row: dict[str, str],
+    source_rows: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    key = source_identity_key(row)
+    matches = [source_row for source_row in source_rows if source_identity_key(source_row) == key]
+    ids = {item.get("BaselaneId", "").strip() for item in matches if item.get("BaselaneId", "").strip()}
+    return matches if len(ids) == 1 else []
 
 
 def action_id(action: str, row: dict[str, str], baselane_id: str = "", parent_id: str = "") -> str:
@@ -260,6 +293,8 @@ def no_dao_mortgage_actions(
         if not reason:
             continue
         source_matches = source_by_key.get(row_key(row)) or source_by_key.get(row_key_without_notes(row)) or []
+        if not source_matches:
+            source_matches = unique_source_identity_match(row, source_rows)
         baselane_id = next((item.get("BaselaneId", "").strip() for item in source_matches if item.get("BaselaneId", "").strip()), "")
         if baselane_id and baselane_id in seen_ids:
             continue
@@ -290,6 +325,8 @@ def first_day_pm_fee_actions(
         if not is_first_day_pm_fee_row(row, None):
             continue
         source_matches = source_by_key.get(row_key(row)) or source_by_key.get(row_key_without_notes(row)) or []
+        if not source_matches:
+            source_matches = unique_source_identity_match(row, source_rows)
         baselane_id = next((item.get("BaselaneId", "").strip() for item in source_matches if item.get("BaselaneId", "").strip()), "")
         if baselane_id and baselane_id in seen_ids:
             continue
@@ -403,7 +440,17 @@ def build_report(
             "ledger": str(ledger),
             "source_index": str(source_index),
             "state": str(state),
+            "scope_properties": list(properties),
+            "merchant_needles": list(merchant_needles),
+            "action_count": 0,
+            "action_counts": {},
+            "status_counts": {},
+            "missing_id_count": 0,
+            "id_backed_action_count": 0,
             "live_mutation_attempted": False,
+            "safe_to_apply_automatically": False,
+            "actions": [],
+            "actions_bounded": [],
         }
     _, ledger_rows = read_csv(ledger)
     _, source_rows = read_csv(source_index)

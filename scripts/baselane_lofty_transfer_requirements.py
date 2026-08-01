@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Report Lofty transfer amounts from canonical DAO ledger entitlement.
+"""Report Lofty transfer amounts from verified spendable DAO cash.
 
 The transfer rule is intentionally conservative:
-- ECO Operating Cash/ECO Net DAO Funds is the full property GL net position.
+- ECO Operating Cash/ECO Net DAO Funds is verified unrestricted cash after
+  recorded obligations and restrictions.
 - Mapped live Baselane bank cash is separate custody reconciliation evidence.
 - Cash settlement basis is reported separately for transfer review and excludes
   non-cash closes and unsettled accrual journals.
@@ -69,14 +70,13 @@ DEFAULT_ECO_MINIMUM = 3000.0
 INACTIVE_STATUS_MARKERS = ("sold", "selling", "closed", "delisted")
 CONFLICT_THRESHOLD = 0.01
 ECO_OPERATING_CASH_SOURCE_POLICY = (
-    "ECO Operating Cash is the full DAO-attributed Column E sum from the canonical "
-    "property General Ledger, including accruals; this is ECO Net DAO Funds."
+    "ECO Operating Cash is the dated verified ECO-held unrestricted cash after "
+    "recorded obligations and restrictions; this is spendable ECO Net DAO Funds."
 )
 ECO_OPERATING_CASH_REPORTING_MONTH_POLICY = (
     "The reporting month identifies the monthly close period for accrual/readiness gates only. "
-    "It does not limit ECO Operating Cash rows by transaction date; the entitlement balance "
-    "uses the full current property ledger. "
-    "Mapped physical bank cash is reported separately as dated reconciliation evidence."
+    "ECO Operating Cash uses the dated cash-authority reconciliation through the close cutoff. "
+    "The full property ledger and mapped physical bank cash remain separate controls."
 )
 
 
@@ -515,7 +515,6 @@ def sum_money_values(values: Iterable[Any]) -> float:
 def invalidate_eco_source(source: dict[str, Any], status: str, reason: str) -> dict[str, Any]:
     source["eco_gl_column_e_sum"] = None
     source["eco_general_ledger_sum"] = None
-    source["eco_operating_cash"] = None
     source["eco_gl_column_e_status"] = status
     source["eco_gl_column_e_scope"] = None
     source["eco_gl_column_e_source_mode"] = "canonical_source_invalid"
@@ -807,12 +806,6 @@ def financial_summary(record: dict[str, Any]) -> dict[str, Any]:
     source["cash_settlement_basis_sum"] = float(settlement_basis_total.quantize(Decimal("0.01")))
     source["cash_settlement_basis_scope"] = "all_property_split_rows_excluding_non_cash_closes_and_accrual_journals"
     source["eco_general_ledger_sum"] = source["eco_gl_column_e_sum"]
-    source["eco_operating_cash"] = source["eco_gl_column_e_sum"]
-    source["eco_operating_cash_status"] = "ok"
-    source["eco_operating_cash_source_mode"] = source["eco_gl_column_e_source_mode"]
-    source["eco_operating_cash_source"] = source["eco_gl_column_e_source"]
-    source["eco_operating_cash_balance_scope"] = source["eco_gl_column_e_scope"]
-    source["eco_operating_cash_as_of_date"] = source.get("eco_gl_column_e_as_of_date")
     source["non_cash_close_row_count_excluded_from_settlement"] = excluded_count
     source["non_cash_close_amount_excluded_from_settlement"] = float(excluded_amount.quantize(Decimal("0.01")))
     source["eco_gl_column_e_runtime_refreshed"] = True
@@ -833,7 +826,7 @@ def active_dao_cash_balance_rows(
             continue
         summary = financial_summary(record)
         eco_gl = parse_money(summary.get("eco_gl_column_e_sum"))
-        eco_cash = eco_gl
+        eco_cash = parse_money(summary.get("eco_operating_cash"))
         physical_bank_cash = parse_money(summary.get("physical_bank_cash"))
         reserve_key = normalize_property_name(property_name)
         reserve = (
@@ -867,8 +860,10 @@ def active_dao_cash_balance_rows(
                 "combined_eco_and_lofty_reserve": sum_money_values((eco_cash, reserve))
                 if eco_cash is not None
                 else None,
-                "eco_operating_cash_balance_basis": "full_property_split_ecogl_column_e_all_rows",
-                "eco_operating_cash_as_of_date": summary.get("eco_gl_column_e_as_of_date"),
+                "eco_operating_cash_balance_basis": summary.get("eco_operating_cash_source_mode"),
+                "eco_operating_cash_balance_scope": summary.get("eco_operating_cash_balance_scope"),
+                "eco_operating_cash_source": summary.get("eco_operating_cash_source"),
+                "eco_operating_cash_as_of_date": summary.get("eco_operating_cash_as_of_date"),
                 "eco_documented_security_principal": parse_money(
                     summary.get("eco_documented_security_principal")
                 ),
@@ -878,6 +873,7 @@ def active_dao_cash_balance_rows(
                 "cash_balance_status": (
                     "ok"
                     if eco_cash is not None
+                    and summary.get("eco_operating_cash_status") == "ok"
                     and summary.get("eco_gl_column_e_status") == "ok"
                     and summary.get("eco_gl_column_e_scope") in {None, "", "all_property_split_rows"}
                     else "missing_source"
@@ -1015,6 +1011,7 @@ def cf_balance_cross_artifact_mismatches(
             continue
 
         source_value = parse_money(cash_row.get("eco_operating_cash"))
+        gl_source_value = parse_money(cash_row.get("eco_gl_column_e_sum"))
         if (
             summary.get("eco_balance_semantics")
             == "full_canonical_property_general_ledger_net_position_including_accruals"
@@ -1023,25 +1020,25 @@ def cf_balance_cross_artifact_mismatches(
             if expected is None:
                 expected = parse_money(summary.get("eco_full_balance"))
             actual = parse_money(summary.get("eco_general_ledger_actual"))
-            if source_value is None or expected is None:
+            if gl_source_value is None or expected is None:
                 mismatches.append(
                     {
                         "property": property_name,
                         "type": "cf_balance_value_missing",
                         "field": "eco_general_ledger_expected",
-                        "eco_operating_cash": source_value,
+                        "eco_general_ledger": gl_source_value,
                         "cf_value": expected,
                     }
                 )
-            elif abs(source_value - expected) > tolerance:
+            elif abs(gl_source_value - expected) > tolerance:
                 mismatches.append(
                     {
                         "property": property_name,
                         "type": "cf_balance_mismatch",
                         "field": "eco_general_ledger_expected",
-                        "eco_operating_cash": source_value,
+                        "eco_general_ledger": gl_source_value,
                         "cf_value": expected,
-                        "difference": round(source_value - expected, 2),
+                        "difference": round(gl_source_value - expected, 2),
                     }
                 )
             if summary.get("workbook_audit_status") == "skipped_live_workbook_io_disabled":
@@ -1052,7 +1049,7 @@ def cf_balance_cross_artifact_mismatches(
                         "property": property_name,
                         "type": "cf_balance_value_missing",
                         "field": "eco_general_ledger_actual",
-                        "eco_operating_cash": source_value,
+                        "eco_general_ledger": gl_source_value,
                         "cf_value": actual,
                     }
                 )
@@ -1062,10 +1059,55 @@ def cf_balance_cross_artifact_mismatches(
                         "property": property_name,
                         "type": "cf_balance_mismatch",
                         "field": "eco_general_ledger_actual",
-                        "eco_operating_cash": source_value,
+                        "eco_general_ledger": gl_source_value,
                         "cf_value": actual,
                         "expected": expected,
                         "difference": round(expected - actual, 2),
+                    }
+                )
+            cash_expected = parse_money(summary.get("eco_operating_cash_expected"))
+            cash_actual = parse_money(summary.get("eco_operating_cash_actual"))
+            if source_value is None or cash_expected is None:
+                mismatches.append(
+                    {
+                        "property": property_name,
+                        "type": "cf_balance_value_missing",
+                        "field": "eco_operating_cash_expected",
+                        "eco_operating_cash": source_value,
+                        "cf_value": cash_expected,
+                    }
+                )
+            elif abs(source_value - cash_expected) > tolerance:
+                mismatches.append(
+                    {
+                        "property": property_name,
+                        "type": "cf_balance_mismatch",
+                        "field": "eco_operating_cash_expected",
+                        "eco_operating_cash": source_value,
+                        "cf_value": cash_expected,
+                        "difference": round(source_value - cash_expected, 2),
+                    }
+                )
+            if cash_expected is None or cash_actual is None:
+                mismatches.append(
+                    {
+                        "property": property_name,
+                        "type": "cf_balance_value_missing",
+                        "field": "eco_operating_cash_actual",
+                        "eco_operating_cash": source_value,
+                        "cf_value": cash_actual,
+                    }
+                )
+            elif abs(cash_expected - cash_actual) > tolerance:
+                mismatches.append(
+                    {
+                        "property": property_name,
+                        "type": "cf_balance_mismatch",
+                        "field": "eco_operating_cash_actual",
+                        "eco_operating_cash": source_value,
+                        "cf_value": cash_actual,
+                        "expected": cash_expected,
+                        "difference": round(cash_expected - cash_actual, 2),
                     }
                 )
             continue
@@ -1361,10 +1403,31 @@ def monthly_accrual_blockers(
     )
     if missing_count_blocks:
         blockers.append(f"monthly_accruals_missing_count={active_missing_count}")
+    active_without_templates = (
+        accrual_report.get("active_without_accrual_templates")
+        if isinstance(accrual_report.get("active_without_accrual_templates"), list)
+        else []
+    )
+    effective_active_without_template_count = 0
+    for item in active_without_templates:
+        if not isinstance(item, dict):
+            continue
+        property_name = str(
+            item.get("property")
+            or item.get("property_name")
+            or item.get("full_address")
+            or ""
+        ).strip()
+        if inactive_rows and inactive_yhome_match(property_name, inactive_rows):
+            continue
+        effective_active_without_template_count += 1
+    if not active_without_templates:
+        effective_active_without_template_count = int(
+            accrual_report.get("active_without_accrual_template_count") or 0
+        )
     for field in (
         "amount_mismatch_count",
         "blocked_first_day_pm_fee_count",
-        "active_without_accrual_template_count",
         "active_without_template_count",
         "active_without_templates_count",
         "unapproved_pm_fee_basis_gap_count",
@@ -1373,6 +1436,11 @@ def monthly_accrual_blockers(
         value = int(accrual_report.get(field) or 0)
         if value > 0:
             blockers.append(f"monthly_accruals_{field}={value}")
+    if effective_active_without_template_count > 0:
+        blockers.append(
+            "monthly_accruals_active_without_accrual_template_count="
+            f"{effective_active_without_template_count}"
+        )
     gap_approvals = accrual_report.get("gap_approvals")
     missing_fixed_count = int(accrual_report.get("missing_fixed_accrual_coverage_count") or 0)
     reviewed_gap_coverage = (
@@ -2065,7 +2133,7 @@ def build_rows(
         summary = financial_summary(record)
         eco_gl_accounting_position = parse_money(summary.get("eco_gl_column_e_sum"))
         cash_settlement_basis = parse_money(summary.get("cash_settlement_basis_sum"))
-        eco_cash = eco_gl_accounting_position
+        eco_cash = parse_money(summary.get("eco_operating_cash"))
         physical_bank_cash = parse_money(summary.get("physical_bank_cash"))
         reserve_key = normalize_property_name(property_name)
         local_financials_only = canonical_reserve_property(property_name) in set(LOCAL_FINANCIALS_ONLY_PROPERTIES)
@@ -2116,8 +2184,8 @@ def build_rows(
             )
         if source_status != "ok":
             hold_reasons.append("eco_gl_column_e_source_not_ok")
-        if eco_cash is None:
-            hold_reasons.append("eco_operating_cash_gl_source_not_ok")
+        if eco_cash is None or summary.get("eco_operating_cash_status") != "ok":
+            hold_reasons.append("eco_operating_cash_authority_not_ok")
         if source_scope and source_scope != "all_property_split_rows":
             hold_reasons.append("eco_gl_column_e_scope_not_all_rows")
         if lofty_operating_cash_missing and not local_financials_only:
@@ -2170,9 +2238,9 @@ def build_rows(
                 "property_path": property_path,
                 "eco_operating_cash": eco_cash,
                 "eco_operating_cash_formatted": money(eco_cash),
-                "eco_operating_cash_balance_basis": "full_property_split_ecogl_column_e_all_rows",
-                "eco_operating_cash_as_of_date": summary.get("eco_gl_column_e_as_of_date"),
-                "eco_operating_cash_balance_scope": "all_property_split_rows",
+                "eco_operating_cash_balance_basis": summary.get("eco_operating_cash_source_mode"),
+                "eco_operating_cash_as_of_date": summary.get("eco_operating_cash_as_of_date"),
+                "eco_operating_cash_balance_scope": summary.get("eco_operating_cash_balance_scope"),
                 "physical_bank_cash": physical_bank_cash,
                 "physical_bank_cash_formatted": money(physical_bank_cash),
                 "physical_bank_cash_status": summary.get("physical_bank_cash_status"),
@@ -2976,6 +3044,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "month": getattr(args, "month", None),
         "run_month": getattr(args, "month", None),
         "reporting_month": getattr(args, "month", None),
+        "reporting_cutoff_date": getattr(args, "reporting_cutoff_date", None),
         "coownership_states": sorted(states),
         "eco_minimum": round(float(args.eco_minimum), 2),
         "eco_operating_cash_source_policy": ECO_OPERATING_CASH_SOURCE_POLICY,
@@ -2992,9 +3061,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "eco_general_ledger_total": eco_general_ledger_total,
         "coownership_eco_operating_cash_full_balance_total": coownership_eco_operating_cash_full_balance_total,
         "eco_operating_cash_full_balance_total_policy": (
-            "Portfolio ECO Net DAO Funds is the sum of each active DAO's full canonical property "
-            "General Ledger net position, including accruals. This is the DAO balance, not the amount to send to Lofty. "
-            "Physical bank cash is separate reconciliation evidence."
+            "Portfolio ECO Net DAO Funds is the sum of each active DAO's dated verified ECO-held "
+            "unrestricted cash after recorded obligations and restrictions. The full property ledger "
+            "and physical bank cash are separate reconciliation controls."
         ),
         "lofty_curr_maintenance_reserve_total": lofty_curr_maintenance_reserve_total,
         "active_dao_cash_balance_property_count": len(active_cash_balance_rows),
@@ -3023,8 +3092,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             row.get("combined_eco_and_lofty_reserve") for row in active_cash_balance_rows
         ),
         "active_dao_cash_balance_policy": (
-            "Every active candidate DAO must have a canonical full-property GL balance. "
-            "A fresh mapped Baselane bank balance and bank-minus-GL gap are separate, nonblocking reconciliation evidence."
+            "Every active candidate DAO must have a verified dated unrestricted-cash balance and a "
+            "canonical full-property GL control. A mapped Baselane bank balance and bank-minus-GL gap "
+            "are separate reconciliation evidence."
         ),
         "active_dao_cash_balance_csv": str(getattr(args, "cash_balance_csv", DEFAULT_CASH_BALANCE_CSV)),
         "total_operating_cash_for_distribution_test_total": total_operating_cash_for_distribution_test_total,
@@ -3049,7 +3119,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "recommended_send_to_lofty_total_is_cash_balance": False,
         "eco_operating_cash_vs_send_to_lofty_policy": (
             "Do not use recommended_send_to_lofty_total as the DAO cash balance. "
-            "Use eco_operating_cash_full_balance_total for full GL-based ECO Net DAO Funds; "
+            "Use eco_operating_cash_full_balance_total for spendable ECO Net DAO Funds; "
             "use active_dao_physical_bank_cash_known_total only as non-authoritative custody evidence; "
             "use coownership_eco_operating_cash_full_balance_total only for the co-ownership transfer subset; "
             "use recommended_send_to_lofty_total only for approved surplus transfer/distribution after all gates are clean."
@@ -3310,6 +3380,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compute guarded Lofty transfer amounts from ECO operating cash.")
     parser.add_argument("--month", help="Target month in YYYY-MM; selects reports/baselane_monthly_accruals_YYYYMM.json unless --monthly-accruals-report is provided.")
+    parser.add_argument(
+        "--reporting-cutoff-date",
+        help="Close cutoff in YYYY-MM-DD; source artifacts are expected to use the same cutoff.",
+    )
     parser.add_argument("--candidate-packet", type=Path, default=DEFAULT_CANDIDATE_PACKET)
     parser.add_argument("--cf-balance-sheet-report", type=Path, default=DEFAULT_CF_BALANCE_REPORT)
     parser.add_argument("--source-cleanup-queue", type=Path, default=DEFAULT_SOURCE_CLEANUP_QUEUE)

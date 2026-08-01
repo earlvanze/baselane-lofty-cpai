@@ -4,9 +4,9 @@
 This is the targeted bridge for the Lofty PM monthly pipeline:
 - scope is the current live Lofty financial capture records
 - monthly P&L rows come from each property's split ECO GL CSV
-- ECO Net DAO Funds is the complete property-split ECO GL Column E balance
-  across all rows; it is distinct from physical bank cash, monthly cash flow,
-  and transfer amounts
+- the complete property-split ECO GL Column E balance remains an internal
+  accounting control; it is distinct from ECO Net DAO Funds (spendable),
+  physical bank cash, monthly cash flow, and transfer amounts
 - selected balance-sheet/tokenomics cells come from live Lofty fields
 
 Applying more than one month at a time is intentionally blocked. The live
@@ -452,16 +452,69 @@ def live_capture_records(path: Path) -> list[dict[str, Any]]:
 def filter_excluded_live_capture_records(
     records: list[dict[str, Any]],
     yhome_csv: Path | None = DEFAULT_YHOME_CSV,
+    runtime_map: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Keep sold/offboarded properties out of CF source selection and writes."""
-    if not match_exclusion_guard or not monthly_exclusion_guards:
-        return records, []
-    guards, _yhome_guard, _manual_exclusions = monthly_exclusion_guards(yhome_csv)
+    guards = []
+    if match_exclusion_guard and monthly_exclusion_guards:
+        guards, _yhome_guard, _manual_exclusions = monthly_exclusion_guards(yhome_csv)
+
+    runtime_exclusions: dict[str, dict[str, Any]] = {}
+    if runtime_map and runtime_map.is_file():
+        payload = read_json(runtime_map)
+        runtime_records = payload.get("records") if isinstance(payload, dict) else None
+        for row in runtime_records if isinstance(runtime_records, list) else []:
+            if not isinstance(row, dict):
+                continue
+            status = str(row.get("status") or row.get("index_status") or "").strip().lower()
+            index_status = str(row.get("index_status") or "").strip().lower()
+            if not (
+                status.startswith(("excluded_", "skipped_", "omitted_"))
+                or index_status.startswith(("excluded_", "skipped_", "omitted_"))
+            ):
+                continue
+            for value in (
+                row.get("lofty_property_id"),
+                row.get("property_id"),
+                row.get("input_property_path"),
+                row.get("property_path"),
+            ):
+                key = str(value or "").strip()
+                if key:
+                    runtime_exclusions[key] = row
+
     included: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     for record in records:
         property_path = Path(str(record.get("input_property_path") or record.get("property_path") or ""))
-        match = match_exclusion_guard(property_path, guards)
+        runtime_match = next(
+            (
+                runtime_exclusions.get(str(value or "").strip())
+                for value in (
+                    record.get("lofty_property_id"),
+                    record.get("property_id"),
+                    record.get("input_property_path"),
+                    record.get("property_path"),
+                )
+                if str(value or "").strip() in runtime_exclusions
+            ),
+            None,
+        )
+        match = match_exclusion_guard(property_path, guards) if match_exclusion_guard else None
+        if runtime_match:
+            excluded.append(
+                {
+                    "property": str(record.get("property_name") or property_path.name),
+                    "property_path": str(property_path),
+                    "source": "lofty_pm_runtime_map",
+                    "exclude_reason": str(
+                        runtime_match.get("exclude_reason")
+                        or runtime_match.get("status")
+                        or runtime_match.get("index_status")
+                    ),
+                }
+            )
+            continue
         if match:
             excluded.append(
                 {
@@ -788,7 +841,7 @@ def p_and_l_row_scope(update_cf: Any) -> list[str]:
 
 
 def balance_sheet_source_row_scope(update_cf: Any) -> list[str]:
-    """Return only full-Column-E ECO Net DAO Funds labels."""
+    """Return only full-Column-E internal accounting-control labels."""
     return [
         update_cf.ECO_GL_NET_CASH_BALANCE_LABEL,
         *update_cf.ECO_GL_NET_CASH_BALANCE_LEGACY_LABELS,
@@ -934,7 +987,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     write_apply_gate = source_only_apply_gate if balance_sheet_source_only else apply_gate
     all_live_records = live_capture_records(args.live_capture)
     records, excluded_live_records = filter_excluded_live_capture_records(
-        all_live_records, args.yhome_csv
+        all_live_records, args.yhome_csv, args.runtime_map
     )
     source_cash_manifest = source_cash_report_entries(args.source_cash_report)
     source_cash_gate = source_cash_apply_gate(
@@ -1331,26 +1384,32 @@ def main() -> int:
     parser.add_argument("--source-fix-plan", type=Path, default=DEFAULT_SOURCE_FIX_PLAN)
     parser.add_argument("--untagged-review-report", type=Path, default=DEFAULT_UNTAGGED_REVIEW_REPORT)
     parser.add_argument("--yhome-csv", type=Path, default=DEFAULT_YHOME_CSV)
+    parser.add_argument(
+        "--runtime-map",
+        type=Path,
+        default=None,
+        help="Optional monthly Lofty runtime map whose terminal exclusions are removed from source selection.",
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument(
         "--p-and-l-only",
         action="store_true",
-        help="Audit only month-specific ECO GL rows and full Column E cash; never inspect or apply tokenomics.",
+        help="Audit only month-specific ECO GL rows and the full Column E accounting control; never inspect or apply tokenomics.",
     )
     parser.add_argument(
         "--apply-p-and-l-only",
         action="store_true",
-        help="Apply month-specific ECO GL rows and full Column E cash only; never apply tokenomics.",
+        help="Apply month-specific ECO GL rows and the full Column E accounting control only; never apply tokenomics.",
     )
     parser.add_argument(
         "--balance-sheet-source-only",
         action="store_true",
-        help="Audit only the canonical full-Column-E ECO Net DAO Funds row; never touch physical bank cash, P&L, debt, or tokenomics.",
+        help="Audit only the canonical full-Column-E internal accounting-control row; never touch custody cash, P&L, debt, or tokenomics.",
     )
     parser.add_argument(
         "--apply-balance-sheet-source-only",
         action="store_true",
-        help="Apply only the verified full-Column-E ECO Net DAO Funds row; all other workbook rows remain untouched.",
+        help="Apply only the verified full-Column-E internal accounting-control row; all other workbook rows remain untouched.",
     )
     args = parser.parse_args()
     if args.apply_p_and_l_only and not args.p_and_l_only:

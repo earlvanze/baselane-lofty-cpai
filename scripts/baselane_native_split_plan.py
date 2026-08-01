@@ -443,22 +443,9 @@ def build_no_dao_mortgage_records(
     real_estate_base: Path,
     lookback_days: int | None,
 ) -> list[dict[str, Any]]:
-    if not real_estate_base.is_dir():
-        return []
-    roots = public_split.build_property_roots(str(real_estate_base))
-    rows_by_property = source_rows_by_property(rows)
-    return [
-        build_no_dao_mortgage_record(
-            row,
-            rows_by_property=rows_by_property,
-            prop_ids=prop_ids,
-            tag_ids=tag_ids,
-            roots=roots,
-            real_estate_base=real_estate_base,
-        )
-        for row in rows
-        if row_in_date_window(row, lookback_days) and is_no_dao_mortgage_parent(row)
-    ]
+    # No-DAO mortgage cash is reconciled upstream as one property-scoped
+    # Transfers Between Accounts row. It must never enter the native splitter.
+    return []
 
 
 def load_rules(path: Path = DEFAULT_RULES_PATH) -> list[dict[str, Any]]:
@@ -551,6 +538,7 @@ def build_record(row: dict[str, str], prop_ids: dict[str, str], tag_ids: dict[st
         "rule": rule,
         "status": status,
         "baselane_id": row.get("BaselaneId"),
+        "pending": str(row.get("Pending") or "").strip().lower() == "true",
         "date": row.get("Date"),
         "iso_date": row.get("ISODate"),
         "account": row.get("Account"),
@@ -558,6 +546,9 @@ def build_record(row: dict[str, str], prop_ids: dict[str, str], tag_ids: dict[st
         "description": row.get("Description"),
         "amount": row.get("Amount"),
         "source_property": row.get("Property"),
+        "source_type": row.get("Type"),
+        "source_category": row.get("Category"),
+        "source_notes": row.get("Notes"),
         "category": category,
         "tag_id": tag_ids.get(category, ""),
         "split_count": len(splits),
@@ -634,14 +625,26 @@ def escrow_native_split_update_summary(records: list[dict[str, Any]]) -> dict[st
     }
 
 
-def build_report(source_index: Path, lookback_days: int | None = None, real_estate_base: Path = DEFAULT_REAL_ESTATE_BASE) -> dict[str, Any]:
+def build_report(
+    source_index: Path,
+    lookback_days: int | None = None,
+    real_estate_base: Path = DEFAULT_REAL_ESTATE_BASE,
+    pending_transactions_report: Path | None = None,
+) -> dict[str, Any]:
     rows, fields, errors = read_csv(source_index)
+    pending_rows, pending_errors = pending_source_rows(pending_transactions_report)
+    errors.extend(pending_errors)
+    existing_ids = {row.get("BaselaneId") for row in rows if row.get("BaselaneId")}
+    pending_rows = [
+        row for row in pending_rows if row.get("BaselaneId") not in existing_ids
+    ]
     rules = load_rules()
     prop_ids = property_ids(rows)
     tag_ids = category_tag_ids(rows)
+    candidate_rows = rows + pending_rows
     vendor_records = [
         build_record(row, prop_ids, tag_ids, rules)
-        for row in rows
+        for row in candidate_rows
         if row_in_date_window(row, lookback_days) and split_rule(row, rules) and amount_decimal(row.get("Amount")) < 0
     ]
     mortgage_records = build_no_dao_mortgage_records(
@@ -659,13 +662,17 @@ def build_report(source_index: Path, lookback_days: int | None = None, real_esta
     digest = hashlib.sha256(json.dumps(records, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     return {
         "generated_at": iso_z(),
-        "status": "ok" if records and not errors and not blocked_count else "review",
+        "status": "ok" if not errors and not blocked_count else "review",
         "policy": "Plan only; Baselane native split mutation requires a separate guarded apply path and explicit approval gate.",
         "mutation_mode": "plan_only",
         "rules_path": str(DEFAULT_RULES_PATH),
         "real_estate_base": str(real_estate_base),
         "lookback_days": lookback_days,
         "source_index": str(source_index),
+        "pending_transactions_report": (
+            str(pending_transactions_report) if pending_transactions_report else None
+        ),
+        "pending_source_row_count": len(pending_rows),
         "source_field_count": len(fields),
         "source_errors": errors,
         "row_count": len(records),
@@ -710,11 +717,50 @@ def read_json(path: Path | None) -> Any:
         return None
 
 
+def pending_source_rows(path: Path | None) -> tuple[list[dict[str, str]], list[str]]:
+    if path is None:
+        return [], []
+    data = read_json(path)
+    if not isinstance(data, dict):
+        return [], [f"missing_or_invalid_pending_transactions_report:{path}"]
+    if data.get("status") != "ok":
+        return [], [f"pending_transactions_report_not_ok:{path}"]
+    rows: list[dict[str, str]] = []
+    for transaction in data.get("transactions") or []:
+        if not isinstance(transaction, dict) or transaction.get("pending") is not True:
+            continue
+        transaction_id = str(transaction.get("id") or "").strip()
+        iso_date = str(transaction.get("date") or "")[:10]
+        if not transaction_id or parse_iso_date(iso_date) is None:
+            continue
+        rows.append(
+            {
+                "Account": str(transaction.get("account") or ""),
+                "Date": date.fromisoformat(iso_date).strftime("%B %-d, %Y"),
+                "ISODate": iso_date,
+                "Merchant": str(transaction.get("merchant") or ""),
+                "Description": "",
+                "Amount": str(transaction.get("amount") or ""),
+                "Type": "Operating Expenses",
+                "Category": str(transaction.get("category") or ""),
+                "Property": str(transaction.get("property") or ""),
+                "Notes": str(transaction.get("note") or ""),
+                "BaselaneId": transaction_id,
+                "PropertyId": str(transaction.get("property_id") or ""),
+                "TagId": str(transaction.get("tag_id") or ""),
+                "Pending": "true",
+            }
+        )
+    return rows, []
+
+
 def reconciled_apply_status(action: dict[str, Any]) -> str:
     status = str(action.get("status") or "")
     execution = action.get("execution") if isinstance(action.get("execution"), dict) else {}
     if status == "already_applied":
         return "already_applied"
+    if status == "deferred_pending":
+        return "deferred_pending"
     if status == "ready" and execution.get("return_code") == 0:
         return "applied"
     return ""
@@ -752,7 +798,8 @@ def reconcile_with_apply_report(report: dict[str, Any], apply_report_path: Path 
     blocked_count = sum(
         1
         for record in reconciled_records
-        if not str(record["status"]).startswith("ready_") and record["status"] not in {"already_applied", "applied"}
+        if not str(record["status"]).startswith("ready_")
+        and record["status"] not in {"already_applied", "applied", "deferred_pending"}
     )
     digest = hashlib.sha256(json.dumps(reconciled_records, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     report.update(
@@ -761,6 +808,7 @@ def reconcile_with_apply_report(report: dict[str, Any], apply_report_path: Path 
             "mutation_mode": "plan_reconciled",
             "ready_native_split_count": ready_count,
             "handled_native_split_count": reconciled_counts.get("already_applied", 0) + reconciled_counts.get("applied", 0),
+            "deferred_pending_count": reconciled_counts.get("deferred_pending", 0),
             "already_applied_count": reconciled_counts.get("already_applied", 0),
             "applied_count": reconciled_counts.get("applied", 0),
             "blocked_count": blocked_count,
@@ -863,6 +911,7 @@ def render_markdown(report: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build a non-mutating Baselane native split plan for deterministic shared vendors.")
     parser.add_argument("--source-index", type=Path, default=Path(__file__).absolute().parents[1] / "reports" / "baselane_source_transaction_index.csv")
+    parser.add_argument("--pending-transactions-report", type=Path)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--csv", type=Path)
     parser.add_argument("--markdown", type=Path)
@@ -877,7 +926,11 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path(__file__).absolute().parents[1]
-    report = build_report(args.source_index, None if args.no_date_window else args.lookback_days)
+    report = build_report(
+        args.source_index,
+        None if args.no_date_window else args.lookback_days,
+        pending_transactions_report=args.pending_transactions_report,
+    )
     report = reconcile_with_apply_report(report, args.apply_report)
     report_path = args.report or root / "reports" / "baselane_native_split_plan.json"
     csv_path = args.csv or root / "reports" / "baselane_native_split_plan.csv"

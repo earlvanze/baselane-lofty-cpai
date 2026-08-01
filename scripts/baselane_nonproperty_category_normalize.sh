@@ -9,6 +9,7 @@ PREFIX="${BASELANE_NONPROPERTY_CATEGORY_PLAN_PREFIX:-/mnt/c/Users/digit/Dropbox/
 APPLY_REPORT="${BASELANE_NONPROPERTY_CATEGORY_APPLY_REPORT:-/mnt/c/Users/digit/Dropbox/Projects/cyber-gateway/config/openclaw/workspace/reports/baselane_nonproperty_category_apply.json}"
 AUTH_REPORT="${BASELANE_NONPROPERTY_CATEGORY_AUTH_REPORT:-$ROOT/reports/baselane_auth_recovery_report.json}"
 AUTH_TIMEOUT_SECONDS="${BASELANE_NONPROPERTY_CATEGORY_AUTH_TIMEOUT_SECONDS:-120}"
+REUSE_FRESH_EXPORT="${BASELANE_NONPROPERTY_CATEGORY_REUSE_FRESH_EXPORT:-0}"
 
 cd "$ROOT"
 
@@ -17,6 +18,19 @@ auth_probe() {
     "$PY" scripts/baselane_cdp_auth_recovery.py \
       --graphql-auth-smoke \
       --report "$AUTH_REPORT" >/dev/null
+}
+
+refresh_sources_and_plan() {
+  local force_live_refresh="${1:-0}"
+  if [ "$force_live_refresh" = "1" ] || [ "$REUSE_FRESH_EXPORT" != "1" ]; then
+    "$PY" scripts/baselane_sync_cdp_deterministic.py >/dev/null
+    "$PY" scripts/baselane_export_all_transactions_cdp.py \
+      --page-limit 500 \
+      --operation-batch-size 1 \
+      --report-dir "${BASELANE_REPORT_DIR:-/home/digit/.openclaw/workspace/reports}" \
+      >/dev/null
+  fi
+  "$PY" scripts/baselane_nonproperty_category_plan.py --output-prefix "$PREFIX" >/dev/null
 }
 
 # This wrapper runs before the monthly finance-truth auth preflight. Require
@@ -31,8 +45,7 @@ if [ "$auth_rc" -ne 0 ]; then
   exit 3
 fi
 
-"$PY" scripts/baselane_sync_cdp_deterministic.py >/dev/null
-"$PY" scripts/baselane_nonproperty_category_plan.py --output-prefix "$PREFIX" >/dev/null
+refresh_sources_and_plan
 
 digest="$("$PY" - "$PREFIX.json" <<'PY'
 import json
@@ -47,7 +60,6 @@ print(apply.coverage.plan_digest(payload))
 PY
 )"
 
-needs_final_verify=1
 if [ "$APPLY" = "1" ]; then
   set +e
   BASELANE_NONPROPERTY_CATEGORY_APPLY=1 "$PY" \
@@ -71,24 +83,18 @@ print(int(report.get("applied_verified_count") or 0))
 PY
 )"
   if [ "$applied_count" -gt 0 ]; then
-    "$PY" scripts/baselane_sync_cdp_deterministic.py >/dev/null
-    "$PY" scripts/baselane_nonproperty_category_plan.py --output-prefix "$PREFIX" >/dev/null
+    refresh_sources_and_plan 1
   fi
-  # Apply performs exact-ID precondition and post-write reads. The final
-  # export/replan above refreshes local work products; another full live
-  # classification scan would duplicate both forms of verification.
-  needs_final_verify=0
-  verify_rc="$apply_rc"
 fi
 
-if [ "$needs_final_verify" = "1" ]; then
-  set +e
-  "$PY" scripts/baselane_nonproperty_category_apply.py \
-    --plan "$PREFIX.json" \
-    --report "$APPLY_REPORT" >/dev/null
-  verify_rc="$?"
-  set -e
-fi
+# Always classify the final regenerated plan. This keeps the report paired with
+# the current plan even when a pending row settles between export and apply.
+set +e
+"$PY" scripts/baselane_nonproperty_category_apply.py \
+  --plan "$PREFIX.json" \
+  --report "$APPLY_REPORT" >/dev/null
+verify_rc="$?"
+set -e
 
 "$PY" - "$APPLY_REPORT" "$verify_rc" <<'PY'
 import json

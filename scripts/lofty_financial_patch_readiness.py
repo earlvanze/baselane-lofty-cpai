@@ -193,7 +193,11 @@ def cash_source_guard_source_list(
     distribution_minimum: float | None,
     below_minimum_marker: str = "combined_operating_cash_below_maintenance_reserve",
 ) -> tuple[list[str], float | None, bool | None]:
-    eco_operating_cash = source_values.get("eco_operating_cash_net_of_accruals")
+    eco_operating_cash = source_values.get("total_dao_spendable_cash")
+    if eco_operating_cash is None:
+        eco_operating_cash = source_values.get("eco_held_unrestricted_cash")
+    if eco_operating_cash is None:
+        eco_operating_cash = source_values.get("eco_operating_cash_net_of_accruals")
     if eco_operating_cash is None:
         eco_operating_cash = source_values.get("eco_operating_cash_full_column_e")
     combined_cash, reserve_clear = combined_operating_cash_clearance(
@@ -1229,16 +1233,19 @@ def distribution_guard_preview(
     distribution_minimum = float(FULL_REPLENISHMENT_THRESHOLD) if reserve_policy_property else maintenance_reserve
     source_values = {
         "lofty_operating_reserve": parse_accounting_money(summary.get("lofty_curr_maintenance_reserve")),
-        (
+        "total_dao_spendable_cash": parse_accounting_money(summary.get("total_dao_spendable_cash")),
+        "eco_held_unrestricted_cash": parse_accounting_money(summary.get("eco_held_unrestricted_cash")),
+    }
+    if source_values["total_dao_spendable_cash"] is None and source_values["eco_held_unrestricted_cash"] is None:
+        source_values[
             "eco_operating_cash_net_of_accruals"
             if reserve_policy_property
             else "eco_operating_cash_full_column_e"
-        ): parse_accounting_money(
+        ] = parse_accounting_money(
             summary.get("eco_gl_column_e_net_of_accruals")
             if reserve_policy_property
             else summary.get("eco_gl_column_e_sum")
-        ),
-    }
+        )
     missing_sources = [name for name, value in source_values.items() if value is None]
     cash_source_guard_sources, combined_operating_cash, distribution_minimum_clear = cash_source_guard_source_list(
         source_values,
@@ -1324,6 +1331,7 @@ def distribution_guard_preview(
             or live_positive_projected_rental_yield
             or live_distribution_enabled
         )
+        and not live_financial_corrective_distribution_ready(live_status, patch)
     ):
         issues.append(
             "distribution guard requires zero cash_flow/coc/projected_rental_yield and disabled distributions because cash-source guard, nonpositive annual cash flow, or manual disable is active"

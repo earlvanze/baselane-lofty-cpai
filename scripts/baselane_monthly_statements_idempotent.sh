@@ -155,6 +155,15 @@ fi
 TARGET_YEAR="${BASELANE_MONTHLY_TARGET_YEAR:-$DEFAULT_TARGET_YEAR}"
 TARGET_MONTH="${BASELANE_MONTHLY_TARGET_MONTH:-$DEFAULT_TARGET_MONTH}"
 STAMP="${BASELANE_MONTHLY_TARGET_STAMP:-${TARGET_YEAR}-${TARGET_MONTH}}"
+ALLOW_CURRENT_MONTH_TRANSACTION_EXPORT_CLOSE="${BASELANE_MONTHLY_ALLOW_CURRENT_MONTH_TRANSACTION_EXPORT_CLOSE:-0}"
+CURRENT_LOCAL_DATE="${CURRENT_LOCAL_DATE:-$(date +%F)}"
+CURRENT_LOCAL_MONTH="${CURRENT_LOCAL_DATE:0:7}"
+printf -v TARGET_RUN_MONTH '%04d-%02d' "$TARGET_YEAR" "$TARGET_MONTH"
+CURRENT_MONTH_TRANSACTION_EXPORT_CLOSE=0
+if [ "$ALLOW_CURRENT_MONTH_TRANSACTION_EXPORT_CLOSE" = "1" ] \
+  && [ "$TARGET_RUN_MONTH" = "$CURRENT_LOCAL_MONTH" ]; then
+  CURRENT_MONTH_TRANSACTION_EXPORT_CLOSE=1
+fi
 
 cdp_reachable() {
   command -v curl >/dev/null 2>&1 && timeout 4 curl -fsS -H 'Host: localhost' "$1" >/dev/null 2>&1
@@ -426,6 +435,8 @@ write_statement_gate_report() {
   BASELANE_STATEMENT_GATE_ALIGNED_OWNER_IMPORT_BACKFILL_QUEUE_ID="$ALIGNED_OWNER_IMPORT_BACKFILL_QUEUE_ID" \
   BASELANE_STATEMENT_GATE_ALIGNED_OWNER_IMPORT_CURRENT_PROPERTY_ID="$ALIGNED_OWNER_IMPORT_CURRENT_PROPERTY_ID" \
   BASELANE_STATEMENT_GATE_MIN_CAPTURED="$STATEMENTS_MIN_CAPTURED" \
+  BASELANE_STATEMENT_GATE_CURRENT_MONTH_TRANSACTION_EXPORT_CLOSE="$CURRENT_MONTH_TRANSACTION_EXPORT_CLOSE" \
+  BASELANE_STATEMENT_GATE_CURRENT_LOCAL_DATE="$CURRENT_LOCAL_DATE" \
   BASELANE_STATEMENT_GATE_REPORT="$STATEMENTS_IDEMPOTENT_REPORT" \
   "$PY" - <<'PY' || true
 import json
@@ -481,7 +492,10 @@ aligned_owner_import_readiness_scope = aligned_owner_import_readiness_report.get
 aligned_owner_import_label_guard = aligned_owner_import_readiness_report.get("import_label_guard") or {}
 download_error = str(download_report.get("error") or "")
 statements_assumed_verified = os.environ.get("BASELANE_MONTHLY_ASSUME_STATEMENTS_VERIFIED") == "1"
-download_attempted = not statements_assumed_verified
+current_month_transaction_export_close = (
+    os.environ.get("BASELANE_STATEMENT_GATE_CURRENT_MONTH_TRANSACTION_EXPORT_CLOSE") == "1"
+)
+download_attempted = not statements_assumed_verified and not current_month_transaction_export_close
 gate_reason = os.environ.get("BASELANE_STATEMENT_GATE_REASON") or None
 graphql_results = download_report.get("graphql_click_results") or []
 graphql_error_count = 0
@@ -545,7 +559,13 @@ elif gate_reason == "no-statement-buttons" or download_error_class == "no-statem
 elif gate_reason == "disk-space-preflight":
     next_action = "Free local Dropbox/Windows disk space, then rerun monthly statement capture."
 elif os.environ["BASELANE_STATEMENT_GATE_STATUS"] == "ok":
-    next_action = "No statement action required; current target-month capture is verified."
+    if current_month_transaction_export_close:
+        next_action = (
+            "No current-month statement action required; the close uses the live "
+            "transaction export until the final bank statement posts."
+        )
+    else:
+        next_action = "No statement action required; current target-month capture is verified."
 else:
     next_action = f"Run statement capture retry: {retry_command}"
 report = {
@@ -560,6 +580,13 @@ report = {
     "stamp": os.environ["BASELANE_STATEMENT_GATE_STAMP"],
     "target_year": target_year,
     "target_month": target_month,
+    "current_local_date": os.environ.get("BASELANE_STATEMENT_GATE_CURRENT_LOCAL_DATE"),
+    "current_month_transaction_export_close": current_month_transaction_export_close,
+    "close_source_basis": (
+        "live_transaction_export"
+        if current_month_transaction_export_close
+        else "bank_statements"
+    ),
     "next_action": next_action,
     "gate_refresh_command": gate_refresh_command,
     "retry_command": retry_command,
@@ -587,15 +614,15 @@ report = {
     "min_captured_required": int(os.environ.get("BASELANE_STATEMENT_GATE_MIN_CAPTURED") or 0),
     "download_report": download_report_path,
     "download_attempted": download_attempted,
-    "download_report_not_used": statements_assumed_verified,
-    "download_ok": None if statements_assumed_verified else download_report.get("ok"),
-    "download_new_files_count": None if statements_assumed_verified else download_report.get("new_files_count"),
-    "download_total_buttons": None if statements_assumed_verified else download_report.get("total_buttons"),
-    "download_clicked_buttons": None if statements_assumed_verified else download_report.get("clicked_buttons"),
-    "download_error": None if statements_assumed_verified else (download_error or None),
-    "download_error_class": None if statements_assumed_verified else download_error_class,
-    "download_graphql_error_count": 0 if statements_assumed_verified else graphql_error_count,
-    "download_first_graphql_error": None if statements_assumed_verified else (first_graphql_error or None),
+    "download_report_not_used": statements_assumed_verified or current_month_transaction_export_close,
+    "download_ok": None if not download_attempted else download_report.get("ok"),
+    "download_new_files_count": None if not download_attempted else download_report.get("new_files_count"),
+    "download_total_buttons": None if not download_attempted else download_report.get("total_buttons"),
+    "download_clicked_buttons": None if not download_attempted else download_report.get("clicked_buttons"),
+    "download_error": None if not download_attempted else (download_error or None),
+    "download_error_class": None if not download_attempted else download_error_class,
+    "download_graphql_error_count": 0 if not download_attempted else graphql_error_count,
+    "download_first_graphql_error": None if not download_attempted else (first_graphql_error or None),
     "mortgage_workflow_report": mortgage_report_path,
     "mortgage_workflow_rc": int(os.environ.get("BASELANE_STATEMENT_GATE_MORTGAGE_WORKFLOW_RC") or 0),
     "mortgage_workflow_invocation_status": os.environ.get("BASELANE_STATEMENT_GATE_MORTGAGE_WORKFLOW_STATUS") or "not_started",
@@ -1055,7 +1082,10 @@ if [ "${BASELANE_MONTHLY_STATEMENTS_GATE_ONLY:-0}" = "1" ]; then
   exit 0
 fi
 
-if [ "${BASELANE_MONTHLY_ASSUME_STATEMENTS_VERIFIED:-0}" = "1" ]; then
+if [ "$CURRENT_MONTH_TRANSACTION_EXPORT_CLOSE" = "1" ]; then
+  echo "[baselane-monthly] Using live transaction export for current-month close ${STAMP}"
+  write_statement_gate_report "ok" "current-month-live-transaction-export-close" "transaction-export"
+elif [ "${BASELANE_MONTHLY_ASSUME_STATEMENTS_VERIFIED:-0}" = "1" ]; then
   echo "[baselane-monthly] Assuming statements for ${STAMP} are verified by caller"
   write_statement_gate_report "ok" "assumed-statements-verified" "external-verified"
 elif [ "$LAST" = "$STAMP" ] && audit_statement_capture; then

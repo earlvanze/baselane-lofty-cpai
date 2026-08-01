@@ -73,6 +73,15 @@ def iso_z() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def normalize_property_name(value: str) -> str:
+    text = value.lower().replace("&", "and")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    text = re.sub(r"\bavenue\b", "ave", text)
+    text = re.sub(r"\bstreet\b", "st", text)
+    text = re.sub(r"\blane\b", "ln", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def run_guard(command: list[str]) -> dict[str, Any]:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=GUARD_TIMEOUT_SECONDS)
@@ -523,7 +532,14 @@ def apply_update_record(
                     elif not do_apply:
                         record["updates"]["status"] = "ready"
                     else:
-                        apply_result = run_guard([sys.executable, str(updates_guard), "prepend", str(updates_md), str(approved_entry)])
+                        apply_result = run_guard([
+                            sys.executable,
+                            str(updates_guard),
+                            "prepend",
+                            str(updates_md),
+                            str(approved_entry),
+                            "--replace-generated-month-entry",
+                        ])
                         record["updates"]["apply"] = apply_result
                         record["updates"]["status"] = "applied" if apply_result["ok"] else "apply_failed"
 
@@ -675,6 +691,7 @@ def build_report(
     issues: list[str],
     yhome_guard: dict[str, Any],
     manual_exclusions: list[dict[str, Any]],
+    listing_update_policy: Path | None = None,
     in_progress: bool = False,
 ) -> dict[str, Any]:
     counts = summarize(records)
@@ -730,6 +747,7 @@ def build_report(
     return {
         "generated_at": iso_z(),
         "run_month": run_month,
+        "listing_update_policy": str(listing_update_policy) if listing_update_policy else None,
         "apply": apply,
         "status": "failed" if issues and not in_progress else status,
         "in_progress": in_progress,
@@ -909,7 +927,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--yhome-transition-csv", type=Path)
     parser.add_argument("--manual-excluded-property", action="append", default=[])
+    parser.add_argument("--property", action="append", default=[], help="Limit apply to an exact normalized property name; repeatable.")
     parser.add_argument("--transfer-reconciliation-report", type=Path)
+    parser.add_argument("--listing-update-policy", type=Path)
     parser.add_argument("--financial-approval-manifest", type=Path, default=Path("reports/lofty_financial_approval_manifest.json"))
     parser.add_argument("--update-approval-manifest", type=Path, default=Path("reports/lofty_update_approval_manifest.json"))
     parser.add_argument("--apply", action="store_true")
@@ -928,7 +948,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if not issues:
         manual_names = [*DEFAULT_MANUAL_EXCLUDED_PROPERTIES, *args.manual_excluded_property]
-        exclusion_guards, yhome_guard, manual_exclusions = monthly_exclusion_guards(args.yhome_transition_csv, manual_names)
+        exclusion_guards, yhome_guard, manual_exclusions = monthly_exclusion_guards(
+            args.yhome_transition_csv,
+            manual_names,
+            policy_path=args.listing_update_policy,
+        )
         exclusion_guards.extend(financial_hold_exclusions(args.transfer_reconciliation_report))
         rows: list[dict[str, str]] = []
         resolved_exclusions: dict[int, dict[str, Any]] = {}
@@ -937,6 +961,19 @@ def main(argv: list[str] | None = None) -> int:
                 status = row.get("status") or ""
                 if not is_active_index_status(status) and not is_excluded_index_status(status):
                     continue
+                if args.property:
+                    property_path, path_resolution = resolve_index_property_path(row)
+                    row_names = {
+                        normalize_property_name(property_path.name.removesuffix(" Public")),
+                        normalize_property_name(str(row.get("managed_name") or "")),
+                    }
+                    wanted_names = {
+                        normalize_property_name(value)
+                        for value in args.property
+                        if normalize_property_name(value)
+                    }
+                    if not (row_names & wanted_names):
+                        continue
                 row_index = len(rows)
                 rows.append(row)
                 if is_active_index_status(status):
@@ -963,6 +1000,7 @@ def main(argv: list[str] | None = None) -> int:
                     issues=issues,
                     yhome_guard=yhome_guard,
                     manual_exclusions=manual_exclusions,
+                    listing_update_policy=args.listing_update_policy,
                     in_progress=True,
                 ),
             )
@@ -988,6 +1026,7 @@ def main(argv: list[str] | None = None) -> int:
                         issues=issues,
                         yhome_guard=yhome_guard,
                         manual_exclusions=manual_exclusions,
+                        listing_update_policy=args.listing_update_policy,
                         in_progress=True,
                     ),
                 )
@@ -1002,6 +1041,7 @@ def main(argv: list[str] | None = None) -> int:
         issues=issues,
         yhome_guard=yhome_guard,
         manual_exclusions=manual_exclusions,
+        listing_update_policy=args.listing_update_policy,
     )
     write_json_atomic(args.report, report)
     print(json.dumps({k: report[k] for k in ("status", "counts", "record_count", "issues")}, indent=2, sort_keys=True))

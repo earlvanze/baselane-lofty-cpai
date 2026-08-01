@@ -581,7 +581,7 @@ async function playwrightPageGraphqlAttempt() {
       throw new Error(`PLAYWRIGHT_GRAPHQL_ERRORS: ${JSON.stringify(parsed.errors).slice(0, 1000)}`);
     }
     await writeStdoutLine(outer.text);
-    process.exit(0);
+    return true;
   } finally {
     page.off('request', capture);
   }
@@ -593,7 +593,7 @@ async function main() {
     if (cachedHeaders) {
       try {
         await fetchGraphqlWithCapturedHeaders(cachedHeaders, 'session cache');
-        process.exit(0);
+        return;
       } catch (err) {
         console.error('[Session cache] Refreshing visible-page credentials: ' + errorMessage(err));
       }
@@ -928,7 +928,7 @@ async function main() {
     writeSessionCache(lastGraphqlHeaders);
     await fetchGraphqlWithCapturedHeaders(lastGraphqlHeaders, 'browser target');
     try { ws.close(); } catch (_err) {}
-    process.exit(0);
+    return;
   }
 
   const expression = `
@@ -963,7 +963,7 @@ async function main() {
   const outer = parseEvaluateJsonResult(result, 'GRAPHQL_EVALUATE');
   if (outer.status !== 200) throw new Error(`GRAPHQL_STATUS_${outer.status}: ${String(outer.text || '').slice(0, 500)}`);
   await writeStdoutLine(typeof outer.text === 'string' ? outer.text : JSON.stringify(outer));
-  process.exit(0);
+  return;
 }
 
 main().catch(err => {

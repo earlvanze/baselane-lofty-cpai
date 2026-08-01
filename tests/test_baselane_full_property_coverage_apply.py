@@ -97,6 +97,35 @@ class CoverageGraphqlTests(unittest.TestCase):
             [2, 3],
         )
 
+    def test_transaction_pages_use_single_transport_when_batch_size_is_one(self):
+        responses = [
+            {
+                "data": {
+                    "transactions": {
+                        "total": 3,
+                        "data": [transaction("3"), transaction("2")],
+                    }
+                }
+            },
+            {
+                "data": {
+                    "transactions": {"total": 3, "data": [transaction("1")]}
+                }
+            },
+        ]
+        with (
+            patch.object(coverage, "graphql", side_effect=responses) as graphql,
+            patch.object(coverage, "graphql_batch") as graphql_batch,
+        ):
+            rows, total = coverage.fetch_all_transactions(
+                page_limit=2, operation_batch_size=1
+            )
+
+        self.assertEqual(total, 3)
+        self.assertEqual([row["id"] for row in rows], ["3", "2", "1"])
+        self.assertEqual(graphql.call_count, 2)
+        graphql_batch.assert_not_called()
+
     def test_execute_uses_exact_id_precondition_and_readback(self):
         before = transaction("7")
         after = transaction("7", property_id="101", tag_id="202")
