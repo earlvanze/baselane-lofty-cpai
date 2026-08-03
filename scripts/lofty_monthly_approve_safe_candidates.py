@@ -111,8 +111,25 @@ def candidate_text_issues(text: str, section: str) -> list[str]:
             issues.append("misleading_eco_net_dao_funds_definition")
         if "ECO Net DAO Funds (spendable cash held by ECO)" not in text:
             issues.append("missing_spendable_eco_cash_definition")
-        if re.search(r"ECO Net DAO Funds \(spendable cash held by ECO\)\s*\|\s*Pending reconciliation", text, re.I):
+        if re.search(
+            r"ECO Net DAO Funds \(spendable cash held by ECO\)(?:\s*\||:)\s*Pending reconciliation",
+            text,
+            re.I,
+        ):
             issues.append("eco_net_dao_funds_reconciliation_pending")
+        pending_balance_labels = (
+            "Accessible DAO funds for operations",
+            "Spendable Baselane/ECO cash after recorded obligations",
+            "Recorded unpaid obligations",
+            "Category detail",
+            "DAO A/P - Due to ECO (unreimbursed cash advances)",
+            "ECO A/R - Due from DAO (same intercompany balance)",
+        )
+        for label in pending_balance_labels:
+            if re.search(rf"^\s*-\s*{re.escape(label)}:\s*Pending reconciliation\s*$", text, re.I | re.M):
+                issues.append(f"{label.lower().replace(' ', '_').replace('/', '_')}_reconciliation_pending")
+        if re.search(r"^\s*-\s+.*:\s*Pending reconciliation\s*$", text, re.I | re.M):
+            issues.append("balance_sheet_reconciliation_pending")
         if re.search(r"Cash held by the mortgage servicer for taxes and insurance\s*\|\s*Pending reconciliation", text, re.I):
             issues.append("mortgage_escrow_reconciliation_pending")
     return issues

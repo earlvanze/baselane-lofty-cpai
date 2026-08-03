@@ -19,13 +19,16 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
+import os
 import re
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +41,8 @@ from baselane_mcp.transfers import (  # noqa: E402
     run_graphql_via_cdp,
 )
 from coownership_reserve_policy import (  # noqa: E402
-    outstanding_manual_accrual_liability,
+    outstanding_manual_accrual_liability_by_kind,
+    pm_pay_period_cash_credit,
     row_date as policy_row_date,
     row_matches_property,
 )
@@ -55,11 +59,16 @@ DEFAULT_CSV = ROOT / "reports" / "baselane_live_dao_cash_reconciliation.csv"
 ACCOUNT_CLASSIFICATION_OVERRIDES = (
     ROOT / "config" / "baselane_bank_account_classification_overrides.json"
 )
+INTERCOMPANY_TRANSACTION_OVERRIDES = (
+    ROOT / "config" / "baselane_intercompany_transaction_overrides.json"
+)
 ACTIVE_SOURCE = ROOT / "reports" / "_goal_transfer_requirements.preview.json"
+ACTIVE_ROSTER = ROOT / "reports" / "lofty_monthly_active_property_roster.json"
 BRIDGE = ROOT / "scripts" / "baselane_graphql_via_cdp.js"
 MANAGED_INTEREST_MARKER = "ECO bank interest through"
 NONCASH_WEB3_MARKER = "WEB3-WEB2-RECON|"
 ECO_ACCOUNT_PREFIX = "ECO Systems, LLC-"
+ECO_OWNER_NAME = "ECO Systems, LLC"
 ECO_EARNED_REVENUE_CATEGORIES = {
     "fees & other revenue",
     "management fees",
@@ -73,6 +82,13 @@ NONCASH_ROW_MARKERS = (
     "aops-monthly-accrual|",
     "web3-web2-recon|",
 )
+INTERCOMPANY_OVERRIDE_SCHEMA_VERSION = 1
+INTERCOMPANY_OVERRIDE_ACTIONS = {"include", "exclude"}
+INTERCOMPANY_OVERRIDE_CLASSIFICATIONS = {
+    "approved_property_retag_from_blank_property",
+    "approved_property_retag_from_generic_bucket",
+    "purpose_reimbursement_matched_to_external_advance",
+}
 
 # Baselane account nicknames and legacy source rows use short property names,
 # while monthly accrual counterpart rows may use the full postal form.  Cash
@@ -88,8 +104,22 @@ GL_PROPERTY_ALIASES = {
     "9 Country Club Lane N": "9 Country Club Ln N",
     "1278 E 187th St, Cleveland, OH 44110": "1278 E 187th St",
     "1432 Sara Ave, Akron, Ohio 44305": "1432 Sara Ave.",
+    "1432 Sara Ave": "1432 Sara Ave.",
+    "1456 W 85th St": "1456 W 85th St.",
+    "1456 W 85th St, Cleveland, OH 44102": "1456 W 85th St.",
+    "1456 West 85th Street, Cleveland, OH 44102": "1456 W 85th St.",
+    "2094 W 34th Pl Cleveland": "2094 W 34th Place",
+    "2094 W 34th Pl Cleveland, OH 44113": "2094 W 34th Place",
+    "3178 W 41st St, Cleveland, OH 44109": "3178 W 41st St",
+    "4318 Clybourne Ave, Cleveland, OH 44109": "4318 Clybourne Ave",
     "428 Cross St, Akron, OH 44311": "428 Cross St.",
+    "428 Cross St": "428 Cross St.",
     "566 Nash St, Akron, OH 44306": "566 Nash St",
+    "8143 S Sangamon St": "8143 S Sangamon St.",
+    "917 Pawnee Ave, Memphis, TN 38109": "917 Pawnee Ave",
+    "22164 Umland Cir": "22164 Umland Circle",
+    "7542 and 7656 S Colfax Ave": "7542 & 7656 S Colfax Ave",
+    "Ohio 3 Property Package": "1518 Dille Rd",
 }
 
 
@@ -147,6 +177,8 @@ ACCOUNT_PROPERTY = {
     "90 Madison Ave Reserves": "90 Madison Ave",
     "918 Frederick Blvd Operations": "918 Frederick Blvd",
     "918 Security Deposits": "918 Frederick Blvd",
+    "917 Pawnee Ave Operations": "917 Pawnee Ave",
+    "917 Pawnee Ave Reserves": "917 Pawnee Ave",
     "9634 S Green St Operations": "9634 S Green St",
     "9902 Garfield Ave Operations": "9902 Garfield Ave",
     "9902 Garfield Ave Reserves": "9902 Garfield Ave",
@@ -319,11 +351,11 @@ RESERVE_INTEREST_SETTLEMENTS = {
 
 TRANSACTION_QUERY = """
 query Transactions($input: SortsAndFilters) {
-  transactions(input: $input) {
+    transactions(input: $input) {
     total
     data {
       id amount date merchantName description propertyId tagId bankAccountId
-      note isSplit parentId isDeleted
+      note isSplit parentId isDeleted pending
     }
   }
 }
@@ -371,7 +403,7 @@ def query_account_transactions(bank_account_id: str) -> list[dict[str, Any]]:
                             "isDocumentUploaded": None,
                         },
                         "page": page,
-                        "pageLimit": 250,
+                        "pageLimit": 1000,
                     }
                 },
                 "query": TRANSACTION_QUERY,
@@ -384,7 +416,124 @@ def query_account_transactions(bank_account_id: str) -> list[dict[str, Any]]:
         page += 1
 
 
-def query_managed_interest_settlements() -> dict[str, list[dict[str, Any]]]:
+def query_account_transactions_after(
+    bank_account_id: str,
+    cutoff: date,
+) -> list[dict[str, Any]]:
+    """Fetch only rows needed to roll a live balance back to ``cutoff``."""
+    rows: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        result = graphql(
+            {
+                "operationName": "Transactions",
+                "variables": {
+                    "input": {
+                        "sort": {"field": "date", "direction": "DESC"},
+                        "filter": {
+                            "isHidden": False,
+                            "search": "",
+                            "isCategorized": None,
+                            "tagId": None,
+                            "bankAccountId": bank_account_id,
+                            "propertyId": None,
+                            "unitId": None,
+                            "isDeleted": False,
+                            "isDocumentUploaded": None,
+                        },
+                        "page": page,
+                        "pageLimit": 1000,
+                    }
+                },
+                "query": TRANSACTION_QUERY,
+            }
+        )["data"]["transactions"]
+        batch = result.get("data") or []
+        if not batch:
+            return rows
+        reached_cutoff = False
+        for row in batch:
+            try:
+                row_date = date.fromisoformat(str(row.get("date") or "")[:10])
+            except ValueError:
+                continue
+            if row_date <= cutoff:
+                reached_cutoff = True
+                continue
+            rows.append(row)
+        if reached_cutoff or len(batch) < 1000:
+            return rows
+        page += 1
+
+
+def unallocated_eco_pool_snapshot(
+    accounts: dict[str, dict[str, Any]],
+    cutoff: date,
+) -> dict[str, Any]:
+    """Reconcile generic ECO-owned accounts without allocating them by tag.
+
+    Property tags establish GL attribution, not ownership of a pooled bank
+    balance. Dedicated property accounts are handled separately. The generic
+    pool is disclosed as a physical ceiling only and contributes zero to every
+    property's spendable cash until explicit custody evidence allocates it.
+    """
+    account_rows: list[dict[str, Any]] = []
+    issues: list[str] = []
+    total_as_of = Decimal()
+    for account in sorted(accounts.values(), key=lambda row: str(row.get("bank_account_id"))):
+        if str(account.get("account_name") or "") != ECO_OWNER_NAME:
+            continue
+        nickname = str(account.get("nickname") or "")
+        if nickname in ACCOUNT_PROPERTY:
+            continue
+        bank_id = str(account.get("bank_account_id") or "")
+        current = money(account.get("available_balance"))
+        post_cutoff_rows: list[dict[str, Any]] = []
+        try:
+            if cutoff < datetime.now(timezone.utc).date():
+                post_cutoff_rows = query_account_transactions_after(bank_id, cutoff)
+        except Exception as exc:
+            issues.append(f"{nickname or bank_id}: {type(exc).__name__}: {exc}")
+            continue
+        post_cutoff_net = sum(
+            (money(row.get("amount")) for row in post_cutoff_rows),
+            Decimal(),
+        )
+        balance_as_of = current - post_cutoff_net
+        total_as_of += balance_as_of
+        account_rows.append(
+            {
+                "bank_account_id": bank_id,
+                "transfer_account_id": int(account["transfer_account_id"]),
+                "nickname": nickname,
+                "current_available_balance": f"{current:.2f}",
+                "post_cutoff_transaction_count": len(post_cutoff_rows),
+                "post_cutoff_net_activity": f"{post_cutoff_net:.2f}",
+                "available_balance_as_of": f"{balance_as_of:.2f}",
+                "post_cutoff_transaction_ids": [
+                    str(row.get("id") or "") for row in post_cutoff_rows
+                ],
+            }
+        )
+    status = "ok_unallocated" if not issues else "reconciliation_pending"
+    return {
+        "status": status,
+        "as_of": cutoff.isoformat(),
+        "allocation_policy": "explicit_custody_evidence_only_never_property_tag",
+        "physical_balance_as_of": f"{total_as_of:.2f}" if not issues else None,
+        "maximum_property_allocation_total": f"{max(Decimal(), total_as_of):.2f}"
+        if not issues
+        else None,
+        "allocated_to_properties": "0.00",
+        "unallocated_physical_balance": f"{total_as_of:.2f}" if not issues else None,
+        "accounts": account_rows,
+        "issues": issues,
+    }
+
+
+def query_managed_interest_settlements(
+    cutoff: date | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Return exact tool-created interest debit mirrors by source bank account.
 
     The controlled bookkeeping-note prefix is deliberately stronger evidence
@@ -426,8 +575,14 @@ def query_managed_interest_settlements() -> dict[str, list[dict[str, Any]]]:
 
     matched: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
+        try:
+            row_date = date.fromisoformat(str(row.get("date") or "")[:10])
+        except ValueError:
+            continue
         note = " ".join(note_text(row.get("note")).split())
         if (
+            (cutoff is not None and row_date > cutoff)
+            or
             money(row.get("amount")) >= 0
             or row.get("parentId")
             or row.get("isDeleted")
@@ -448,13 +603,24 @@ def query_managed_interest_settlements() -> dict[str, list[dict[str, Any]]]:
 
 
 def active_gl_names() -> set[str]:
-    if not ACTIVE_SOURCE.exists():
-        return set()
-    data = json.loads(ACTIVE_SOURCE.read_text(encoding="utf-8"))
-    return {
-        GL_PROPERTY_ALIASES.get(str(row["property"]), str(row["property"]))
-        for row in data.get("active_dao_cash_balance_rows", [])
-    }
+    names: set[str] = set()
+    if ACTIVE_ROSTER.exists():
+        data = json.loads(ACTIVE_ROSTER.read_text(encoding="utf-8"))
+        for row in data.get("reporting_targets", []):
+            raw = str(row.get("property_name") or "").strip()
+            if raw:
+                names.add(GL_PROPERTY_ALIASES.get(raw, raw))
+        # The monthly roster is the authoritative 32-physical-property / 30-
+        # reporting-target scope.  The transfer preview is only a legacy
+        # fallback and may contain stale postal-name variants or sold targets.
+        return names
+    if ACTIVE_SOURCE.exists():
+        data = json.loads(ACTIVE_SOURCE.read_text(encoding="utf-8"))
+        for row in data.get("active_dao_cash_balance_rows", []):
+            raw = str(row.get("property") or "").strip()
+            if raw:
+                names.add(GL_PROPERTY_ALIASES.get(raw, raw))
+    return names
 
 
 def read_gl(path: Path, cutoff: date) -> tuple[dict[str, Decimal], dict[str, Decimal], dict[str, int]]:
@@ -502,6 +668,117 @@ def truthy(value: Any) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y"}
 
 
+def load_intercompany_transaction_overrides(path: Path) -> dict[str, dict[str, Any]]:
+    """Load exact, evidence-bearing corrections for mis-tagged cash rows.
+
+    These rules are deliberately transaction-ID specific.  A broad legal-entity
+    inference would also capture interest and earned fees, which are not DAO
+    reimbursements.  Expected source fields make stale or changed upstream data
+    fail closed instead of silently changing an intercompany balance.
+    """
+    if not path.exists():
+        raise RuntimeError(f"required intercompany override policy is missing: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != INTERCOMPANY_OVERRIDE_SCHEMA_VERSION:
+        raise RuntimeError(
+            "unsupported intercompany override schema_version: "
+            f"{payload.get('schema_version')!r}"
+        )
+    try:
+        date.fromisoformat(str(payload["effective_date"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("intercompany override policy has invalid effective_date") from exc
+    raw_rules = payload.get("rules")
+    if not isinstance(raw_rules, list):
+        raise RuntimeError("intercompany override policy rules must be a list")
+    rules: dict[str, dict[str, Any]] = {}
+    required = {
+        "baselane_id",
+        "expected_date",
+        "expected_amount",
+        "expected_account",
+        "expected_property",
+        "property",
+        "action",
+        "classification",
+        "rationale",
+    }
+    for rule in raw_rules:
+        if not isinstance(rule, dict):
+            raise RuntimeError("intercompany override rule must be an object")
+        baselane_id = str(rule.get("baselane_id") or "").strip()
+        if not baselane_id or baselane_id in rules:
+            raise RuntimeError(f"invalid duplicate/blank intercompany override ID: {baselane_id!r}")
+        missing = sorted(key for key in required if key not in rule)
+        if missing:
+            raise RuntimeError(
+                f"intercompany override {baselane_id} missing required fields: "
+                + ", ".join(missing)
+            )
+        try:
+            date.fromisoformat(str(rule["expected_date"]))
+            Decimal(str(rule["expected_amount"])).quantize(MONEY)
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise RuntimeError(
+                f"intercompany override {baselane_id} has invalid date or amount"
+            ) from exc
+        for key in ("expected_account", "property", "classification", "rationale"):
+            if not str(rule.get(key) or "").strip():
+                raise RuntimeError(f"intercompany override {baselane_id} has blank {key}")
+        action = str(rule["action"]).strip().casefold()
+        if action not in INTERCOMPANY_OVERRIDE_ACTIONS:
+            raise RuntimeError(
+                f"intercompany override {baselane_id} has invalid action {action!r}"
+            )
+        classification = str(rule["classification"]).strip()
+        if classification not in INTERCOMPANY_OVERRIDE_CLASSIFICATIONS:
+            raise RuntimeError(
+                f"intercompany override {baselane_id} has unsupported classification "
+                f"{classification!r}"
+            )
+        evidence_ids = rule.get("evidence_baselane_ids") or []
+        evidence_reference = str(rule.get("evidence_reference") or "").strip()
+        if not isinstance(evidence_ids, list) or any(
+            not str(value or "").strip() for value in evidence_ids
+        ):
+            raise RuntimeError(
+                f"intercompany override {baselane_id} has invalid evidence_baselane_ids"
+            )
+        if not evidence_ids and not evidence_reference:
+            raise RuntimeError(
+                f"intercompany override {baselane_id} lacks reciprocal/source evidence"
+            )
+        rules[baselane_id] = rule
+    return rules
+
+
+def apply_intercompany_transaction_override(
+    row: dict[str, Any], rule: dict[str, Any]
+) -> tuple[str, str, str]:
+    """Validate and return ``(property, action, reason)`` for one exact rule."""
+    baselane_id = str(row.get("BaselaneId") or "").strip()
+    checks = {
+        "expected_date": str(row.get("ISODate") or "").strip(),
+        "expected_amount": f"{money(row.get('Amount')):.2f}",
+        "expected_account": str(row.get("Account") or "").strip(),
+        "expected_property": str(row.get("Property") or "").strip(),
+    }
+    for expected_key, actual in checks.items():
+        expected = str(rule.get(expected_key) or "").strip()
+        if expected != actual:
+            raise RuntimeError(
+                f"intercompany override {baselane_id} {expected_key} mismatch: "
+                f"expected {expected!r}, got {actual!r}"
+            )
+    prop = str(rule.get("property") or row.get("Property") or "").strip()
+    prop = GL_PROPERTY_ALIASES.get(prop, prop)
+    action = str(rule.get("action") or "include").strip().casefold()
+    if action not in {"include", "exclude"}:
+        raise RuntimeError(f"intercompany override {baselane_id} has invalid action {action!r}")
+    reason = str(rule.get("classification") or "approved_exact_transaction_override").strip()
+    return prop, action, reason
+
+
 def eco_intercompany_row_classification(row: dict[str, Any], prop: str) -> tuple[str, str]:
     """Classify an ECO-account property row for the DAO/ECO reciprocal subledger.
 
@@ -528,10 +805,33 @@ def eco_intercompany_row_classification(row: dict[str, Any], prop: str) -> tuple
     text = normalized_text(
         row.get("Merchant"), row.get("Description"), row.get("Notes"), category, subcategory
     )
+    # Aligned/AppFolio owner payments are property cash delivered to ECO.  The
+    # historical importer called these "PM cash settlement" rows because they
+    # clear the property-manager subledger, but they are not management fees.
+    # P&L neutrality does not make the cash irrelevant to the custody rollforward.
+    if amount > 0 and (
+        "aligned pm cash settlement; neutral transfer after detail import" in text
+        or "aligned/appfolio owner cash settlement" in text
+        or (
+            "aligned" in text
+            and "owner payment" in text
+            and "cash settlement" in text
+        )
+    ):
+        return "include", "dao_owner_cash_received_from_aligned"
     if category in ECO_EARNED_REVENUE_CATEGORIES or subcategory in ECO_EARNED_REVENUE_CATEGORIES:
         return "exclude", "eco_earned_revenue"
+    if (
+        MANAGED_INTEREST_MARKER.casefold() in text
+        or re.search(r"\beco\s+(?:bank\s+)?interest\b", text)
+    ):
+        return "exclude", "eco_owned_bank_interest_settlement"
     if amount > 0 and re.search(
         r"\b(pm|property management|management|dao|llc|registration) fee(s)?\b", text
+    ):
+        return "exclude", "eco_fee_cash_settlement"
+    if amount > 0 and re.search(
+        r"\b(?:pm|property management)\s+(?:cash|settlement|true[ -]?up)\b", text
     ):
         return "exclude", "eco_fee_cash_settlement"
     if "credit card payment" in category or "credit card payment" in subcategory:
@@ -540,7 +840,7 @@ def eco_intercompany_row_classification(row: dict[str, Any], prop: str) -> tuple
         return "exclude", "earldao_is_separate_counterparty"
     if "transfer" in category and re.search(r"\beco systems[, ]+(llc)?\b", text):
         return "exclude", "eco_to_eco_internal_transfer"
-    if amount < 0 and is_no_dao_mortgage_property(prop):
+    if is_no_dao_mortgage_property(prop):
         escrow_component = any(token in text for token in ("escrow", "property tax", "insurance"))
         eco_mortgage_obligation = any(
             token in text
@@ -555,14 +855,47 @@ def eco_intercompany_row_classification(row: dict[str, Any], prop: str) -> tuple
                 "returned payment fee",
             )
         )
-        if eco_mortgage_obligation and not escrow_component:
+        lender_return = (
+            "returned payment" in text
+            and any(token in text for token in ("citadel", "loandepot", "loan depot", "mortgage"))
+        )
+        mortgage_reimbursement = (
+            amount > 0
+            and "reimbursement" in text
+            and "mortgage" in text
+        )
+        if not escrow_component and (
+            (amount < 0 and eco_mortgage_obligation)
+            or lender_return
+            or mortgage_reimbursement
+        ):
             return "exclude", "eco_no_dao_mortgage_obligation"
     return "include", "dao_cash_received_or_eco_cash_advanced"
 
 
 def build_eco_intercompany_subledger(
-    source_rows: list[dict[str, Any]], cutoff: date
+    source_rows: list[dict[str, Any]],
+    cutoff: date,
+    transaction_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    transaction_overrides = transaction_overrides or {}
+    source_ids = {
+        str(row.get("BaselaneId") or "").strip()
+        for row in source_rows
+        if str(row.get("BaselaneId") or "").strip()
+    }
+    missing_evidence_ids = {
+        str(evidence_id)
+        for rule in transaction_overrides.values()
+        for evidence_id in (rule.get("evidence_baselane_ids") or [])
+        if str(evidence_id) not in source_ids
+    }
+    if missing_evidence_ids:
+        raise RuntimeError(
+            "intercompany override evidence rows missing from custody source: "
+            + ", ".join(sorted(missing_evidence_ids))
+        )
+    seen_override_ids: set[str] = set()
     positions: dict[str, dict[str, Any]] = {}
     for row in source_rows:
         if not str(row.get("Account") or "").startswith(ECO_ACCOUNT_PREFIX):
@@ -570,8 +903,17 @@ def build_eco_intercompany_subledger(
         row_date = policy_row_date(row)
         if row_date is None or row_date > cutoff:
             continue
+        baselane_id = str(row.get("BaselaneId") or "").strip()
+        override = transaction_overrides.get(baselane_id)
         raw_prop = str(row.get("Property") or "").strip()
         prop = GL_PROPERTY_ALIASES.get(raw_prop, raw_prop)
+        override_action = ""
+        override_reason = ""
+        if override is not None:
+            prop, override_action, override_reason = apply_intercompany_transaction_override(
+                row, override
+            )
+            seen_override_ids.add(baselane_id)
         if not prop:
             continue
         item = positions.setdefault(
@@ -587,7 +929,10 @@ def build_eco_intercompany_subledger(
                 "categories": defaultdict(lambda: {"eco_advances": Decimal(), "dao_cash_credits": Decimal()}),
             },
         )
-        action, reason = eco_intercompany_row_classification(row, prop)
+        if override is not None:
+            action, reason = override_action, override_reason
+        else:
+            action, reason = eco_intercompany_row_classification(row, prop)
         amount = money(row.get("Amount"))
         evidence = {
             "date": row_date.isoformat(),
@@ -614,17 +959,45 @@ def build_eco_intercompany_subledger(
         item["categories"][category][direction] += value
         item["included_rows"].append(evidence)
 
+    missing_override_ids = {
+        baselane_id
+        for baselane_id, rule in transaction_overrides.items()
+        if str(rule.get("expected_date") or "9999-12-31") <= cutoff.isoformat()
+    } - seen_override_ids
+    if missing_override_ids:
+        raise RuntimeError(
+            "approved intercompany override rows missing from custody source: "
+            + ", ".join(sorted(missing_override_ids))
+        )
+
     output: dict[str, dict[str, Any]] = {}
     for prop, item in positions.items():
         position = item["included_position"].quantize(MONEY)
+        payable = max(Decimal(), -position)
+        if payable > 0:
+            activity_status = "verified_payable_from_id_bearing_cash_rollforward"
+        elif position == 0:
+            activity_status = "ok_no_open_position"
+        else:
+            activity_status = "positive_activity_requires_custody_reconciliation"
         output[prop] = {
             "property": prop,
-            "status": "ok",
-            "source_mode": "id_bearing_eco_account_intercompany_subledger",
+            "status": activity_status,
+            "source_mode": "id_bearing_eco_account_intercompany_rollforward",
             "eco_intercompany_net_position": f"{position:.2f}",
-            "eco_held_dao_cash_before_obligations": f"{max(Decimal(), position):.2f}",
-            "dao_accounts_payable_to_eco": f"{max(Decimal(), -position):.2f}",
-            "eco_accounts_receivable_from_dao": f"{max(Decimal(), -position):.2f}",
+            # Every included row is an ID-bearing cash transaction in an
+            # ECO-owned account: a negative row is a cash advance for the DAO
+            # and a positive row is a DAO cash credit/reimbursement.  Their
+            # negative cumulative rollforward is therefore the reciprocal
+            # intercompany payable.  A positive rollforward is deliberately
+            # *not* treated as current custody because historical DAO cash
+            # activity does not identify where that physical cash remains.
+            "eco_held_dao_cash_before_obligations": "0.00",
+            "dao_accounts_payable_to_eco": f"{payable:.2f}",
+            "eco_accounts_receivable_from_dao": f"{payable:.2f}",
+            "unreconciled_net_activity": f"{position:.2f}",
+            "candidate_eco_held_dao_cash": f"{max(Decimal(), position):.2f}",
+            "candidate_dao_accounts_payable_to_eco": f"{payable:.2f}",
             "gross_eco_advances": f"{item['gross_eco_advances']:.2f}",
             "gross_dao_cash_credits": f"{item['gross_dao_cash_credits']:.2f}",
             "included_row_count": len(item["included_rows"]),
@@ -653,9 +1026,230 @@ def build_eco_intercompany_subledger(
     return output
 
 
-def savings_evidence(account: dict[str, Any]) -> dict[str, Any]:
+def atomic_write_text(path: Path, text: str) -> None:
+    """Replace one generated artifact only after its full content is durable."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, delete=False
+        ) as handle:
+            temporary_name = handle.name
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        if temporary_name and os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+
+
+def spendable_cash_position(
+    *,
+    dao_bank_total: Decimal,
+    documented_security_principal: Decimal,
+    eco_held_cash_gross: Decimal,
+    open_accrued_obligations: Decimal,
+    other_cash_restrictions: Decimal,
+) -> dict[str, Decimal]:
+    """Return nonnegative, legally spendable property cash.
+
+    Security principal is not DAO money. Recorded obligations and explicit
+    restrictions reduce the combined dedicated-bank and verified ECO-custody
+    balance once, regardless of which account ultimately pays them.
+    """
+    dao_bank_before_obligations = max(
+        Decimal(), dao_bank_total - documented_security_principal
+    )
+    gross_available = dao_bank_before_obligations + eco_held_cash_gross
+    total_restrictions = open_accrued_obligations + other_cash_restrictions
+    unrestricted = max(Decimal(), gross_available - total_restrictions)
+    return {
+        "dao_bank_spendable_before_obligations": dao_bank_before_obligations,
+        "gross_available_before_obligations": gross_available,
+        "total_cash_restrictions": total_restrictions,
+        "total_dao_spendable_cash": unrestricted,
+        "cash_reconciliation_deficit": max(Decimal(), total_restrictions - gross_available),
+    }
+
+
+def open_accrued_obligation_position(
+    rows: list[dict[str, Any]],
+    property_name: str,
+    cutoff: date,
+) -> tuple[Decimal, dict[str, str]]:
+    """Return one auditable total and its liability components."""
+    amounts = outstanding_manual_accrual_liability_by_kind(
+        rows,
+        property_name,
+        cutoff,
+    )
+    total = sum(amounts.values(), Decimal())
+    return total, {
+        kind: f"{amount:.2f}"
+        for kind, amount in sorted(amounts.items())
+    }
+
+
+DEFAULT_OBLIGATION_COUNTERPARTIES = {
+    "dao": ("ECO Systems LLC", "eco"),
+    "pm": ("ECO Systems LLC", "eco"),
+    "pm_dao": ("ECO Systems LLC", "eco"),
+    "taxes": ("Property-tax authority", "government"),
+    "tax_escrow": ("Mortgage servicer escrow", "mortgage_servicer"),
+    "insurance": ("Insurance carrier", "vendor"),
+    "insurance_escrow": ("Mortgage servicer escrow", "mortgage_servicer"),
+    "general_escrow": ("Mortgage servicer escrow", "mortgage_servicer"),
+    "legal": ("Legal, filing, or registration vendor", "vendor"),
+    "mortgage_interest": ("Mortgage lender or advancing owner", "lender_or_owner"),
+    "interest": ("Lender", "lender"),
+    "principal": ("Lender or advancing owner", "lender_or_owner"),
+    "retained_capital": ("Lofty operating reserve", "lofty"),
+}
+
+
+def _named_counterparty(text: str, direction: str) -> str | None:
+    """Extract a deliberately documented payable/receivable counterparty."""
+    patterns = (
+        (
+            r"\bcreditor\s+is\s+(.+?)(?:,\s*not\b|\.\s|;|$)",
+            r"\b(?:due\s+and\s+payable|payable|owed)\s+to\s+(.+?)(?:\.|;|,|$)",
+        )
+        if direction == "payable"
+        else (
+            r"\breceivable\s+from\s+(.+?)(?:\s+across\b|\.|;|,|$)",
+            r"\bdue\s+from\s+(.+?)(?:\.|;|,|$)",
+            r"\bdebtor\s+is\s+(.+?)(?:\.|;|,|$)",
+        )
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            value = re.sub(r"\s+", " ", match.group(1)).strip(" -")
+            if value:
+                return value
+    return None
+
+
+def _counterparty_relationship(counterparty: str) -> str:
+    normalized = normalized_text(counterparty)
+    if "eco systems" in normalized:
+        return "eco"
+    if "lofty" in normalized and "dao" not in normalized:
+        return "lofty"
+    if "dao" in normalized or "earldao" in normalized:
+        return "other_dao"
+    if any(token in normalized for token in ("county", "state", "treasurer", "tax authority")):
+        return "government"
+    return "individual_or_vendor"
+
+
+def counterparty_balance_disclosures(
+    rows: list[dict[str, Any]],
+    property_name: str,
+    cutoff: date,
+    open_by_kind: dict[str, str],
+    cash_advance_payable_to_eco: Decimal,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Build one-sided DAO A/P and A/R disclosures without mirror entries.
+
+    Accrued obligations are authoritative from the settlement-aware accrual
+    engine.  Counterparty hints label those balances; they never create a new
+    liability.  Explicit loan/advance receivables are recognized only when an
+    ID-bearing cash row says who owes the DAO.
+    """
+    scoped = [
+        row
+        for row in rows
+        if row_matches_property(row, property_name)
+        and (posted := policy_row_date(row)) is not None
+        and posted <= cutoff
+    ]
+    payable_hints: list[str] = []
+    for row in scoped:
+        note = str(row.get("Notes") or "")
+        if hint := _named_counterparty(note, "payable"):
+            payable_hints.append(hint)
+
+    # A named advancing owner on a paired payable journal applies to the
+    # mortgage-related accrual components generated by that same family.
+    named_advance_counterparty = payable_hints[-1] if payable_hints else None
+    payables: list[dict[str, str]] = []
+    if cash_advance_payable_to_eco > 0:
+        payables.append(
+            {
+                "counterparty": "ECO Systems LLC",
+                "relationship": "eco",
+                "category": "cash advances",
+                "amount": f"{cash_advance_payable_to_eco:.2f}",
+                "cash_effect": "balance_sheet_only_do_not_reduce_cash_again",
+            }
+        )
+    for kind, raw_amount in sorted(open_by_kind.items()):
+        amount = money(raw_amount)
+        if amount <= 0:
+            continue
+        counterparty, relationship = DEFAULT_OBLIGATION_COUNTERPARTIES.get(
+            kind,
+            ("Counterparty pending reconciliation", "unassigned"),
+        )
+        if kind in {"principal", "mortgage_interest", "general_escrow", "interest"} and named_advance_counterparty:
+            counterparty = named_advance_counterparty
+            relationship = _counterparty_relationship(counterparty)
+        payables.append(
+            {
+                "counterparty": counterparty,
+                "relationship": relationship,
+                "category": kind,
+                "amount": f"{amount:.2f}",
+                "cash_effect": "included_in_recorded_unpaid_obligations",
+            }
+        )
+
+    receivable_totals: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
+    for row in scoped:
+        if truthy(row.get("Pending")) or not str(row.get("BaselaneId") or "").strip():
+            continue
+        amount = money(row.get("Amount"))
+        if amount >= 0:
+            continue
+        note = str(row.get("Notes") or "")
+        counterparty = _named_counterparty(note, "receivable")
+        if not counterparty:
+            continue
+        # An actual cash advance/loan is an asset, not an operating expense.
+        classification = normalized_text(row.get("Category"), row.get("Sub-category"))
+        if not any(token in classification for token in ("loan", "owner contribution", "distribution")):
+            continue
+        receivable_totals[(counterparty, _counterparty_relationship(counterparty))] += -amount
+    receivables = [
+        {
+            "counterparty": counterparty,
+            "relationship": relationship,
+            "category": "cash advance or loan receivable",
+            "amount": f"{amount:.2f}",
+            "cash_effect": "balance_sheet_asset_not_spendable_cash",
+        }
+        for (counterparty, relationship), amount in sorted(receivable_totals.items())
+        if amount > 0
+    ]
+    return payables, receivables
+
+
+def savings_evidence(
+    account: dict[str, Any],
+    cutoff: date | None = None,
+) -> dict[str, Any]:
     balance = money(account["available_balance"])
-    rows = query_account_transactions(str(account["bank_account_id"]))
+    all_rows = query_account_transactions(str(account["bank_account_id"]))
+    rows = []
+    for row in all_rows:
+        try:
+            row_date = date.fromisoformat(str(row.get("date") or "")[:10])
+        except ValueError:
+            continue
+        if cutoff is None or row_date <= cutoff:
+            rows.append(row)
     credits = [
         row
         for row in rows
@@ -789,7 +1383,14 @@ def main() -> int:
     source_rows = list(
         csv.DictReader(args.custody_ledger.open(encoding="utf-8-sig", newline=""))
     )
-    intercompany_subledger = build_eco_intercompany_subledger(source_rows, args.as_of)
+    intercompany_transaction_overrides = load_intercompany_transaction_overrides(
+        INTERCOMPANY_TRANSACTION_OVERRIDES
+    )
+    intercompany_subledger = build_eco_intercompany_subledger(
+        source_rows,
+        args.as_of,
+        intercompany_transaction_overrides,
+    )
     custody_source_ok = any(
         str(row.get("Account") or "").startswith(ECO_ACCOUNT_PREFIX)
         for row in source_rows
@@ -827,12 +1428,13 @@ def main() -> int:
     account_overrides = json.loads(
         ACCOUNT_CLASSIFICATION_OVERRIDES.read_text(encoding="utf-8")
     )
-    managed_interest_by_bank = query_managed_interest_settlements()
+    managed_interest_by_bank = query_managed_interest_settlements(args.as_of)
     unique_accounts: dict[str, dict[str, Any]] = {}
     unmapped_property_dao_accounts: list[dict[str, Any]] = []
     for account in live:
         bank_id = str(account["bank_account_id"])
         unique_accounts[bank_id] = account
+    eco_pool = unallocated_eco_pool_snapshot(unique_accounts, args.as_of)
     property_accounts: dict[str, list[dict[str, Any]]] = defaultdict(list)
     excluded_accounts: list[dict[str, Any]] = []
     for account in unique_accounts.values():
@@ -868,7 +1470,11 @@ def main() -> int:
     active = active_gl_names()
     rows: list[dict[str, Any]] = []
     issues: list[str] = []
-    for prop in sorted(property_accounts):
+    # Include every active reporting target even when it has no dedicated
+    # Baselane account.  Those rows still carry ECO custody, accrual, A/P and
+    # A/R evidence; consumers omit the physical-bank line when accounts=[].
+    property_universe = set(property_accounts) | active
+    for prop in sorted(property_universe):
         accounts = sorted(
             property_accounts[prop],
             key=lambda row: (row["account_subtype"], row["nickname"]),
@@ -883,7 +1489,17 @@ def main() -> int:
         ops_balance = Decimal()
         total_balance = Decimal()
         for account in accounts:
-            balance = money(account["available_balance"])
+            current_balance = money(account["available_balance"])
+            post_cutoff_rows: list[dict[str, Any]] = []
+            if args.as_of < datetime.now(timezone.utc).date():
+                post_cutoff_rows = query_account_transactions_after(
+                    str(account["bank_account_id"]), args.as_of
+                )
+            post_cutoff_net = sum(
+                (money(row.get("amount")) for row in post_cutoff_rows),
+                Decimal(),
+            )
+            balance = current_balance - post_cutoff_net
             total_balance += balance
             if account["account_subtype"] == "checking":
                 ops_balance += balance
@@ -898,7 +1514,9 @@ def main() -> int:
                 last_error: Exception | None = None
                 for attempt in range(3):
                     try:
-                        evidence = savings_evidence(account)
+                        evidence_account = dict(account)
+                        evidence_account["available_balance"] = balance
+                        evidence = savings_evidence(evidence_account, args.as_of)
                         last_error = None
                         break
                     except Exception as exc:
@@ -977,6 +1595,13 @@ def main() -> int:
                     "nickname": account["nickname"],
                     "subtype": account["account_subtype"],
                     "available_balance": f"{balance:.2f}",
+                    "current_available_balance": f"{current_balance:.2f}",
+                    "balance_as_of": args.as_of.isoformat(),
+                    "post_cutoff_transaction_count": len(post_cutoff_rows),
+                    "post_cutoff_net_activity": f"{post_cutoff_net:.2f}",
+                    "post_cutoff_transaction_ids": [
+                        str(row.get("id") or "") for row in post_cutoff_rows
+                    ],
                     "savings_evidence": evidence,
                 }
             )
@@ -1001,7 +1626,8 @@ def main() -> int:
             and policy_row_date(row) <= args.as_of
         ]
         intercompany = intercompany_subledger.get(prop) or {
-            "status": "ok",
+            "status": "ok_no_open_position",
+            "source_mode": "id_bearing_eco_account_activity_trace",
             "eco_intercompany_net_position": "0.00",
             "eco_held_dao_cash_before_obligations": "0.00",
             "dao_accounts_payable_to_eco": "0.00",
@@ -1014,13 +1640,31 @@ def main() -> int:
             "category_breakdown": [],
         }
         eco_attributed_account_activity = money(intercompany["eco_intercompany_net_position"])
-        # The signed, ID-bearing intercompany subledger is bifurcated rather
-        # than presented as negative cash.  A positive position is DAO cash
-        # held by ECO.  A negative position is the reciprocal DAO payable / ECO
-        # receivable for verified, unreimbursed advances.
+        # The exact ID-bearing cash rollforward establishes a payable when ECO
+        # advances exceed DAO reimbursements.  Its positive side still cannot
+        # establish current pooled custody.  Generic ECO bank cash remains
+        # unallocated until exact evidence assigns physical cash to a property.
         eco_held_cash_gross = money(intercompany["eco_held_dao_cash_before_obligations"])
         dao_accounts_payable_to_eco = money(intercompany["dao_accounts_payable_to_eco"])
-        open_accrued_obligations = -outstanding_manual_accrual_liability(
+        (
+            open_accrued_obligations,
+            open_accrued_obligations_by_kind,
+        ) = open_accrued_obligation_position(
+            property_source_rows,
+            prop,
+            args.as_of,
+        )
+        (
+            dao_accounts_payable_by_counterparty,
+            dao_accounts_receivable_by_counterparty,
+        ) = counterparty_balance_disclosures(
+            property_source_rows,
+            prop,
+            args.as_of,
+            open_accrued_obligations_by_kind,
+            dao_accounts_payable_to_eco,
+        )
+        pm_unapplied_cash_credit = pm_pay_period_cash_credit(
             property_source_rows,
             prop,
             args.as_of,
@@ -1031,18 +1675,27 @@ def main() -> int:
                 yhome_cash_restriction = restriction
                 break
         eco_held_other_restrictions = yhome_cash_restriction
-        eco_held_unrestricted_cash_before_floor = (
-            eco_held_cash_gross
-            - open_accrued_obligations
-            - eco_held_other_restrictions
+        cash_position = spendable_cash_position(
+            dao_bank_total=total_balance,
+            documented_security_principal=security_principal,
+            eco_held_cash_gross=eco_held_cash_gross,
+            open_accrued_obligations=open_accrued_obligations,
+            other_cash_restrictions=eco_held_other_restrictions,
         )
-        eco_held_unrestricted_cash = max(
-            Decimal(), eco_held_unrestricted_cash_before_floor
+        # ECO Net DAO Funds is the portion of verified ECO custody that is
+        # still spendable after entity-level restrictions.  Dedicated DAO
+        # bank cash is tracked separately and must never inflate this field.
+        eco_held_unrestricted_cash = min(
+            eco_held_cash_gross,
+            cash_position["total_dao_spendable_cash"],
         )
-        eco_cash_reconciliation_deficit = max(
-            Decimal(), -eco_held_unrestricted_cash_before_floor
+        eco_cash_reconciliation_deficit = cash_position["cash_reconciliation_deficit"]
+        eco_funded_activity_pending_reciprocal_review = max(
+            Decimal(), -eco_attributed_account_activity
         )
-        eco_funded_activity_pending_reciprocal_review = Decimal()
+        dao_cash_activity_pending_custody_review = max(
+            Decimal(), eco_attributed_account_activity
+        )
         target = max(gl_cash, protected_floor)
         excess = max(Decimal(), total_balance - target)
         shortfall = max(Decimal(), target - total_balance)
@@ -1137,6 +1790,18 @@ def main() -> int:
                 "open_accrued_obligations": (
                     f"{open_accrued_obligations:.2f}" if custody_source_ok else None
                 ),
+                "open_accrued_obligations_by_kind": (
+                    open_accrued_obligations_by_kind if custody_source_ok else None
+                ),
+                "dao_accounts_payable_by_counterparty": (
+                    dao_accounts_payable_by_counterparty if custody_source_ok else None
+                ),
+                "dao_accounts_receivable_by_counterparty": (
+                    dao_accounts_receivable_by_counterparty if custody_source_ok else None
+                ),
+                "pm_pay_period_unapplied_cash_credit": (
+                    f"{pm_unapplied_cash_credit:.2f}" if custody_source_ok else None
+                ),
                 "eco_held_restricted_cash": (
                     f"{eco_held_other_restrictions:.2f}" if custody_source_ok else None
                 ),
@@ -1145,6 +1810,26 @@ def main() -> int:
                 ),
                 "eco_held_unrestricted_cash": (
                     f"{eco_held_unrestricted_cash:.2f}" if custody_source_ok else None
+                ),
+                "dao_bank_spendable_before_obligations": (
+                    f"{cash_position['dao_bank_spendable_before_obligations']:.2f}"
+                    if custody_source_ok
+                    else None
+                ),
+                "gross_available_before_obligations": (
+                    f"{cash_position['gross_available_before_obligations']:.2f}"
+                    if custody_source_ok
+                    else None
+                ),
+                "total_cash_restrictions": (
+                    f"{cash_position['total_cash_restrictions']:.2f}"
+                    if custody_source_ok
+                    else None
+                ),
+                "total_dao_spendable_cash": (
+                    f"{cash_position['total_dao_spendable_cash']:.2f}"
+                    if custody_source_ok
+                    else None
                 ),
                 "eco_cash_reconciliation_deficit": (
                     f"{eco_cash_reconciliation_deficit:.2f}"
@@ -1157,7 +1842,11 @@ def main() -> int:
                 "eco_accounts_receivable_from_dao": (
                     f"{dao_accounts_payable_to_eco:.2f}" if custody_source_ok else None
                 ),
-                "intercompany_payable_status": "ok" if custody_source_ok else "reconciliation_pending",
+                "intercompany_payable_status": (
+                    str(intercompany.get("status") or "reconciliation_pending")
+                    if custody_source_ok
+                    else "reconciliation_pending"
+                ),
                 "intercompany_source_mode": intercompany.get("source_mode"),
                 "gross_eco_advances": intercompany.get("gross_eco_advances"),
                 "gross_dao_cash_credits": intercompany.get("gross_dao_cash_credits"),
@@ -1167,6 +1856,11 @@ def main() -> int:
                 "intercompany_category_breakdown": intercompany.get("category_breakdown"),
                 "eco_funded_activity_pending_reciprocal_review": (
                     f"{eco_funded_activity_pending_reciprocal_review:.2f}"
+                    if custody_source_ok
+                    else None
+                ),
+                "dao_cash_activity_pending_custody_review": (
+                    f"{dao_cash_activity_pending_custody_review:.2f}"
                     if custody_source_ok
                     else None
                 ),
@@ -1230,28 +1924,54 @@ def main() -> int:
             "aops_pnl_accrual_excluded_from_cash_basis": True,
             "candidate_excess_is_not_execution_authority": True,
             "negative_eco_attributed_activity_is_not_cash": True,
-            "verified_negative_intercompany_position_is_dao_payable_to_eco": True,
+            "tagged_intercompany_activity_is_not_current_custody": True,
+            "tagged_intercompany_activity_is_not_current_payable": True,
+            "pooled_cash_requires_explicit_property_allocation": True,
+            "security_principal_excluded_from_spendable_cash": True,
+            "open_obligations_reduce_combined_spendable_cash_once": True,
+            "eco_net_dao_funds_is_eco_custody_capped_by_total_spendable": True,
+            "pm_pay_period_cash_credit_is_not_spendable_until_refunded_or_reallocated": True,
             "eco_net_dao_funds_has_zero_floor": True,
             "dao_payable_requires_id_bearing_eco_cash_evidence": True,
             "known_obligations_must_be_reviewed_before_transfer": True,
             "account_classification_overrides": str(
                 ACCOUNT_CLASSIFICATION_OVERRIDES
             ),
+            "intercompany_transaction_overrides": str(
+                INTERCOMPANY_TRANSACTION_OVERRIDES
+            ),
+            "intercompany_transaction_override_sha256": hashlib.sha256(
+                INTERCOMPANY_TRANSACTION_OVERRIDES.read_bytes()
+            ).hexdigest(),
+            "intercompany_transaction_override_rule_count": len(
+                intercompany_transaction_overrides
+            ),
         },
         "property_count": len(rows),
+        "reconciled_property_count": len(rows),
+        "baselane_account_property_count": sum(
+            1 for accounts in property_accounts.values() if accounts
+        ),
+        "active_reporting_target_count": len(active),
+        "active_physical_property_count": (
+            int(
+                json.loads(ACTIVE_ROSTER.read_text(encoding="utf-8")).get(
+                    "physical_property_count", 0
+                )
+            )
+            if ACTIVE_ROSTER.exists()
+            else None
+        ),
         "issues": issues,
         "excluded_accounts": excluded_accounts,
+        "unallocated_eco_pool": eco_pool,
         "unmapped_property_dao_accounts": unmapped_property_dao_accounts,
         "properties": rows,
         "intercompany_subledger": [
             intercompany_subledger[prop] for prop in sorted(intercompany_subledger)
         ],
     }
-    args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_text(args.report, json.dumps(report, indent=2, sort_keys=True) + "\n")
     flat_columns = [
         "property",
         "active",
@@ -1260,9 +1980,17 @@ def main() -> int:
         "eco_attributed_account_activity",
         "eco_held_cash_gross",
         "open_accrued_obligations",
+        "open_accrued_obligations_by_kind",
+        "dao_accounts_payable_by_counterparty",
+        "dao_accounts_receivable_by_counterparty",
+        "pm_pay_period_unapplied_cash_credit",
         "eco_held_restricted_cash",
         "yhome_cash_settlement_restriction",
         "eco_held_unrestricted_cash",
+        "dao_bank_spendable_before_obligations",
+        "gross_available_before_obligations",
+        "total_cash_restrictions",
+        "total_dao_spendable_cash",
         "eco_cash_reconciliation_deficit",
         "dao_accounts_payable_to_eco",
         "eco_accounts_receivable_from_dao",
@@ -1270,6 +1998,7 @@ def main() -> int:
         "gross_eco_advances",
         "gross_dao_cash_credits",
         "eco_funded_activity_pending_reciprocal_review",
+        "dao_cash_activity_pending_custody_review",
         "dao_bank_total",
         "operations_balance",
         "documented_security_principal",
@@ -1286,11 +2015,29 @@ def main() -> int:
         "cash_shortfall",
         "recommendation",
     ]
-    with args.csv.open("w", newline="", encoding="utf-8") as handle:
+    csv_buffer = io.StringIO(newline="")
+    with csv_buffer as handle:
         writer = csv.DictWriter(handle, fieldnames=flat_columns)
         writer.writeheader()
         for row in rows:
-            writer.writerow({key: row[key] for key in flat_columns})
+            flat_row = {key: row[key] for key in flat_columns}
+            flat_row["open_accrued_obligations_by_kind"] = json.dumps(
+                row["open_accrued_obligations_by_kind"],
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for key in (
+                "dao_accounts_payable_by_counterparty",
+                "dao_accounts_receivable_by_counterparty",
+            ):
+                flat_row[key] = json.dumps(
+                    row[key],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            writer.writerow(flat_row)
+        csv_text = handle.getvalue()
+    atomic_write_text(args.csv, csv_text)
     print(
         json.dumps(
             {

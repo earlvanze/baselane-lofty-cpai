@@ -34,6 +34,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
+from baselane_ledger_revenue_policy import is_categoryless_known_rent_revenue
 from coownership_reserve_policy import (
     LOCAL_FINANCIALS_ONLY_PROPERTIES,
     POLICY_EFFECTIVE_MONTH,
@@ -59,6 +60,19 @@ CASH_BASIS_INSURANCE_STATES = {"OH", "IL", "TN"}
 PM_DAO_KIND = "pm_dao"
 PM_ECO_KIND = "pm_eco"
 DAO_ECO_KIND = "dao_eco"
+DAO_LLC_ADMIN_ANNUAL_CHARGE = Decimal("750.00")
+DAO_LLC_ADMIN_MONTHLY_ACCRUAL = Decimal("62.50")
+DAO_LLC_ADMIN_ECO_LOFTY_PAYABLE = Decimal("200.00")
+DAO_LLC_ADMIN_ECO_FILING_COST_REFERENCE = Decimal("125.00")
+DAO_LLC_ADMIN_ECO_REVENUE_NOTE = (
+    "ECO Systems LLC DAO registration/admin fee revenue; matched to the "
+    "DAO-side expense. The DAO owes the full $750.00 annual charge, recognized "
+    "at $62.50 per month. ECO's separate $200.00 annual payable to Lofty and "
+    "ECO's actual filing/vendor costs (historical reference $125.00) are ECO "
+    "expenses and never reduce the DAO's fee or payable. Extraordinary back-filing "
+    "costs require their own evidence and classification. Accounting/manual "
+    "accrual only, no bank transfer."
+)
 # PM accrual treatment is transaction-based, not geography-based. Hemlane can
 # remit net rent in any state; direct deposits can likewise reach Baselane in
 # any state. Only actual Hemlane-originated net rent is excluded from the
@@ -265,20 +279,16 @@ PM_RATE_HISTORY: dict[str, list[tuple[str, float]]] = {
     "90 Madison Ave": [("0000-01", 0.25)],
     "724 3rd Ave": [("0000-01", 0.05), ("2026-05", 0.06)],
 }
-KNOWN_RENT_REVENUE_MERCHANTS = (
-    "airbnb payments",
-    "evolve vacation",
-    "hospitable, inc",
-    "hostshare",
-    "vrbo",
-)
-SCHEDULE_DAO_MONTHLY_AMOUNT = 62.50
+SCHEDULE_DAO_MONTHLY_AMOUNT = float(DAO_LLC_ADMIN_MONTHLY_ACCRUAL)
 SCHEDULE_SOURCE_PREFIX = "AOPS-MONTHLY-ACCRUAL"
 MANUAL_EXCLUDED_SCHEDULE_PROPERTIES = (
     "3560 Saint Albans Rd",
     "1935 S Glen Rd",
     "5401 Odom Ave",
     "1236 W 7th St",
+    # Coolwood belongs to a separate accounting workspace. Its presence in
+    # the shared PM schedule must not create Baselane accruals in this ledger.
+    "1 Coolwood Drive",
 )
 
 
@@ -758,9 +768,15 @@ def is_rent_revenue(row: dict[str, str], amount: float) -> bool:
         return False
     merchant = str(row.get("Merchant") or "").strip().lower()
     description = str(row.get("Description") or "").strip().lower()
+    notes = str(row.get("Notes") or "").strip().lower()
+    if (
+        notes.startswith(("aligned clearing detail import", "aligned/evernest clearing detail import"))
+        and "| rent or tenant receipt |" in notes
+    ):
+        return True
     if "rent voucher" in merchant or "rent voucher" in description or "cbrap" in merchant or "cbrap" in description:
         return True
-    return any(token in merchant for token in KNOWN_RENT_REVENUE_MERCHANTS)
+    return is_categoryless_known_rent_revenue(row, amount)
 
 
 def is_hemlane_net_rent(row: dict[str, str]) -> bool:
@@ -1835,11 +1851,7 @@ def apply_amount_mismatch_updates(
             row["Property"] = "Mining, Sales, Consulting, and PM"
             row["Notes"] = (
                 f"{prefix}|{DAO_ECO_KIND}|{property_name}|{mismatch['month']}|{expected:.2f} | "
-                "ECO Systems LLC fixed DAO registration/admin fee revenue; matched to the "
-                "DAO-side expense. Only ordinary filing costs covered by this accrued/collected "
-                "fee are ECO expenses; unmatched back-filing or extraordinary costs remain "
-                "DAO/property expenses or reimbursable to ECO. "
-                "Accounting/manual accrual only, no bank transfer."
+                f"{DAO_LLC_ADMIN_ECO_REVENUE_NOTE}"
             )
         elif is_pm_accrual_kind(mismatch["kind"]):
             property_name = mismatch["property"]
@@ -2865,8 +2877,6 @@ def generate_missing_accruals(
         if source_amount >= 0:
             continue
         property_name = canonical_accrual_property_name(marker["property"])
-        if schedule_address_is_excluded(property_name):
-            continue
         # Older annual-reference DAO rows correctly posted a monthly -$62.50
         # amount while retaining $750.00 in the marker as the annual basis.
         # The ECO counterpart must mirror the actual posted row, not the
@@ -2898,11 +2908,7 @@ def generate_missing_accruals(
             "Unit": "",
             "Notes": (
                 f"{marker['prefix']}|{DAO_ECO_KIND}|{property_name}|{target_month}|{amount:.2f} | "
-                "ECO Systems LLC fixed DAO registration/admin fee revenue; matched to the "
-                "DAO-side expense. Only ordinary filing costs covered by this accrued/collected "
-                "fee are ECO expenses; unmatched back-filing or extraordinary costs remain "
-                "DAO/property expenses or reimbursable to ECO. "
-                "Accounting/manual accrual only, no bank transfer."
+                f"{DAO_LLC_ADMIN_ECO_REVENUE_NOTE}"
             ),
         })
         new_rows.append(row)
@@ -3012,11 +3018,7 @@ def generate_missing_accruals(
                 "Unit": "",
                 "Notes": (
                     f"{prefix}|{DAO_ECO_KIND}|{property_name}|{target_month}|{amount:.2f} | "
-                    "ECO Systems LLC fixed DAO registration/admin fee revenue; matched to the "
-                    "DAO-side expense. Only ordinary filing costs covered by this accrued/collected "
-                    "fee are ECO expenses; unmatched back-filing or extraordinary costs remain "
-                    "DAO/property expenses or reimbursable to ECO. "
-                    "Accounting/manual accrual only, no bank transfer."
+                    f"{DAO_LLC_ADMIN_ECO_REVENUE_NOTE}"
                 ),
             })
             new_rows.append(row)

@@ -6,8 +6,10 @@ import unittest
 from scripts.baselane_aligned_owner_statement_import import (
     PlannedRow,
     existing_ledger_fingerprints,
+    live_transaction_fingerprint,
     manifest_row_fingerprint,
     planned_ledger_fingerprint,
+    planned_live_fingerprint,
     planned_manifest_fingerprint,
     planned_row_to_ledger_row,
 )
@@ -115,6 +117,42 @@ class BaselaneAlignedOwnerStatementImportTests(unittest.TestCase):
             planned_manifest_fingerprint(row),
             manifest_row_fingerprint(manifest_row),
         )
+
+    def test_semantic_fingerprints_ignore_wrapped_statement_role_suffix(self):
+        row = PlannedRow(
+            property_short="1456 W 85th St",
+            property_id="81428",
+            row_number=1,
+            source_date="July 07, 2026",
+            date="2026-07-07",
+            merchant_name="Angela Heath Receipt",
+            description="Rent Income - July 2026",
+            amount=Decimal("500.00"),
+            source_type="Revenue",
+            source_category="Long Term Rents",
+            source_subcategory="",
+            note="key=aligned-new-key",
+            idempotency_key="aligned-new-key",
+            tag_id="136",
+            rich_category="Long Term Rents",
+            rich_tag_reason="rent",
+        )
+        live_row = {
+            "propertyId": "81428",
+            "date": "2026-07-07",
+            "amount": 500,
+            "merchantName": "Angela Heath",
+            "tagId": "136",
+        }
+        manifest_row = {
+            "propertyId": "81428",
+            "date": "2026-07-07",
+            "amount": 500,
+            "merchantName": "Angela Heath",
+        }
+
+        self.assertEqual(planned_live_fingerprint(row), live_transaction_fingerprint(live_row))
+        self.assertEqual(planned_manifest_fingerprint(row), manifest_row_fingerprint(manifest_row))
 
 
 if __name__ == "__main__":

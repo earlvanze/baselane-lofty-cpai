@@ -34,7 +34,7 @@ TAG_INSURANCE = "8"
 TAG_TAXES = "15"
 TAG_GENERAL_ESCROW = "130"
 TAG_CITY_STATE_LOCAL_TAXES = "95"
-NO_DAO_MORTGAGE_DEBT_TAG_IDS = {TAG_MORTGAGE_INTEREST, TAG_MORTGAGE_PRINCIPAL, TAG_MORTGAGE_PAYMENT, TAG_GENERAL_ESCROW}
+NO_DAO_MORTGAGE_DEBT_TAG_IDS = {TAG_MORTGAGE_INTEREST, TAG_MORTGAGE_PRINCIPAL, TAG_MORTGAGE_PAYMENT}
 
 BAD_NOTES = {"*SPLIT*", "hidden after mortgage component split"}
 NO_PROPERTY_FIX = object()
@@ -72,7 +72,7 @@ TARGET_SPLITS: dict[str, list[dict[str, Any]]] = {
         {
             "amount": -300.66,
             "tagId": TAG_GENERAL_ESCROW,
-            "propertyId": MINING_PROPERTY_ID,
+            "propertyId": ALAWA_PROPERTY_ID,
             "merchantName": "85-104 Alawa Pl Mortgage Escrow - General",
             "date": "2026-05-29",
         },
@@ -109,7 +109,7 @@ TARGET_SPLITS: dict[str, list[dict[str, Any]]] = {
         {
             "amount": -300.66,
             "tagId": TAG_GENERAL_ESCROW,
-            "propertyId": MINING_PROPERTY_ID,
+            "propertyId": ALAWA_PROPERTY_ID,
             "merchantName": "85-104 Alawa Pl Mortgage Escrow - General",
             "date": "2026-06-26",
         },
@@ -146,19 +146,84 @@ TARGET_SPLITS: dict[str, list[dict[str, Any]]] = {
         {
             "amount": -300.66,
             "tagId": TAG_GENERAL_ESCROW,
-            "propertyId": MINING_PROPERTY_ID,
+            "propertyId": ALAWA_PROPERTY_ID,
             "merchantName": "85-104 Alawa Pl Mortgage Escrow - General",
             "date": "2026-07-29",
         },
     ],
 }
 
+
+def statement_components(
+    date: str,
+    principal: float,
+    interest: float,
+    escrow_tax: float,
+    escrow_insurance: float,
+    escrow_general: float,
+    eco_fee: float | None = None,
+) -> list[dict[str, Any]]:
+    rows = [
+        {"amount": -interest, "tagId": TAG_MORTGAGE_INTEREST, "propertyId": MINING_PROPERTY_ID,
+         "merchantName": "85-104 Alawa Pl Mortgage Interest", "date": date},
+        {"amount": -principal, "tagId": TAG_MORTGAGE_PRINCIPAL, "propertyId": MINING_PROPERTY_ID,
+         "merchantName": "85-104 Alawa Pl Mortgage Principal", "date": date},
+        {"amount": -escrow_tax, "tagId": TAG_TAXES, "propertyId": ALAWA_PROPERTY_ID,
+         "merchantName": "85-104 Alawa Pl Mortgage Escrow - Property Taxes", "date": date},
+        {"amount": -escrow_insurance, "tagId": TAG_INSURANCE, "propertyId": ALAWA_PROPERTY_ID,
+         "merchantName": "85-104 Alawa Pl Mortgage Escrow - Insurance", "date": date},
+        {"amount": -escrow_general, "tagId": TAG_GENERAL_ESCROW, "propertyId": ALAWA_PROPERTY_ID,
+         "merchantName": "85-104 Alawa Pl Mortgage Escrow - General", "date": date},
+    ]
+    if eco_fee is not None:
+        rows.append({"amount": -eco_fee, "tagId": "24", "propertyId": MINING_PROPERTY_ID,
+                     "merchantName": "85-104 Alawa Pl LoanDepot Fee - Reimbursable by ECO", "date": date})
+    return rows
+
+
+# Statement-backed historical rows that predate the original dated cleanup.
+TARGET_SPLITS.update({
+    "159692484": statement_components("2025-05-21", 1315.97, 1527.74, 141.56, 58.58, 135.74, 257.50),
+    "166734631": statement_components("2025-06-18", 1319.12, 1524.59, 141.56, 58.58, 135.74),
+    "175642834": statement_components("2025-07-21", 1322.28, 1521.43, 141.56, 58.58, 135.74, 113.75),
+    "182276398": statement_components("2025-08-15", 1325.45, 1518.26, 141.56, 58.58, 135.74),
+    "189723277": statement_components("2025-09-11", 1328.62, 1515.09, 141.56, 58.58, 135.74, 30.00),
+    "200485288": statement_components("2025-10-16", 1331.81, 1511.90, 141.56, 58.58, 135.74),
+    "235412299": statement_components("2026-01-27", 2686.02, 3001.40, 560.90, 375.76, 601.32),
+    "249155207": statement_components("2026-03-03", 1347.84, 1495.87, 280.45, 187.88, 300.66, 257.50),
+})
+
 LEGACY_COMPONENT_BY_ABS_AMOUNT = {
     Decimal("1319.12"): (MINING_PROPERTY_ID, TAG_MORTGAGE_PRINCIPAL),
     Decimal("1524.59"): (MINING_PROPERTY_ID, TAG_MORTGAGE_INTEREST),
     Decimal("141.56"): (ALAWA_PROPERTY_ID, TAG_CITY_STATE_LOCAL_TAXES),
     Decimal("58.58"): (ALAWA_PROPERTY_ID, TAG_INSURANCE),
-    Decimal("135.74"): (MINING_PROPERTY_ID, TAG_GENERAL_ESCROW),
+    Decimal("135.74"): (ALAWA_PROPERTY_ID, TAG_GENERAL_ESCROW),
+}
+
+# These native child rows belong to failed LoanDepot debits that were fully
+# reversed in the Alawa bank account. Retagging only the debit children would
+# break the zero-sum reversal and manufacture a Mining/ECO mortgage receivable.
+# Keep both sides on the DAO transfer lane instead.
+FAILED_REVERSED_LEGACY_COMPONENT_IDS = {
+    # 2025-05-15, returned ACH transaction #292015707
+    "278603022",
+    "278603023",
+    "278603024",
+    "278603025",
+    "278603026",
+    # 2025-08-13, returned ACH transaction #321267628
+    "278603217",
+    "278603218",
+    "278603219",
+    "278603220",
+    "278603221",
+    # 2025-11-17, returned ACH transaction #353821393
+    "278603307",
+    "278603308",
+    "278603309",
+    "278603310",
+    "278603311",
 }
 
 
@@ -391,7 +456,7 @@ def expected_component(row: dict[str, Any]) -> tuple[str, str] | None:
     if "escrow - insurance" in merchant:
         return ALAWA_PROPERTY_ID, TAG_INSURANCE
     if "escrow - general" in merchant:
-        return MINING_PROPERTY_ID, TAG_GENERAL_ESCROW
+        return ALAWA_PROPERTY_ID, TAG_GENERAL_ESCROW
     if merchant == "loandepot" and row.get("parentId"):
         return LEGACY_COMPONENT_BY_ABS_AMOUNT.get(abs(decimal_amount(row.get("amount") or "0")))
     return None
@@ -463,6 +528,8 @@ def build_plan() -> dict[str, Any]:
 
     for row in loan_depot_rows:
         if str(row.get("parentId") or "") in TARGET_SPLITS:
+            continue
+        if str(row.get("id") or "") in FAILED_REVERSED_LEGACY_COMPONENT_IDS:
             continue
         tag_id = str(row.get("tagId") or "")
         property_id = str(row.get("propertyId") or "")
@@ -579,7 +646,7 @@ def main(argv: list[str]) -> int:
         or verify["property_issues"]
     ):
         status = "needs_review"
-    elif (
+    elif verify is None and (
         any(action["action"] in {"split", "delete_duplicate_children"} for action in plan["split_actions"])
         or plan["property_issues"]
     ):

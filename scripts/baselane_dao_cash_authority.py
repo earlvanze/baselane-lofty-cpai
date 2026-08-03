@@ -15,6 +15,12 @@ DEFAULT_REPORT = Path(__file__).absolute().parents[1] / "reports/baselane_live_d
 AUTHORITATIVE_SOURCE_MODE = "live_baselane_dao_bank_accounts"
 PROPERTY_ALIASES = {
     "326 332 s alcott st": "326 s alcott st",
+    "2094 w 34th pl cleveland": "2094 w 34th pl",
+    "2094 w 34th place": "2094 w 34th pl",
+    # Ohio 3 is reported to investors as a package, but its Baselane bank
+    # accounts are legally held by Lofty Holding 1518 Dille Road DAO LLC and
+    # indexed in the live cash authority under the 1518 Dille property tag.
+    "ohio 3 property package": "1518 dille rd",
 }
 
 
@@ -48,6 +54,46 @@ def money(value: Any) -> float | None:
         return float(Decimal(str(value)).quantize(Decimal("0.01")))
     except (InvalidOperation, TypeError, ValueError):
         return None
+
+
+def money_breakdown(value: Any) -> dict[str, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, float] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip()
+        amount = money(raw_value)
+        if key and amount is not None:
+            result[key] = amount
+    return result
+
+
+def counterparty_balances(value: Any) -> list[dict[str, Any]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    result: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            return None
+        counterparty = str(raw.get("counterparty") or "").strip()
+        category = str(raw.get("category") or "").strip()
+        amount = money(raw.get("amount"))
+        if not counterparty or not category or amount is None or amount < 0:
+            return None
+        result.append(
+            {
+                "counterparty": counterparty,
+                "relationship": str(raw.get("relationship") or "unassigned"),
+                "category": category,
+                "amount": amount,
+                "cash_effect": str(raw.get("cash_effect") or ""),
+            }
+        )
+    return result
 
 
 def parse_timestamp(value: Any) -> datetime | None:
@@ -179,6 +225,9 @@ def cash_for_property(authority: dict[str, Any], property_name: Any) -> dict[str
                 intercompany.get("eco_held_dao_cash_before_obligations")
             ) if has_intercompany_evidence else 0.0,
             "eco_held_restricted_cash": 0.0,
+            "total_dao_spendable_cash": money(
+                intercompany.get("total_dao_spendable_cash")
+            ),
             "dao_accounts_payable_to_eco": money(
                 intercompany.get("dao_accounts_payable_to_eco") or 0
             ),
@@ -186,19 +235,22 @@ def cash_for_property(authority: dict[str, Any], property_name: Any) -> dict[str
                 intercompany.get("eco_accounts_receivable_from_dao") or 0
             ),
             "intercompany_payable_status": (
-                "ok" if intercompany.get("status") == "ok" or not intercompany else "review"
+                str(intercompany.get("status") or "ok_no_open_position")
+                if intercompany
+                else "ok_no_open_position"
             ),
             "intercompany_source_mode": intercompany.get("source_mode")
-            or "id_bearing_eco_account_intercompany_subledger",
+            or "id_bearing_eco_account_activity_trace",
             "gross_eco_advances": money(intercompany.get("gross_eco_advances") or 0),
             "gross_dao_cash_credits": money(intercompany.get("gross_dao_cash_credits") or 0),
             "intercompany_monthly_breakdown": intercompany.get("monthly_breakdown") or [],
             "intercompany_category_breakdown": intercompany.get("category_breakdown") or [],
         }
+    has_dedicated_account = bool(row.get("accounts"))
     return {
         **common,
-        "status": "ok",
-        "amount": money(row.get("dao_bank_total")),
+        "status": "ok" if has_dedicated_account else "property_missing",
+        "amount": money(row.get("dao_bank_total")) if has_dedicated_account else None,
         "operations_balance": money(row.get("operations_balance")),
         "documented_security_principal": money(row.get("documented_security_principal")),
         # These balances must be supplied by an explicit custody/servicer
@@ -207,10 +259,27 @@ def cash_for_property(authority: dict[str, Any], property_name: Any) -> dict[str
         "eco_held_cash_gross": money(row.get("eco_held_cash_gross")),
         "eco_held_restricted_cash": money(row.get("eco_held_restricted_cash")) or 0.0,
         "open_accrued_obligations": money(row.get("open_accrued_obligations")),
+        "open_accrued_obligations_by_kind": money_breakdown(
+            row.get("open_accrued_obligations_by_kind")
+        ),
+        "dao_accounts_payable_by_counterparty": counterparty_balances(
+            row.get("dao_accounts_payable_by_counterparty")
+        ),
+        "dao_accounts_receivable_by_counterparty": counterparty_balances(
+            row.get("dao_accounts_receivable_by_counterparty")
+        ),
         # A report may supply the already-netted value, but new producers
         # should prefer gross custody plus explicit restrictions so the
         # calculation remains auditable.
         "eco_held_unrestricted_cash": money(row.get("eco_held_unrestricted_cash")),
+        "dao_bank_spendable_before_obligations": money(
+            row.get("dao_bank_spendable_before_obligations")
+        ),
+        "gross_available_before_obligations": money(
+            row.get("gross_available_before_obligations")
+        ),
+        "total_cash_restrictions": money(row.get("total_cash_restrictions")),
+        "total_dao_spendable_cash": money(row.get("total_dao_spendable_cash")),
         "eco_attributed_account_activity": money(row.get("eco_attributed_account_activity")),
         "eco_cash_reconciliation_deficit": money(row.get("eco_cash_reconciliation_deficit")),
         "eco_funded_activity_pending_reciprocal_review": money(
@@ -223,7 +292,7 @@ def cash_for_property(authority: dict[str, Any], property_name: Any) -> dict[str
             row.get("eco_accounts_receivable_from_dao", intercompany.get("eco_accounts_receivable_from_dao"))
         ),
         "intercompany_payable_status": row.get("intercompany_payable_status")
-        or ("ok" if intercompany.get("status") == "ok" else "reconciliation_pending"),
+        or str(intercompany.get("status") or "reconciliation_pending"),
         "intercompany_source_mode": row.get("intercompany_source_mode")
         or intercompany.get("source_mode"),
         "gross_eco_advances": money(
@@ -247,7 +316,7 @@ def cash_for_property(authority: dict[str, Any], property_name: Any) -> dict[str
         "account_count": len(row.get("accounts") or []),
         "matched_property": row.get("property"),
         "generated_at": authority.get("generated_at"),
-        "issues": [],
+        "issues": [] if has_dedicated_account else ["no_dedicated_property_bank_account"],
     }
 
 
@@ -270,6 +339,18 @@ def apply_to_summary(
         if authority_open_accruals is not None
         else money(output.get("open_accrued_obligations"))
     )
+    authority_open_accruals_by_kind = cash.get("open_accrued_obligations_by_kind")
+    open_accruals_by_kind = (
+        authority_open_accruals_by_kind
+        if authority_open_accruals_by_kind is not None
+        else output.get("open_accrued_obligations_by_kind")
+    )
+    payables_by_counterparty = cash.get("dao_accounts_payable_by_counterparty")
+    if payables_by_counterparty is None:
+        payables_by_counterparty = output.get("dao_accounts_payable_by_counterparty")
+    receivables_by_counterparty = cash.get("dao_accounts_receivable_by_counterparty")
+    if receivables_by_counterparty is None:
+        receivables_by_counterparty = output.get("dao_accounts_receivable_by_counterparty")
     eco_source_mode = "verified_eco_cash_custody_reconciliation"
     eco_source = cash.get("source_path")
     eco_as_of = cash.get("as_of")
@@ -279,29 +360,51 @@ def apply_to_summary(
     # pooled account, but only ID-bearing ECO bank transactions prove that
     # custody.  Column E is an accounting control and never a cash fallback.
     if cash.get("status") == "property_missing":
-        eco_source_mode = cash.get("intercompany_source_mode") or "id_bearing_eco_account_intercompany_subledger"
         eco_source = cash.get("source_path")
         eco_as_of = cash.get("as_of")
-        eco_balance_scope = "transaction_backed_eco_pooled_account_custody"
+        eco_balance_scope = "explicitly_allocated_eco_pooled_account_custody_only"
 
+    physical_bank_cash = cash.get("amount")
+    total_spendable = cash.get("total_dao_spendable_cash")
     eco_unrestricted = cash.get("eco_held_unrestricted_cash")
-    if eco_unrestricted is None and eco_gross is not None and open_accruals is not None:
-        eco_unrestricted = max(
+    dao_bank_before_obligations = cash.get("dao_bank_spendable_before_obligations")
+    if dao_bank_before_obligations is None and physical_bank_cash is not None:
+        security_principal = cash.get("documented_security_principal") or 0.0
+        dao_bank_before_obligations = max(
             0.0,
-            round(float(eco_gross) - float(open_accruals) - float(eco_restricted), 2),
+            round(float(physical_bank_cash) - float(security_principal), 2),
         )
+    if total_spendable is None and eco_gross is not None and open_accruals is not None:
+        bank_component = dao_bank_before_obligations or 0.0
+        total_spendable = max(
+            0.0,
+            round(
+                float(bank_component)
+                + float(eco_gross)
+                - float(open_accruals)
+                - float(eco_restricted),
+                2,
+            ),
+        )
+    total_spendable_status = "ok" if total_spendable is not None else "reconciliation_pending"
+    if eco_unrestricted is None and eco_gross is not None:
+        if total_spendable is not None:
+            eco_unrestricted = min(float(eco_gross), float(total_spendable))
+        elif open_accruals is not None:
+            eco_unrestricted = max(
+                0.0,
+                round(
+                    float(eco_gross)
+                    - float(open_accruals)
+                    - float(eco_restricted),
+                    2,
+                ),
+            )
     if eco_unrestricted is not None:
         eco_unrestricted = max(0.0, float(eco_unrestricted))
+        if total_spendable is not None:
+            eco_unrestricted = min(eco_unrestricted, max(0.0, float(total_spendable)))
     eco_unrestricted_status = "ok" if eco_unrestricted is not None else "reconciliation_pending"
-    physical_bank_cash = cash.get("amount")
-    if eco_unrestricted is None:
-        total_spendable = None
-    elif physical_bank_cash is None and cash.get("status") == "property_missing":
-        total_spendable = eco_unrestricted
-    elif physical_bank_cash is not None:
-        total_spendable = round(float(physical_bank_cash) + float(eco_unrestricted), 2)
-    else:
-        total_spendable = None
     output.update(
         {
             # Never present the full GL as cash.  The GL includes accruals and
@@ -315,6 +418,11 @@ def apply_to_summary(
             "eco_operating_cash_balance_scope": eco_balance_scope,
             "eco_held_unrestricted_cash": eco_unrestricted,
             "eco_held_unrestricted_cash_status": eco_unrestricted_status,
+            "dao_bank_spendable_before_obligations": dao_bank_before_obligations,
+            "gross_available_before_obligations": cash.get(
+                "gross_available_before_obligations"
+            ),
+            "total_cash_restrictions": cash.get("total_cash_restrictions"),
             "eco_held_cash_gross": eco_gross,
             "eco_held_restricted_cash": eco_restricted,
             "eco_attributed_account_activity": cash.get("eco_attributed_account_activity"),
@@ -331,6 +439,14 @@ def apply_to_summary(
             "intercompany_monthly_breakdown": cash.get("intercompany_monthly_breakdown") or [],
             "intercompany_category_breakdown": cash.get("intercompany_category_breakdown") or [],
             "open_accrued_obligations": open_accruals,
+            "open_accrued_obligations_by_kind": open_accruals_by_kind,
+            "dao_accounts_payable_by_counterparty": payables_by_counterparty,
+            "dao_accounts_receivable_by_counterparty": receivables_by_counterparty,
+            "counterparty_balances_status": (
+                "ok"
+                if payables_by_counterparty is not None and receivables_by_counterparty is not None
+                else "reconciliation_pending"
+            ),
             "open_accrued_obligations_status": (
                 "ok" if open_accruals is not None else "reconciliation_pending"
             ),
@@ -338,7 +454,7 @@ def apply_to_summary(
             "restricted_mortgage_escrow_status": cash.get("restricted_mortgage_escrow_status"),
             "total_dao_spendable_cash": total_spendable,
             "total_dao_spendable_cash_status": (
-                "ok" if total_spendable is not None else "reconciliation_pending"
+                total_spendable_status
             ),
             "physical_bank_cash": physical_bank_cash,
             "physical_bank_cash_status": cash.get("status"),

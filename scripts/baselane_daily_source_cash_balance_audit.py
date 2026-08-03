@@ -11,7 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from canonical_property_ledger import DivergentCanonicalLedgerError, resolve_equivalent_ledgers
+try:
+    from canonical_property_ledger import DivergentCanonicalLedgerError, resolve_equivalent_ledgers
+except ImportError:
+    from scripts.canonical_property_ledger import (
+        DivergentCanonicalLedgerError,
+        resolve_equivalent_ledgers,
+    )
 from lofty_monthly_exclusions import DEFAULT_MANUAL_EXCLUDED_PROPERTIES, match_exclusion_guard, monthly_exclusion_guards
 
 
@@ -324,7 +330,12 @@ def canonical_property_split_gls(
             path
             for directory in dict.fromkeys(paths)
             for path in directory.glob("*General Ledger*.csv")
-            if path.is_file() and path.name.lower() != "gl rows.csv"
+            if path.is_file()
+            and path.name.lower() != "gl rows.csv"
+            and not any(
+                marker in path.name.casefold()
+                for marker in ("conflict", ".bak", "backup", ".before-")
+            )
         ]
 
     def exact_candidates_in(paths: list[Path]) -> list[Path]:
@@ -1234,6 +1245,7 @@ def build_report(
                 }
             )
 
+        property_split_gls: list[Path] = []
         try:
             property_split_gls = canonical_property_split_gls(cf_path, matched_gl, gl_properties, cf)
         except DivergentCanonicalLedgerError as exc:

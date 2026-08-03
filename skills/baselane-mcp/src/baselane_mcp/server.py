@@ -7,14 +7,24 @@ from pydantic import Field
 import subprocess
 import json
 import os
+import time
 from pathlib import Path
 
+from .pipeline import (
+    PipelineValidationError,
+    inspect_pipeline_artifact,
+    rebuild_dao_cash_reconciliation,
+    rebuild_monthly_review_artifacts,
+    validate_intercompany_policy,
+)
 from .transfers import (
+    TransferAuthenticationRequired,
     TransferError,
     TransferStateError,
     TransferValidationError,
     build_transfer_plan,
     execute_transfer,
+    get_transfer_state,
     list_active_transfer_accounts,
     run_graphql_via_cdp,
 )
@@ -34,6 +44,7 @@ SCRIPTS_DIR = WORKSPACE_ROOT / "scripts"
 CONFIG_DIR = Path(__file__).parent.parent / "config"
 AUTH_RECOVERY_SCRIPT = SCRIPTS_DIR / "baselane_cdp_auth_recovery.py"
 GRAPHQL_CDP_BRIDGE = SCRIPTS_DIR / "baselane_graphql_via_cdp.js"
+FOLD7_MFA_SCRIPT = SCRIPTS_DIR / "baselane_fold7_mfa.py"
 TRANSFER_STATE_PATH = Path(
     os.environ.get(
         "BASELANE_TRANSFER_STATE_PATH",
@@ -108,10 +119,77 @@ def _require_verified_auth() -> dict[str, Any] | None:
         "error": "Baselane operation not started because the attached CDP session is not verified.",
     }
 
+
+def _complete_fold7_mfa(
+    bank_account_id: int, timeout_seconds: int, not_before_ms: int
+) -> dict[str, Any]:
+    """Run the local no-secret Fold 7 verifier and return only its safe JSON report."""
+    if not FOLD7_MFA_SCRIPT.is_file():
+        return {
+            "status": "mfa_helper_unavailable",
+            "stage": "preflight",
+            "detail": "The canonical Fold 7 MFA helper is unavailable.",
+            "sensitive_values_exposed": False,
+        }
+    timeout_seconds = max(15, min(int(timeout_seconds), 300))
+    env = os.environ.copy()
+    env["OPENCLAW_WORKSPACE_ROOT"] = str(WORKSPACE_ROOT)
+    try:
+        result = subprocess.run(
+            [
+                "python3",
+                str(FOLD7_MFA_SCRIPT),
+                "--bank-id",
+                str(bank_account_id),
+                "--timeout",
+                str(timeout_seconds),
+                "--not-before-ms",
+                str(not_before_ms),
+            ],
+            cwd=WORKSPACE_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds + 120,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "mfa_helper_timeout",
+            "stage": "mfa",
+            "detail": "Fold 7 verification timed out without confirming MFA.",
+            "sensitive_values_exposed": False,
+        }
+    try:
+        report = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {
+            "status": "mfa_helper_error",
+            "stage": "mfa",
+            "detail": "Fold 7 verification returned an unreadable safe-status report.",
+            "sensitive_values_exposed": False,
+        }
+    if not isinstance(report, dict):
+        return {
+            "status": "mfa_helper_error",
+            "stage": "mfa",
+            "detail": "Fold 7 verification returned an invalid safe-status report.",
+            "sensitive_values_exposed": False,
+        }
+    return {
+        "status": report.get("status"),
+        "stage": report.get("stage"),
+        "detail": report.get("detail"),
+        "bank_id": report.get("bank_id"),
+        "device_model": report.get("device_model"),
+        "otp_source": report.get("otp_source"),
+        "sensitive_values_exposed": False,
+    }
+
 if FastMCP is not None:
     _P = {
         "entity_id": "Baselane entity ID (property, account, or transaction)",
         "property_address": "Property address for lookup",
+        "property_name": "Canonical property name from the no-DAO-mortgage reconciliation policy",
         "start_date": "Start date (YYYY-MM-DD)",
         "end_date": "End date (YYYY-MM-DD)",
         "split_type": "Split type: mortgage, expense, income",
@@ -129,6 +207,13 @@ if FastMCP is not None:
         "transfer_date": "Transfer date in YYYY-MM-DD; defaults to today and cannot be in the past",
         "same_day": "Request same-day processing; only valid for today's date",
         "confirmation_token": "Exact token returned by this tool's dry-run preview",
+        "auto_mfa": "Automatically complete a requested bank SMS challenge through the authorized Fold 7 and retry the exact idempotent transfer",
+        "mfa_timeout_seconds": "Seconds to wait for a fresh Fold 7 Baselane SMS; bounded to 15-300",
+        "as_of": "Accounting cutoff date in YYYY-MM-DD",
+        "run_month": "Accounting month in YYYY-MM",
+        "reporting_cutoff_date": "Reporting cutoff date in YYYY-MM-DD",
+        "artifact": "Allowlisted CPAI artifact name",
+        "include_payload": "Return the complete bounded JSON payload instead of metadata",
     }
 
     def _F(name: str, default=None, **field_kwargs):
@@ -245,6 +330,67 @@ if FastMCP is not None:
         return _auth_handoff()
 
     @mcp.tool()
+    def validate_intercompany_overrides(
+        as_of: Annotated[str, _F("as_of")],
+    ) -> dict[str, Any]:
+        """Validate exact ID-bearing ECO/DAO override policy without live mutation."""
+        try:
+            return validate_intercompany_policy(
+                workspace_root=WORKSPACE_ROOT,
+                as_of=as_of,
+            )
+        except PipelineValidationError as exc:
+            return {"status": "validation_error", "error": str(exc)}
+
+    @mcp.tool()
+    def refresh_dao_cash_reconciliation(
+        as_of: Annotated[str, _F("as_of")],
+    ) -> dict[str, Any]:
+        """Refresh canonical DAO cash and intercompany artifacts using live read-only data."""
+        auth_error = _require_verified_auth()
+        if auth_error:
+            return auth_error
+        try:
+            return rebuild_dao_cash_reconciliation(
+                workspace_root=WORKSPACE_ROOT,
+                as_of=as_of,
+            )
+        except PipelineValidationError as exc:
+            return {"status": "validation_error", "error": str(exc)}
+
+    @mcp.tool()
+    def rebuild_monthly_review(
+        run_month: Annotated[str, _F("run_month")],
+        reporting_cutoff_date: Annotated[str, _F("reporting_cutoff_date")],
+    ) -> dict[str, Any]:
+        """Rebuild monthly review artifacts with cash writes and sends forced off."""
+        try:
+            return rebuild_monthly_review_artifacts(
+                workspace_root=WORKSPACE_ROOT,
+                run_month=run_month,
+                reporting_cutoff_date=reporting_cutoff_date,
+            )
+        except PipelineValidationError as exc:
+            return {"status": "validation_error", "error": str(exc)}
+
+    @mcp.tool()
+    def get_pipeline_artifact(
+        artifact: Annotated[str, _F("artifact")],
+        property_name: Annotated[str | None, _F("property_name")] = None,
+        include_payload: Annotated[bool, _F("include_payload")] = False,
+    ) -> dict[str, Any]:
+        """Read an allowlisted CPAI JSON artifact or one property's matching records."""
+        try:
+            return inspect_pipeline_artifact(
+                workspace_root=WORKSPACE_ROOT,
+                artifact=artifact,
+                property_name=property_name,
+                include_payload=include_payload,
+            )
+        except (PipelineValidationError, json.JSONDecodeError, OSError) as exc:
+            return {"status": "validation_error", "error": str(exc)}
+
+    @mcp.tool()
     def list_transfer_accounts() -> dict[str, Any]:
         """List eligible internal Baselane workspace accounts with bank details masked."""
         auth_error = _require_verified_auth()
@@ -270,6 +416,19 @@ if FastMCP is not None:
         }
 
     @mcp.tool()
+    def get_transfer_status(
+        confirmation_token: Annotated[str, _F("confirmation_token")],
+    ) -> dict[str, Any]:
+        """Inspect durable transfer state before resuming or reconciling an attempt."""
+        try:
+            return get_transfer_state(
+                confirmation_token=confirmation_token,
+                state_path=TRANSFER_STATE_PATH,
+            )
+        except TransferError as exc:
+            return {"status": "validation_error", "error": str(exc)}
+
+    @mcp.tool()
     def transfer_cash(
         from_transfer_account_id: Annotated[int, _F("from_transfer_account_id")],
         to_transfer_account_id: Annotated[int, _F("to_transfer_account_id")],
@@ -281,6 +440,8 @@ if FastMCP is not None:
         same_day: Annotated[bool, _F("same_day")] = True,
         dry_run: Annotated[bool, _F("dry_run")] = True,
         confirmation_token: Annotated[str | None, _F("confirmation_token")] = None,
+        auto_mfa: Annotated[bool, _F("auto_mfa")] = True,
+        mfa_timeout_seconds: Annotated[int, _F("mfa_timeout_seconds")] = 90,
     ) -> dict[str, Any]:
         """Preview or execute one guarded in-workspace Baselane cash transfer.
 
@@ -326,13 +487,71 @@ if FastMCP is not None:
                 workspace_root=WORKSPACE_ROOT,
             )
 
-        try:
+        def submit() -> dict[str, Any]:
             return execute_transfer(
                 plan=plan,
                 confirmation_token=confirmation_token or "",
                 graphql_runner=graphql_runner,
                 state_path=TRANSFER_STATE_PATH,
             )
+
+        transfer_attempt_started_ms = int(time.time() * 1000) - 5_000
+        try:
+            return submit()
+        except TransferAuthenticationRequired as exc:
+            challenge = {
+                "status": "authentication_required",
+                "challenge_type": "bank_sms_otp",
+                "cash_movement_may_require_reconciliation": False,
+                "retry_safe_after_mfa": True,
+                "confirmation_token": exc.confirmation_token,
+                "mfa_bank_account_id": exc.bank_account_id,
+                "error": str(exc),
+            }
+            if not auto_mfa or exc.bank_account_id is None:
+                return challenge
+            mfa = _complete_fold7_mfa(
+                exc.bank_account_id,
+                mfa_timeout_seconds,
+                transfer_attempt_started_ms,
+            )
+            if mfa.get("status") != "verified":
+                return {
+                    **challenge,
+                    "status": "mfa_pending",
+                    "mfa": mfa,
+                }
+            try:
+                completed = submit()
+            except TransferAuthenticationRequired as retry_exc:
+                return {
+                    **challenge,
+                    "status": "authentication_required",
+                    "mfa": mfa,
+                    "error": str(retry_exc),
+                }
+            except TransferValidationError as retry_exc:
+                return {
+                    "status": "validation_error",
+                    "cash_movement_may_require_reconciliation": False,
+                    "mfa": mfa,
+                    "error": str(retry_exc),
+                }
+            except TransferStateError as retry_exc:
+                return {
+                    "status": "reconciliation_required",
+                    "cash_movement_may_require_reconciliation": True,
+                    "mfa": mfa,
+                    "error": str(retry_exc),
+                }
+            except TransferError as retry_exc:
+                return {
+                    "status": "error",
+                    "cash_movement_may_require_reconciliation": False,
+                    "mfa": mfa,
+                    "error": str(retry_exc),
+                }
+            return {**completed, "mfa": mfa}
         except TransferValidationError as exc:
             return {
                 "status": "validation_error",
@@ -369,6 +588,98 @@ if FastMCP is not None:
             return auth_error
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         return {"status": "success" if result.returncode == 0 else "error", "output": result.stdout, "error": result.stderr}
+
+    @mcp.tool()
+    def reconcile_no_dao_mortgage_liability(
+        property_name: Annotated[str, _F("property_name")] = "85-104 Alawa Pl",
+    ) -> dict[str, Any]:
+        """Build an exact-ID mortgage/ECO liability waterfall without mutation.
+
+        Confirmed purpose-supported reimbursements reduce the amount due from
+        ECO. Unlabeled or composite transfers remain review candidates, and
+        escrow remains restricted DAO cash rather than ECO responsibility.
+        """
+        auth_error = _require_verified_auth()
+        if auth_error:
+            return auth_error
+        cmd = [
+            "python3",
+            str(SCRIPTS_DIR / "baselane_reconcile_no_dao_mortgage_liability.py"),
+            "--property",
+            property_name,
+        ]
+        env = os.environ.copy()
+        env["OPENCLAW_WORKSPACE_ROOT"] = str(WORKSPACE_ROOT)
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=WORKSPACE_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "timeout",
+                "mode": "read_only",
+                "error": "No-DAO-mortgage liability reconciliation exceeded 180 seconds.",
+            }
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {
+                "status": "error",
+                "mode": "read_only",
+                "returncode": result.returncode,
+                "error": (result.stderr or result.stdout or "reconciler returned no JSON")[-2000:],
+            }
+        payload["returncode"] = result.returncode
+        payload["mode"] = "read_only"
+        if result.stderr:
+            payload["stderr_tail"] = result.stderr[-1000:]
+        return payload
+
+    @mcp.tool()
+    def split_alawa_eco_transfers(
+        apply: Annotated[bool, _F("apply")] = False,
+        confirmation_digest: Annotated[str | None, _F("confirmation_digest")] = None,
+    ) -> dict[str, Any]:
+        """Preview or apply the exact-ID ECO-to-Alawa native split plan.
+
+        All children remain Transfers Between Accounts (tag 24). Applying
+        requires the digest returned by a fresh preview and performs an
+        independent exact-ID readback before returning success.
+        """
+        auth_error = _require_verified_auth()
+        if auth_error:
+            return auth_error
+        cmd = ["python3", str(SCRIPTS_DIR / "baselane_split_alawa_eco_transfers.py")]
+        if apply:
+            if not confirmation_digest:
+                return {"status": "validation_error", "error": "apply requires confirmation_digest"}
+            cmd.extend(["--apply", "--require-plan-digest", confirmation_digest])
+        env = os.environ.copy()
+        env["OPENCLAW_WORKSPACE_ROOT"] = str(WORKSPACE_ROOT)
+        try:
+            result = subprocess.run(
+                cmd, cwd=WORKSPACE_ROOT, capture_output=True, text=True,
+                timeout=180, env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return {"status": "timeout", "error": "Alawa ECO transfer split workflow exceeded 180 seconds."}
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {
+                "status": "error", "returncode": result.returncode,
+                "error": (result.stderr or result.stdout or "split workflow returned no JSON")[-2000:],
+            }
+        payload["returncode"] = result.returncode
+        payload["mode"] = "apply" if apply else "preview"
+        if result.stderr:
+            payload["stderr_tail"] = result.stderr[-1000:]
+        return payload
 
     @mcp.tool()
     def get_pl_entry(

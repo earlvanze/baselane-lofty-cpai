@@ -16,6 +16,8 @@ import time
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from baselane_ledger_revenue_policy import is_categoryless_known_rent_revenue
+
 
 PUBLISH_FIELDS = (
     "monthly_rent",
@@ -68,6 +70,8 @@ def ledger_bucket(row: dict[str, Any]) -> str | None:
     if "insurance" in typed or "rental dwelling" in typed:
         return "insurance"
     if "revenue" in typed or "rent" in typed:
+        return "rents"
+    if is_categoryless_known_rent_revenue(row, row.get("Amount")):
         return "rents"
     if "capex" in category or "capital expenditure" in category or "remodel" in category:
         return "capex"

@@ -12,6 +12,14 @@ from coownership_mortgage_policy import P_AND_I_DAO_PROPERTIES, normalize_policy
 from lofty_property_paths import resolve_index_property_path
 
 
+DEFAULT_ACTIVE_PROPERTY_ROSTER = (
+    Path(__file__).resolve().parents[1] / "reports" / "lofty_monthly_active_property_roster.json"
+)
+DEFAULT_ACTIVE_FINANCIAL_SUMMARY_ROSTER = (
+    Path(__file__).resolve().parents[1] / "config" / "lofty_active_financial_summary_roster.json"
+)
+
+
 def iso_z() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -46,16 +54,81 @@ def key_present(required_key: str, keys: set[str]) -> bool:
     return any(required_key and key and (required_key == key or required_key in key or key in required_key) for key in keys)
 
 
+def roster_record_keys(record: dict[str, Any]) -> set[str]:
+    values = [
+        record.get("property"),
+        record.get("managed_name"),
+        record.get("property_name"),
+        record.get("dao"),
+        Path(str(record.get("property_path") or "")).name,
+        *(record.get("physical_addresses") or []),
+    ]
+    return {normalize_policy_key(value) for value in values if normalize_policy_key(value)}
+
+
+def load_active_property_roster(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {
+            "records": [],
+            "physical_properties": [],
+            "authoritative_active_property_count": 0,
+            "authoritative_reporting_target_count": 0,
+        }
+    payload = read_json(path)
+    records_value = payload.get("reporting_targets") or payload.get("records")
+    records = records_value if isinstance(records_value, list) else []
+    normalized: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        normalized.append({**record, "_match_keys": sorted(roster_record_keys(record))})
+    return {**payload, "records": records, "normalized_records": normalized, "path": str(path)}
+
+
+def load_active_financial_summary_roster(path: Path | None) -> dict[str, Any]:
+    """Load the historical/internal finance-coverage roster.
+
+    This compatibility loader intentionally remains separate from the current
+    physical-property roster: unresolved sold-property wind-down records may
+    appear here without being called active physical properties.
+    """
+    roster = load_active_property_roster(path)
+    normalized_records = []
+    for record in roster.get("normalized_records") or []:
+        normalized_records.append(
+            {
+                **record,
+                "summary_scope_reason": record.get("summary_scope_reason") or record.get("reason"),
+            }
+        )
+    return {**roster, "normalized_records": normalized_records}
+
+
+def roster_match(roster: dict[str, Any], *values: object) -> dict[str, Any] | None:
+    normalized_records = roster.get("normalized_records") if isinstance(roster.get("normalized_records"), list) else []
+    for value in values:
+        key = normalize_policy_key(value)
+        for record in normalized_records:
+            if not isinstance(record, dict):
+                continue
+            roster_keys = {str(item) for item in record.get("_match_keys") or [] if item}
+            if any(key_present(roster_key, {key}) for roster_key in roster_keys):
+                return record
+    return None
+
+
 def build_manifest(
     index_csv: Path,
     guarded_apply_report: Path,
     run_month: str,
     *,
     require_p_and_i_daos: bool = True,
+    active_property_roster: Path | None = DEFAULT_ACTIVE_PROPERTY_ROSTER,
 ) -> dict[str, Any]:
     index_rows = load_index(index_csv)
     guarded_apply = read_json(guarded_apply_report)
     guarded_records = guarded_apply.get("records") if isinstance(guarded_apply.get("records"), list) else []
+    active_roster = load_active_property_roster(active_property_roster)
     records: list[dict[str, Any]] = []
     pending_update_reviews = 0
     pending_financial_reviews = 0
@@ -94,20 +167,37 @@ def build_manifest(
         financial_review_target = first_candidate(financial_candidates)
         update_skipped = update_status.startswith("skipped_") or update_status.startswith("excluded_")
         financial_skipped = financial_status.startswith("skipped_") or financial_status.startswith("excluded_")
+        active_roster_record = roster_match(
+            active_roster,
+            index_row.get("managed_name"),
+            index_row.get("name"),
+            property_path,
+            Path(property_path).name,
+        )
+        display_name = str(
+            (active_roster_record or {}).get("managed_name")
+            or (active_roster_record or {}).get("property_name")
+            or Path(property_path).name
+        )
+        canonical_property_path = str((active_roster_record or {}).get("property_path") or property_path)
+        financial_summary_only = bool(active_roster_record and update_skipped and financial_skipped)
         if update_skipped and financial_skipped:
             skipped_excluded_records.append(
                 {
-                    "property_name": Path(property_path).name,
+                    "property_name": display_name,
                     "managed_name": index_row.get("managed_name") or index_row.get("name"),
-                    "property_path": property_path,
+                    "property_path": canonical_property_path,
                     "notes": index_row.get("notes"),
                     "update_status": update_status,
                     "financial_status": financial_status,
                 }
             )
-            continue
+            if not financial_summary_only:
+                continue
+            financial_status = "summary_only"
+            financial_skipped = False
         update_ready = update_status in {"ready", "already_applied", "applied"} or update_skipped
-        financial_ready = financial_status in {"ready", "already_applied", "applied"} or financial_skipped
+        financial_ready = financial_status in {"ready", "already_applied", "applied", "summary_only"} or financial_skipped
         if update_skipped:
             ready_update_count += 1
         elif update_status == "needs_reviewed_entry":
@@ -127,15 +217,18 @@ def build_manifest(
 
         records.append(
             {
-                "property_name": Path(property_path).name,
+                "property_name": display_name,
                 "managed_name": index_row.get("managed_name") or index_row.get("name"),
-                "property_path": property_path,
+                "property_path": canonical_property_path,
                 "notes": index_row.get("notes"),
-                "draft_path": record.get("draft_path") or index_row.get("draft_path"),
-                "updates_md": record.get("updates_md"),
-                "financials_md": record.get("financials_md"),
+                "draft_path": (active_roster_record or {}).get("draft_path") or record.get("draft_path") or index_row.get("draft_path"),
+                "updates_md": (active_roster_record or {}).get("updates_md") or record.get("updates_md"),
+                "financials_md": (active_roster_record or {}).get("financials_md") or record.get("financials_md"),
                 "update_status": update_status,
                 "financial_status": financial_status,
+                "financial_summary_only": financial_summary_only,
+                "financial_summary_scope": active_roster_record.get("summary_scope") if active_roster_record else None,
+                "financial_summary_scope_reason": active_roster_record.get("summary_scope_reason") if active_roster_record else None,
                 "update_review_target": update_review_target,
                 "financial_review_target": financial_review_target,
                 "update_approved_candidates": update_candidates,
@@ -154,6 +247,54 @@ def build_manifest(
             }
         )
 
+    # A current roster target may be absent from the legacy guarded-apply
+    # report (for example a newly recognized active property without a Lofty
+    # listing mutation target). It still needs an internal cash-position
+    # summary. Add a summary-only manifest record from the roster instead of
+    # silently shrinking finance coverage.
+    covered_keys = {
+        normalize_policy_key(value)
+        for record in records
+        for value in (record.get("property_name"), record.get("managed_name"), record.get("property_path"))
+        if value
+    }
+    for active_record in active_roster.get("records") or []:
+        if not isinstance(active_record, dict):
+            continue
+        active_keys = roster_record_keys(active_record)
+        if any(key_present(key, covered_keys) for key in active_keys):
+            continue
+        property_path = str(active_record.get("property_path") or "")
+        property_name = str(
+            active_record.get("managed_name")
+            or active_record.get("property_name")
+            or Path(property_path).name
+        )
+        records.append(
+            {
+                "property_name": property_name,
+                "managed_name": active_record.get("managed_name") or property_name,
+                "property_path": property_path,
+                "notes": active_record.get("notes"),
+                "draft_path": active_record.get("draft_path"),
+                "updates_md": active_record.get("updates_md"),
+                "financials_md": active_record.get("financials_md"),
+                "update_status": "summary_only",
+                "financial_status": "summary_only",
+                "financial_summary_only": True,
+                "financial_summary_scope": active_record.get("summary_scope"),
+                "financial_summary_scope_reason": active_record.get("summary_scope_reason"),
+                "update_review_target": None,
+                "financial_review_target": None,
+                "update_approved_candidates": [],
+                "financial_approved_candidates": [],
+                "approved_update_quality_issues": [],
+                "next_actions": [],
+            }
+        )
+        ready_update_count += 1
+        ready_financial_count += 1
+
     source_issues: list[str] = []
     guarded_status = str(guarded_apply.get("status") or "")
     if guarded_apply.get("status") in {"missing", "unreadable"}:
@@ -169,7 +310,7 @@ def build_manifest(
     active_index_record_count = sum(
         1
         for row in index_rows.values()
-        if str(row.get("status") or "").strip().lower() in {"existing", "new", "active"}
+        if str(row.get("status") or "").strip().lower() in {"existing", "new", "active", "would_create"}
     )
     if guarded_records and len(guarded_records) < active_index_record_count:
         source_issues.append(f"guarded_apply_incomplete_records={len(guarded_records)}/{active_index_record_count}")
@@ -178,6 +319,57 @@ def build_manifest(
         for record in records
         if isinstance(record, dict)
     }
+    manifest_property_keys.update(
+        normalize_policy_key(record.get("managed_name"))
+        for record in records
+        if isinstance(record, dict) and record.get("managed_name")
+    )
+    roster_records = active_roster.get("records") if isinstance(active_roster.get("records"), list) else []
+    physical_records = (
+        active_roster.get("physical_properties")
+        if isinstance(active_roster.get("physical_properties"), list)
+        else []
+    )
+    try:
+        authoritative_active_property_count = int(active_roster.get("authoritative_active_property_count"))
+    except (TypeError, ValueError):
+        authoritative_active_property_count = 0
+    try:
+        authoritative_reporting_target_count = int(active_roster.get("authoritative_reporting_target_count"))
+    except (TypeError, ValueError):
+        authoritative_reporting_target_count = 0
+    if active_roster.get("status") != "ok":
+        source_issues.append(f"active_property_roster_status={active_roster.get('status') or 'missing'}")
+    if len(physical_records) != authoritative_active_property_count:
+        source_issues.append(
+            "active_property_roster_physical_count_mismatch="
+            f"{len(physical_records)}/{authoritative_active_property_count}"
+        )
+    if len(roster_records) != authoritative_reporting_target_count:
+        source_issues.append(
+            "active_property_roster_reporting_target_count_mismatch="
+            f"{len(roster_records)}/{authoritative_reporting_target_count}"
+        )
+    if active_index_record_count != authoritative_reporting_target_count:
+        source_issues.append(
+            "monthly_index_reporting_target_count_mismatch="
+            f"{active_index_record_count}/{authoritative_reporting_target_count}"
+        )
+    roster_missing_from_manifest = sorted(
+        str(record.get("managed_name") or record.get("property_name") or record.get("property_path"))
+        for record in roster_records
+        if isinstance(record, dict)
+        and not any(key_present(roster_key, manifest_property_keys) for roster_key in roster_record_keys(record))
+    )
+    source_issues.extend(
+        f"active_reporting_target_missing_from_manifest={property_name}"
+        for property_name in roster_missing_from_manifest
+    )
+    if len(records) != authoritative_reporting_target_count:
+        source_issues.append(
+            "review_manifest_reporting_target_count_mismatch="
+            f"{len(records)}/{authoritative_reporting_target_count}"
+        )
     manifest_coverage_property_keys = {
         *manifest_property_keys,
         *(
@@ -228,6 +420,13 @@ def build_manifest(
         "guarded_apply_record_count": len(guarded_records),
         "monthly_index_record_count": len(index_rows),
         "monthly_index_active_record_count": active_index_record_count,
+        "active_property_roster": active_roster.get("path"),
+        "authoritative_active_property_count": authoritative_active_property_count,
+        "authoritative_reporting_target_count": authoritative_reporting_target_count,
+        "active_property_roster_physical_record_count": len(physical_records),
+        "active_property_roster_reporting_target_record_count": len(roster_records),
+        "active_reporting_target_missing_count": len(roster_missing_from_manifest),
+        "active_reporting_targets_missing": roster_missing_from_manifest,
         "source_issue_count": len(source_issues),
         "source_issues": source_issues,
         "missing_required_p_and_i_daos": missing_required_p_and_i_daos,
@@ -302,11 +501,17 @@ def main() -> int:
     parser.add_argument("--index-csv", required=True, type=Path)
     parser.add_argument("--guarded-apply-report", required=True, type=Path)
     parser.add_argument("--run-month", required=True)
+    parser.add_argument("--active-property-roster", type=Path, default=DEFAULT_ACTIVE_PROPERTY_ROSTER)
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--markdown", required=True, type=Path)
     args = parser.parse_args()
 
-    report = build_manifest(args.index_csv, args.guarded_apply_report, args.run_month)
+    report = build_manifest(
+        args.index_csv,
+        args.guarded_apply_report,
+        args.run_month,
+        active_property_roster=args.active_property_roster,
+    )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.markdown.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

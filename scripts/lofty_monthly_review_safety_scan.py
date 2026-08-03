@@ -41,11 +41,20 @@ PATTERNS = [
     ),
 ]
 
+PUBLIC_CONTACT_EMAIL_ALLOWLIST = frozenset({"ecosystemspm@gmail.com"})
+PENDING_LOFTY_RESERVE_RE = re.compile(
+    r"^\s*-\s*Lofty operating-reserve ledger:\s*Pending reconciliation(?:\s+.*)?$",
+    re.I | re.M,
+)
+
 REQUIRED_UPDATE_SUMMARY_PATTERNS = [
     (
         "missing_lofty_curr_maintenance_reserve",
         re.compile(
             r"(?:^\s*-\s*Lofty maintenance reserve balance:\s*(?:-?\$[\d,]+\.\d{2})\s*$"
+            r"|^\s*-\s*Lofty Operating Reserve:\s*(?:-?\$[\d,]+\.\d{2})\s*$"
+            r"|^\s*-\s*Lofty operating-reserve (?:ledger|reporting value \(live correction pending\)):\s*"
+            r"(?:-?\$[\d,]+\.\d{2})(?:\s+.*)?$"
             r"|^\s*Lofty maintenance reserve balance:\s*(?:-?\$[\d,]+\.\d{2})(?:\s*\([^\n]*\))?\s*$"
             r"|^\s*-\s*Lofty-held current maintenance reserve:\s*(?:-?\$[\d,]+\.\d{2})\s*$"
             r"|^\s*Lofty Operating Cash:\s*-?\$[\d,]+\.\d{2}\s*\(Lofty curr_maintenance_reserve\)\s*$"
@@ -73,12 +82,22 @@ REQUIRED_FINANCIAL_SUMMARY_PATTERNS = [
     ),
     (
         "missing_lofty_operating_cash",
-        re.compile(r"^\s*\|\s*Lofty maintenance reserve balance\s*\|\s*-?\$[\d,]+\.\d{2}\s*\|", re.I | re.M),
+        re.compile(
+            r"(?:^\s*-\s*Lofty Operating Reserve:\s*-?\$[\d,]+\.\d{2}\s*$"
+            r"|^\s*-\s*Lofty operating-reserve (?:ledger|reporting value \(live correction pending\)):\s*"
+            r"-?\$[\d,]+\.\d{2}(?:\s+.*)?$"
+            r"|^\s*\|\s*Lofty maintenance reserve balance\s*\|\s*-?\$[\d,]+\.\d{2}\s*\|)",
+            re.I | re.M,
+        ),
         "FINANCIALS.md must show Lofty-held cash separately from ECO-held cash.",
     ),
     (
         "missing_eco_net_dao_funds",
-        re.compile(r"^\s*\|\s*ECO Net DAO Funds \(spendable cash held by ECO\)\s*\|\s*\$[\d,]+\.\d{2}\s*\|", re.I | re.M),
+        re.compile(
+            r"(?:^\s*-\s*ECO Net DAO Funds \(spendable cash held by ECO\):\s*\$[\d,]+\.\d{2}\s*$"
+            r"|^\s*\|\s*ECO Net DAO Funds \(spendable cash held by ECO\)\s*\|\s*\$[\d,]+\.\d{2}\s*\|)",
+            re.I | re.M,
+        ),
         "FINANCIALS.md must include verified spendable cash held by ECO for the DAO.",
     ),
 ]
@@ -150,7 +169,13 @@ def cloud_placeholder_error(path: Path) -> OSError | None:
     return None
 
 
-def scan_text(path: Path, section: str, run_month: str | None = None) -> list[dict[str, Any]]:
+def scan_text(
+    path: Path,
+    section: str,
+    run_month: str | None = None,
+    *,
+    allow_pending_lofty_reserve: bool = False,
+) -> list[dict[str, Any]]:
     try:
         placeholder_error = cloud_placeholder_error(path)
         if placeholder_error:
@@ -174,6 +199,8 @@ def scan_text(path: Path, section: str, run_month: str | None = None) -> list[di
         for match in pattern.finditer(text):
             current_line = line_number(text, match.start())
             line_text = lines[current_line - 1] if current_line - 1 < len(lines) else ""
+            if code == "email" and match.group(0).lower() in PUBLIC_CONTACT_EMAIL_ALLOWLIST:
+                continue
             if code == "unredacted_tenant_ledger" and (
                 "no tenant ledger rows are included" in line_text.lower()
                 or "pii redacted" in line_text.lower()
@@ -194,6 +221,12 @@ def scan_text(path: Path, section: str, run_month: str | None = None) -> list[di
     if section == "updates":
         for code, pattern, message in REQUIRED_UPDATE_SUMMARY_PATTERNS:
             if not pattern.search(text):
+                if (
+                    code == "missing_lofty_curr_maintenance_reserve"
+                    and allow_pending_lofty_reserve
+                    and PENDING_LOFTY_RESERVE_RE.search(text)
+                ):
+                    continue
                 findings.append(
                     {
                         "section": section,
@@ -207,6 +240,12 @@ def scan_text(path: Path, section: str, run_month: str | None = None) -> list[di
     if section == "financials":
         for code, pattern, message in REQUIRED_FINANCIAL_SUMMARY_PATTERNS:
             if not pattern.search(text):
+                if (
+                    code == "missing_lofty_operating_cash"
+                    and allow_pending_lofty_reserve
+                    and PENDING_LOFTY_RESERVE_RE.search(text)
+                ):
+                    continue
                 findings.append(
                     {
                         "section": section,
@@ -263,6 +302,11 @@ def scan_manifest(manifest: dict[str, Any], candidate_packet: dict[str, Any] | N
             "financial_source": financial_source,
             "findings": [],
         }
+        financial_summary = candidate_record.get("monthly_financial_summary")
+        allow_pending_lofty_reserve = (
+            isinstance(financial_summary, dict)
+            and financial_summary.get("lofty_curr_maintenance_reserve") is None
+        )
         for section, source in [("updates", update_source), ("financials", financial_source)]:
             if not source or not Path(source).is_file():
                 missing_count += 1
@@ -278,7 +322,14 @@ def scan_manifest(manifest: dict[str, Any], candidate_packet: dict[str, Any] | N
                 )
                 continue
             scanned_file_count += 1
-            scan_record["findings"].extend(scan_text(Path(source), section, str(manifest.get("run_month") or "") or None))
+            scan_record["findings"].extend(
+                scan_text(
+                    Path(source),
+                    section,
+                    str(manifest.get("run_month") or "") or None,
+                    allow_pending_lofty_reserve=allow_pending_lofty_reserve,
+                )
+            )
         for finding in scan_record["findings"]:
             if finding["severity"] == "high":
                 high_count += 1

@@ -7,12 +7,83 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, "/home/digit/.openclaw/workspace/scripts")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import baselane_monthly_accruals_idempotent as accruals
 
 
 class BaselaneMonthlyAccrualsIdempotentTests(unittest.TestCase):
+    def test_dao_llc_admin_fee_policy_keeps_eco_costs_separate(self):
+        self.assertEqual(accruals.DAO_LLC_ADMIN_ANNUAL_CHARGE, accruals.Decimal("750.00"))
+        self.assertEqual(accruals.DAO_LLC_ADMIN_MONTHLY_ACCRUAL * 12, accruals.Decimal("750.00"))
+        self.assertEqual(accruals.DAO_LLC_ADMIN_ECO_LOFTY_PAYABLE, accruals.Decimal("200.00"))
+        self.assertEqual(accruals.DAO_LLC_ADMIN_ECO_FILING_COST_REFERENCE, accruals.Decimal("125.00"))
+        self.assertIn("never reduce the DAO's fee or payable", accruals.DAO_LLC_ADMIN_ECO_REVENUE_NOTE)
+
+    def test_categoryless_booking_split_child_is_rent_but_refund_is_not(self):
+        row = {
+            "Merchant": "Booking.com",
+            "Description": "Booking payout split child",
+            "Type": "",
+            "Category": "",
+            "Sub-category": "",
+            "Notes": "",
+        }
+
+        self.assertTrue(accruals.is_rent_revenue(row, 2478.72))
+        self.assertFalse(accruals.is_rent_revenue(row, -2478.72))
+
+    def test_aligned_import_rent_note_survives_categoryless_live_export(self):
+        rent_row = {
+            "Date": "July 07, 2026",
+            "Property": "1456 W 85th St.",
+            "Merchant": "Angela Heath",
+            "Amount": "500.00",
+            "Type": "",
+            "Category": "",
+            "Sub-category": "",
+            "Notes": "Aligned clearing detail import | Rent or tenant receipt | post_yhome_transition | accounting/manual detail only",
+        }
+        management_row = {
+            **rent_row,
+            "Amount": "124.13",
+            "Notes": "Aligned clearing detail import | Management fee | post_yhome_transition | accounting/manual detail only",
+        }
+
+        self.assertTrue(accruals.is_rent_revenue(rent_row, 500.0))
+        self.assertFalse(accruals.is_rent_revenue(management_row, 124.13))
+
+    def test_1456_aligned_import_rows_compute_correct_july_pm_basis(self):
+        original_pm = accruals.PM_FEE_PROPERTIES
+        try:
+            accruals.PM_FEE_PROPERTIES = [
+                ("1456 W 85th St, Cleveland, OH 44102", 0.10, "AOPS-OHIL-ACCRUAL"),
+            ]
+            rows = [
+                {
+                    "Date": date,
+                    "Property": "1456 W 85th St.",
+                    "Merchant": merchant,
+                    "Amount": amount,
+                    "Type": "",
+                    "Category": "",
+                    "Sub-category": "",
+                    "Notes": "Aligned clearing detail import | Rent or tenant receipt | post_yhome_transition | accounting/manual detail only",
+                }
+                for date, merchant, amount in (
+                    ("July 03, 2026", "Ajanae N. Barrett", "299.00"),
+                    ("July 04, 2026", "Ajanae N. Barrett", "289.39"),
+                    ("July 07, 2026", "Angela Heath", "500.00"),
+                    ("July 07, 2026", "Angela Heath", "435.18"),
+                )
+            ]
+
+            fees = accruals.compute_pm_fees(rows, "2026-07")
+
+            self.assertEqual(fees["1456 W 85th St, Cleveland, OH 44102"], 152.36)
+        finally:
+            accruals.PM_FEE_PROPERTIES = original_pm
+
     def test_reporting_cutoff_keeps_target_month_aops_and_excludes_later_transactions(self):
         rows = [
             {"Date": "2026-07-29", "Notes": "", "id": "through-cutoff"},
@@ -586,6 +657,35 @@ class BaselaneMonthlyAccrualsIdempotentTests(unittest.TestCase):
             accruals.PM_FEE_COMPONENTS = original_components
             accruals.PROPERTY_ALIASES = original_aliases
 
+    def test_manual_workspace_exclusion_skips_coolwood_schedule_pm_and_dao(self):
+        from openpyxl import Workbook
+
+        original_templates = copy.deepcopy(accruals.ACCRUAL_TEMPLATES)
+        original_pm = list(accruals.PM_FEE_PROPERTIES)
+        original_components = copy.deepcopy(accruals.PM_FEE_COMPONENTS)
+        original_aliases = copy.deepcopy(accruals.PROPERTY_ALIASES)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                schedule = Path(tmp) / "schedule.xlsx"
+                workbook = Workbook()
+                sheet = workbook.active
+                sheet.append(["Address", "PM / Sub-PM", "On Lofty?", "DAO", "Current Status (Occupied Units)", "Total Units", "PM Fee (% of Gross Rents)"])
+                sheet.append(["1 Coolwood Dr., Little Rock, AR 72202", "ECO Systems LLC", "Yes", "Coolwood DAO LLC", 1, 1, "10%"])
+                workbook.save(schedule)
+                workbook.close()
+                rows = [{"Date": "July 04, 2026", "Property": "1 Coolwood Dr.", "Amount": "1000", "Type": "Revenue", "Category": "Rents", "Notes": ""}]
+
+                resolved, evidence = accruals.pm_fee_properties_from_schedule(schedule, gl_rows=rows)
+
+            self.assertNotIn("1 Coolwood Dr.", {item[0] for item in resolved})
+            self.assertFalse(any(item["property"] == "1 Coolwood Dr." and item["kind"] == "dao" for item in accruals.ACCRUAL_TEMPLATES))
+            self.assertEqual(evidence["excluded_property_count"], 1)
+        finally:
+            accruals.ACCRUAL_TEMPLATES = original_templates
+            accruals.PM_FEE_PROPERTIES = original_pm
+            accruals.PM_FEE_COMPONENTS = original_components
+            accruals.PROPERTY_ALIASES = original_aliases
+
     def test_schedule_without_pm_fee_column_preserves_existing_pm_rates(self):
         from openpyxl import Workbook
 
@@ -1051,6 +1151,9 @@ class BaselaneMonthlyAccrualsIdempotentTests(unittest.TestCase):
         self.assertEqual(dao_eco_row["Type"], "Revenue")
         self.assertEqual(dao_eco_row["Category"], "Fees & Other Revenue")
         self.assertEqual(dao_eco_row["Property"], "Mining, Sales, Consulting, and PM")
+        self.assertIn("full $750.00 annual charge", dao_eco_row["Notes"])
+        self.assertIn("separate $200.00 annual payable to Lofty", dao_eco_row["Notes"])
+        self.assertIn("never reduce the DAO's fee or payable", dao_eco_row["Notes"])
 
     def test_existing_legacy_dao_fee_expense_only_backfills_eco_revenue_side(self):
         rows = [{

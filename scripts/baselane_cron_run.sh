@@ -418,6 +418,19 @@ push_baselane_ledger_repo() {
     echo "[baselane] Skipping assetrail GitHub push: git is not installed" >&2
     return 0
   fi
+  local git_ref_preflight="$ROOT/scripts/baselane_assetrail_git_ref_preflight.py"
+  if [ -f "$git_ref_preflight" ]; then
+    if ! "$PY" "$git_ref_preflight" \
+      --repo-dir "$BASELANE_LEDGER_DIR" \
+      --report "$REPORT_DIR/baselane_assetrail_git_ref_preflight.json" \
+      --quarantine-root "$REPORT_DIR/assetrail_git_ref_quarantine" \
+      --apply >/dev/null; then
+      GIT_PUSH_STATUS="failed_git_ref_preflight"
+      write_assetrail_push_report "$GIT_PUSH_STATUS" "invalid_git_refs_remain"
+      echo "[baselane] Cannot push assetrail repo: invalid Git refs remain after preflight" >&2
+      return 11
+    fi
+  fi
   local git_cmd
   git_cmd=(git -c "safe.directory=$BASELANE_LEDGER_DIR" -C "$BASELANE_LEDGER_DIR")
   if ! "${git_cmd[@]}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

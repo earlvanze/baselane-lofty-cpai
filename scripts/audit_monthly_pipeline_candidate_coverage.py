@@ -747,7 +747,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--owner-email-packet", type=Path, default=Path("reports/baselane_monthly_owner_email_packet.json"))
     parser.add_argument("--runtime-map", type=Path, default=Path("reports/baselane_financials_monthly_lofty_pm_runtime_map.json"))
     parser.add_argument("--guild-post-report", type=Path, default=Path("reports/baselane_financials_monthly_guild_test_post.json"))
-    parser.add_argument("--discord-send-report", type=Path, default=Path("reports/baselane_financials_monthly_discord_property_update_send.json"))
+    parser.add_argument(
+        "--discord-send-report",
+        type=Path,
+        default=Path("reports/baselane_financials_monthly_discord_review_drafts.json"),
+    )
     parser.add_argument("--transfer-report", type=Path, default=Path("reports/baselane_lofty_transfer_requirements.json"))
     parser.add_argument("--telegram-send-report", type=Path, default=Path("reports/baselane_lofty_transfer_requirements_telegram_send.json"))
     parser.add_argument("--listing-update-policy", type=Path, default=Path("config/lofty_listing_update_policy.json"))

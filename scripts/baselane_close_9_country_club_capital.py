@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import datetime as dt
+import hashlib
 import json
 import os
 from collections import defaultdict
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from baselane_apply_alcott_accruals_live import run_graphql
+from baselane_reconcile_9_country_club import mortgage_reconciliation_issues
 
 
 ROOT = Path(os.environ.get("WORKSPACE_ROOT") or Path.cwd()).resolve()
@@ -42,6 +44,26 @@ def note_text(value: Any) -> str:
     if isinstance(value, dict):
         return str(value.get("text") or "")
     return str(value or "")
+
+
+def digest_material(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return format(cents(value), ".2f")
+    if isinstance(value, dict):
+        return {key: digest_material(item) for key, item in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [digest_material(item) for item in value]
+    return value
+
+
+def plan_digest(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            digest_material(payload),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def month_range(start: str, end: str) -> list[str]:
@@ -339,13 +361,7 @@ def noah_position(rows: list[dict[str, Any]]) -> dict[str, Any]:
         note = note_text(row.get("note"))
         if note.startswith(NOAH_PREFIX + "|"):
             advances.append((dt.date.fromisoformat(str(row["date"])), cents(row["amount"]), str(row["id"])))
-        merchant = str(row.get("merchantName") or "").lower()
-        if (
-            row.get("bankAccountId") is not None
-            and str(row.get("tagId") or "") == MORTGAGE_TAG_ID
-            and cents(row.get("amount")) < 0
-            and "stone manor hospitality" in merchant
-        ):
+        if is_noah_reimbursement(row):
             reimbursements.append((dt.date.fromisoformat(str(row["date"])), -cents(row["amount"]), str(row["id"])))
 
     events = [(date, value, "interest_paid_by_noah", row_id) for date, value, row_id in advances]
@@ -375,9 +391,60 @@ def noah_position(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def is_noah_reimbursement(row: dict[str, Any]) -> bool:
+    """Identify settled Noah reimbursements without consuming future advances."""
+    merchant = str(row.get("merchantName") or "").lower()
+    posted = str(row.get("date") or "")
+    return bool(
+        row.get("bankAccountId") is not None
+        and str(row.get("tagId") or "") == MORTGAGE_TAG_ID
+        and cents(row.get("amount")) < 0
+        and "stone manor hospitality" in merchant
+        and posted <= month_end(CLOSED_END_MONTH)
+    )
+
+
+def target_plan(
+    targets: list[dict[str, Any]], rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    plan = []
+    for target in targets:
+        existing = marker_row(target, rows)
+        requires_update = bool(
+            existing
+            and any((
+                cents(existing.get("amount")) != cents(target["amount"]),
+                str(existing.get("date") or "") != target["date"],
+                str(existing.get("tagId") or "") != OWNER_TAG_ID,
+                str(existing.get("propertyId") or "") != PROPERTY_ID,
+                existing.get("bankAccountId") is not None,
+                note_text(existing.get("note")) != target["note"],
+            ))
+        )
+        plan.append({
+            "action": (
+                "create" if existing is None else ("update" if requires_update else "unchanged")
+            ),
+            "target": target,
+            "current": (
+                {
+                    key: existing.get(key)
+                    for key in (
+                        "id", "amount", "date", "merchantName", "propertyId",
+                        "tagId", "bankAccountId", "note",
+                    )
+                }
+                if existing is not None
+                else None
+            ),
+        })
+    return plan
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--digest")
     args = parser.parse_args()
 
     rows = query_transactions()
@@ -398,6 +465,32 @@ def main() -> int:
     effective_rows.extend(shadow_row(target) for target in advance_targets)
     close_targets, rollforward = calculate_close_targets(effective_rows)
     targets = advance_targets + close_targets
+    reconciliation_issues = mortgage_reconciliation_issues(rows)
+    mutation_plan = target_plan(targets, rows)
+    digest_payload = {
+        "property_id": PROPERTY_ID,
+        "reconciliation_issues": reconciliation_issues,
+        "obsolete_interest_rows": [
+            {
+                key: row.get(key)
+                for key in (
+                    "id", "amount", "date", "merchantName", "propertyId",
+                    "tagId", "bankAccountId", "note",
+                )
+            }
+            for row in obsolete_interest_rows
+        ],
+        "mutation_plan": mutation_plan,
+    }
+    digest = plan_digest(digest_payload)
+
+    if args.apply and args.digest != digest:
+        raise SystemExit(f"apply requires exact live dry-run digest: {digest}")
+    if args.apply and reconciliation_issues:
+        raise SystemExit(
+            "9 Country Club capital close is blocked by mortgage reconciliation "
+            f"issues: {[issue['code'] for issue in reconciliation_issues]}"
+        )
 
     created = []
     updated = []
@@ -439,7 +532,16 @@ def main() -> int:
     position = noah_position(verified_rows)
     report = {
         "generated_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat(),
-        "mode": "apply" if args.apply else "dry_run",
+        "mode": (
+            "blocked_reconciliation"
+            if reconciliation_issues
+            else ("apply" if args.apply else "dry_run")
+        ),
+        "digest": digest,
+        "mutation_allowed": not reconciliation_issues,
+        "reconciliation_issue_count": len(reconciliation_issues),
+        "reconciliation_issues": reconciliation_issues,
+        "mutation_plan": digest_material(mutation_plan),
         "property": PROPERTY,
         "property_id": PROPERTY_ID,
         "launch_date": "2025-08-15",
@@ -464,7 +566,7 @@ def main() -> int:
         "ending_eco_principal": rollforward[-1]["ending_eco_principal"],
         "noah_position": position,
     }, indent=2))
-    if monthly_failures:
+    if monthly_failures and not reconciliation_issues:
         raise RuntimeError(f"9CC monthly close verification failed: {monthly_failures}")
     return 0
 

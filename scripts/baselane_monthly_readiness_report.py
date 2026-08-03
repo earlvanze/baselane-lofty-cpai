@@ -520,15 +520,32 @@ def monthly_finance_truth_auth_next_action(report: dict, run_month: str) -> str 
 
 def comms_root_for(root: Path) -> Path:
     configured = os.environ.get("COMMS_WORKSPACE")
-    candidates = [
-        Path(configured) if configured else None,
-        root / "workspace-lofty-vp",
-        root / "workspace-lofty-vp-comms",
-    ]
+    openclaw_root = next(
+        (candidate for candidate in (root, *root.parents) if candidate.name == ".openclaw"),
+        None,
+    )
+    candidates = [Path(configured) if configured else None]
+    if openclaw_root is not None:
+        candidates.extend(
+            [
+                openclaw_root / "workspace-lofty-vp",
+                openclaw_root / "workspace-lofty-vp-comms",
+            ]
+        )
+    candidates.extend(
+        [
+            root / "workspace-lofty-vp",
+            root / "workspace-lofty-vp-comms",
+        ]
+    )
     for candidate in candidates:
-        if candidate and candidate.is_dir():
+        if candidate and (candidate / "updates").is_dir():
             return candidate
-    return root / "workspace-lofty-vp"
+    return (
+        openclaw_root / "workspace-lofty-vp"
+        if openclaw_root is not None
+        else root / "workspace-lofty-vp"
+    )
 
 
 def default_comms_root() -> Path:
@@ -884,7 +901,11 @@ def live_capture_reconcile_action(report: dict, target: str, listing_cleanup_sum
     mismatch_count = count(report.get("mismatch_count"))
     if target_count > 0 and mismatch_count == 0:
         mismatch_count = max(target_count - check_ok_count, 0)
-    check_detail = f" ({check_ok_count}/{target_count} checks pass" if target_count else ""
+    check_detail = (
+        f" ({check_ok_count}/{target_count} mutation-ready Lofty checks pass"
+        if target_count
+        else ""
+    )
     if check_detail and mismatch_count:
         check_detail += f"; {mismatch_count} need reconcile"
     if check_detail:
@@ -1032,19 +1053,41 @@ def iso_age_hours(value: object) -> float | None:
     return round((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 3600, 3)
 
 
+def parse_iso_timestamp(value: object) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def report_timestamp(report: dict) -> datetime | None:
     for key in ("generated_at", "checked_at", "hemlane_capture_generated_at"):
-        raw = str(report.get(key) or "").strip()
-        if not raw:
-            continue
-        try:
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+        parsed = parse_iso_timestamp(report.get(key))
+        if parsed is not None:
+            return parsed
     return None
+
+
+def monthly_run_is_prior_run_evidence(report: dict, current_run_started_at: object) -> bool:
+    current_start = parse_iso_timestamp(current_run_started_at)
+    if current_start is None:
+        return False
+
+    source_start = parse_iso_timestamp(report.get("started_at"))
+    if source_start is not None:
+        if source_start == current_start:
+            return False
+        if source_start < current_start:
+            return True
+
+    source_timestamp = report_timestamp(report)
+    return source_timestamp is not None and source_timestamp <= current_start
 
 
 def first_report_newer(primary: dict, *others: dict) -> bool:
@@ -1180,6 +1223,62 @@ def statement_target_matches(report: dict, run_month: str) -> bool:
     return count(report.get("target_year")) == expected_year and count(report.get("target_month")) == expected_month
 
 
+def report_target_month(report: dict) -> str:
+    for key in ("month", "run_month", "reporting_month"):
+        value = str(report.get(key) or "").strip()
+        if re.fullmatch(r"\d{4}-\d{2}", value):
+            return value
+    target_year = count(report.get("target_year"))
+    target_month = count(report.get("target_month"))
+    if target_year > 0 and 1 <= target_month <= 12:
+        return f"{target_year:04d}-{target_month:02d}"
+    return ""
+
+
+def report_target_matches_run_month(report: dict, run_month: str) -> bool:
+    expected = str(run_month or "").strip()
+    return bool(expected) and report_target_month(report) == expected
+
+
+def scheduler_financial_pipeline_issues(report: dict) -> list[str]:
+    raw_issues = report.get("issues") if isinstance(report.get("issues"), list) else []
+    issues = {
+        str(issue)
+        for issue in raw_issues
+        if str(issue).strip() and not str(issue).startswith("eod_telegram:")
+    }
+
+    jobs = report.get("jobs") if isinstance(report.get("jobs"), list) else []
+    jobs_by_name = {
+        str(job.get("name") or ""): job
+        for job in jobs
+        if isinstance(job, dict) and str(job.get("name") or "").strip()
+    }
+    for name in ("daily_sync", "weekly_file_updates", "monthly_financials"):
+        job = jobs_by_name.get(name)
+        if job is None:
+            issues.add(f"{name}:missing_scheduler_audit_job")
+            continue
+        for issue in job.get("issues") if isinstance(job.get("issues"), list) else []:
+            if str(issue).strip():
+                issues.add(f"{name}:{issue}")
+
+    if report.get("status") in {None, "", "missing", "unreadable"}:
+        issues.add("scheduler_audit:missing_or_unreadable")
+    return sorted(issues)
+
+
+def scheduler_communication_observability_issues(report: dict) -> list[str]:
+    raw_issues = report.get("issues") if isinstance(report.get("issues"), list) else []
+    return sorted(
+        {
+            str(issue)
+            for issue in raw_issues
+            if str(issue).startswith("eod_telegram:")
+        }
+    )
+
+
 def is_portfolio_upstream_blocker(blocker_class: object) -> bool:
     text = str(blocker_class or "")
     return text.startswith(
@@ -1253,7 +1352,12 @@ def default_root() -> Path:
     return Path(__file__).absolute().parents[1]
 
 
-def build_report(root: Path, report_path: Path, markdown_path: Path) -> dict:
+def build_report(
+    root: Path,
+    report_path: Path,
+    markdown_path: Path,
+    current_run_started_at: str | None = None,
+) -> dict:
     daily_run_path = root / "reports" / "baselane_daily_run_report.json"
     daily_sync_report_path = root / "reports" / "baselane_daily_sync_report.json"
     daily_disk_preflight_path = root / "reports" / "baselane_daily_disk_space_preflight_report.json"
@@ -1526,11 +1630,14 @@ def build_report(root: Path, report_path: Path, markdown_path: Path) -> dict:
     daily_source_cash_balance_current = (
         daily_source_cash_balance.get("status") not in {"missing", "unreadable"}
         and report_timestamp(daily_source_cash_balance) is not None
+        and report_target_matches_run_month(daily_source_cash_balance, run_month)
         and (
             report_timestamp(weekly_cf_sync) is None
             or first_report_newer(daily_source_cash_balance, weekly_cf_sync)
         )
     )
+    scheduler_pipeline_issues = scheduler_financial_pipeline_issues(scheduler_audit)
+    scheduler_comms_observability_issues = scheduler_communication_observability_issues(scheduler_audit)
     source_cash_balance_violation_count = max(
         count(weekly_cf_sync.get("source_cash_balance_violation_count")),
         count(weekly_file_updates.get("source_cash_balance_violation_count")),
@@ -1980,6 +2087,9 @@ def build_report(root: Path, report_path: Path, markdown_path: Path) -> dict:
             "status": monthly_run.get("status"),
             "path": str(monthly_run_path),
             "run_month": monthly_run.get("run_month"),
+            "source_generated_at": monthly_run.get("generated_at"),
+            "source_started_at": monthly_run.get("started_at"),
+            "current_run_started_at": current_run_started_at or None,
             "failed_step": monthly_run.get("failed_step"),
             "effective_failed_step": monthly_run.get("effective_failed_step"),
             "next_action": monthly_run.get("next_action"),
@@ -2057,6 +2167,12 @@ def build_report(root: Path, report_path: Path, markdown_path: Path) -> dict:
             "daily_source_cash_balance_status": daily_source_cash_balance.get("status"),
             "daily_source_cash_balance_report": str(daily_source_cash_balance_path),
             "daily_source_cash_balance_generated_at": daily_source_cash_balance.get("generated_at"),
+            "daily_source_cash_balance_report_month": report_target_month(daily_source_cash_balance),
+            "daily_source_cash_balance_target_month": run_month,
+            "daily_source_cash_balance_target_month_matches": report_target_matches_run_month(
+                daily_source_cash_balance,
+                run_month,
+            ),
             "daily_source_cash_balance_current": daily_source_cash_balance_current,
             "daily_source_cash_balance_violation_count": count(daily_source_cash_balance.get("violation_count")),
             "daily_source_cash_balance_raw_no_dao_mortgage_guard": daily_source_cash_balance.get("raw_no_dao_mortgage_guard"),
@@ -2186,6 +2302,11 @@ def build_report(root: Path, report_path: Path, markdown_path: Path) -> dict:
             "path": str(scheduler_audit_path),
             "issue_count": scheduler_audit.get("issue_count"),
             "issues": scheduler_audit.get("issues"),
+            "financial_pipeline_status": "ok" if not scheduler_pipeline_issues else "review",
+            "financial_pipeline_issue_count": len(scheduler_pipeline_issues),
+            "financial_pipeline_issues": scheduler_pipeline_issues,
+            "communication_observability_issue_count": len(scheduler_comms_observability_issues),
+            "communication_observability_issues": scheduler_comms_observability_issues,
             "actionable_summary": scheduler_audit.get("actionable_summary"),
             "primary_blocker": scheduler_audit.get("primary_blocker"),
         },
@@ -2385,13 +2506,23 @@ def build_report(root: Path, report_path: Path, markdown_path: Path) -> dict:
         )
     monthly_run_status = str(monthly_run.get("status") or "").strip()
     monthly_run_failed_step = str(monthly_run.get("effective_failed_step") or monthly_run.get("failed_step") or "").strip()
+    monthly_run_prior_run_evidence = monthly_run_is_prior_run_evidence(monthly_run, current_run_started_at)
+    monthly_run_prior_run_block_ignored = (
+        monthly_run_status in {"failed", "review"}
+        and monthly_run_prior_run_evidence
+    )
     monthly_run_self_referential_readiness_block = (
         monthly_run_status in {"failed", "review"}
         and monthly_run_failed_step in MONTHLY_READINESS_SELF_FAILED_STEPS
     )
+    operational_gates["monthly_run"]["prior_run_evidence_detected"] = monthly_run_prior_run_evidence
+    operational_gates["monthly_run"]["prior_run_block_ignored"] = monthly_run_prior_run_block_ignored
     operational_gates["monthly_run"]["self_referential_readiness_block_ignored"] = monthly_run_self_referential_readiness_block
+    if monthly_run_prior_run_block_ignored:
+        operational_gates["monthly_run"]["effective_status"] = "ignored_prior_run"
     if (
         monthly_run_status in {"failed", "review"}
+        and not monthly_run_prior_run_block_ignored
         and not monthly_run_self_referential_readiness_block
         and not (coownership_failed_step or coownership_blocked_properties)
     ):
@@ -2499,7 +2630,7 @@ def build_report(root: Path, report_path: Path, markdown_path: Path) -> dict:
         )
     if first_day_pm_fee_audit.get("status") not in {"ok", "missing"} or first_day_pm_fee_count:
         add_portfolio_blocker("operational.first_day_pm_fee_audit.not_ok", first_day_pm_fee_audit_path, operational_gates["first_day_pm_fee_audit"])
-    if scheduler_audit.get("status") != "ok" or int(scheduler_audit.get("issue_count") or 0) != 0:
+    if scheduler_pipeline_issues:
         add_portfolio_blocker("operational.scheduler_audit.not_ok", scheduler_audit_path, operational_gates["scheduler_audit"])
     if not local_model_exact_ok and REQUIRE_LOCAL_MODEL_PREFLIGHT:
         add_portfolio_blocker("operational.local_model_preflight.not_ok", local_model_preflight_path, operational_gates["local_model_preflight"])
@@ -3982,11 +4113,20 @@ def main() -> int:
     parser.add_argument("--root", default=str(default_root()))
     parser.add_argument("--report", default="")
     parser.add_argument("--markdown", default="")
+    parser.add_argument(
+        "--current-run-started-at",
+        default=os.environ.get("BASELANE_MONTHLY_STARTED_AT", ""),
+    )
     args = parser.parse_args()
     root = Path(args.root).expanduser().resolve()
     report_path = Path(args.report) if args.report else root / "reports" / "baselane_financials_monthly_readiness.json"
     markdown_path = Path(args.markdown) if args.markdown else root / "reports" / "baselane_financials_monthly_readiness.md"
-    report = build_report(root, report_path, markdown_path)
+    report = build_report(
+        root,
+        report_path,
+        markdown_path,
+        current_run_started_at=args.current_run_started_at or None,
+    )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["status"] == "ok" else 2
 

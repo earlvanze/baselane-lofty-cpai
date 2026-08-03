@@ -117,6 +117,25 @@ def file_sha256(path: Path) -> str | None:
         return None
 
 
+def valid_post_cleanup_baseline(
+    login_export: dict[str, Any],
+    canonical_sha256: str | None,
+    canonical_size_bytes: int | None,
+) -> bool:
+    expected_sha256 = str(login_export.get("post_cleanup_canonical_sha256") or "").strip()
+    try:
+        expected_size_bytes = int(login_export.get("post_cleanup_canonical_size_bytes"))
+    except (TypeError, ValueError):
+        return False
+    return (
+        login_export.get("post_cleanup_baseline") is True
+        and sha256ish(expected_sha256)
+        and canonical_sha256 == expected_sha256
+        and canonical_size_bytes is not None
+        and canonical_size_bytes == expected_size_bytes
+    )
+
+
 def canonical_extra_rows_are_accrual_overlay(canonical_path: Path, snapshot_path: Path) -> tuple[bool, dict[str, Any]]:
     try:
         canonical_lines = canonical_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
@@ -1064,7 +1083,17 @@ def build_report(root: Path) -> dict[str, Any]:
     if native_split_overlay_baseline:
         expected_canonical_sha256 = overlay_ledger_sha256
         expected_canonical_sha256_source = "native_split_ledger_overlay"
-    post_cleanup_baseline = login_export.get("post_cleanup_baseline") is True
+    canonical_ledger_size_bytes = None
+    if canonical_ledger_path is not None:
+        try:
+            canonical_ledger_size_bytes = canonical_ledger_path.stat().st_size
+        except OSError:
+            pass
+    post_cleanup_baseline = valid_post_cleanup_baseline(
+        login_export,
+        canonical_ledger_sha256,
+        canonical_ledger_size_bytes,
+    )
     post_export_canonical_baseline = post_cleanup_baseline or native_split_overlay_baseline
     canonical_ledger_issues: list[str] = []
     accrual_overlay_append_ok = False
@@ -1079,7 +1108,7 @@ def build_report(root: Path) -> dict[str, Any]:
             canonical_ledger_issues.append("canonical_ledger_path_missing")
         elif canonical_ledger_sha256 is None:
             canonical_ledger_issues.append("canonical_ledger_unreadable")
-        if filtered_snapshot_path_raw and filtered_snapshot_sha256 is None:
+        if filtered_snapshot_path_raw and filtered_snapshot_sha256 is None and not post_export_canonical_baseline:
             canonical_ledger_issues.append("filtered_snapshot_unreadable")
         if (
             canonical_ledger_sha256

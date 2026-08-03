@@ -9,6 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from discord_summary_routing_policy import (
+    EARLCOIN_GUILD_ID,
+    EARLCOIN_REVIEW_FORUM_ID,
+    EARLCOIN_REVIEW_TARGET,
+    LOFTY_GUILD_ID,
+    REVIEW_DESTINATION_CLASS,
+    REVIEW_DESTINATION_PURPOSE,
+)
 from lofty_monthly_exclusions import DEFAULT_MANUAL_EXCLUDED_PROPERTIES, load_yhome_transition_exclusions
 from transfer_report_digest import stable_transfer_report_digest
 
@@ -35,7 +43,9 @@ DEFAULT_YHOME_TRANSITION_RECONCILIATION_CANDIDATES = (
     Path("reports/yhome_transition_reconciliation.live.20260702.refreshed.csv"),
     Path("reports/yhome_transition_reconciliation.live.20260702.csv"),
 )
-REQUIRED_LOFTY_GUILD_ID = "847877825373012018"
+REQUIRED_LOFTY_GUILD_ID = LOFTY_GUILD_ID
+REQUIRED_EARLCOIN_REVIEW_GUILD_ID = EARLCOIN_GUILD_ID
+REQUIRED_EARLCOIN_REVIEW_FORUM_ID = EARLCOIN_REVIEW_FORUM_ID
 REQUIRED_PROPERTY_EMAIL_COOLDOWN_DAYS = 7
 MAX_SIGNAL_ONLY_EMAIL_BODY_CHARS = 3500
 MAX_SIGNAL_ONLY_EMAIL_BODY_LINES = 80
@@ -677,6 +687,43 @@ def discord_all_property_send_guard(
     )
     plan_digest = str((discord_send.get("plan_digest") if use_send_report else None) or monthly_run.get("discord_all_property_send_plan_digest") or "")
     plan_digest_ok = sha256ish(plan_digest)
+    route_source = discord_send if use_send_report else monthly_run
+    review_destination = (
+        route_source.get("review_destination")
+        if isinstance(route_source.get("review_destination"), dict)
+        else {}
+    )
+    destination_class = str(
+        route_source.get("destination_class") or review_destination.get("destination_class") or ""
+    )
+    destination_purpose = str(
+        route_source.get("destination_purpose") or review_destination.get("destination_purpose") or ""
+    )
+    destination_guild_id = str(
+        route_source.get("guild_id")
+        or route_source.get("destination_guild_id")
+        or review_destination.get("guild_id")
+        or ""
+    )
+    destination_forum_id = str(
+        route_source.get("forum_id")
+        or route_source.get("destination_forum_id")
+        or review_destination.get("forum_id")
+        or ""
+    )
+    destination_target = str(
+        route_source.get("target")
+        or route_source.get("destination_target")
+        or review_destination.get("target")
+        or ""
+    )
+    earlcoin_review_route_ok = bool(
+        destination_class == REVIEW_DESTINATION_CLASS
+        and destination_purpose == REVIEW_DESTINATION_PURPOSE
+        and destination_guild_id == REQUIRED_EARLCOIN_REVIEW_GUILD_ID
+        and destination_forum_id == REQUIRED_EARLCOIN_REVIEW_FORUM_ID
+        and destination_target == EARLCOIN_REVIEW_TARGET
+    )
     if not issue_counts and isinstance(monthly_run.get("discord_all_property_send_issue_counts"), dict):
         issue_counts = monthly_run.get("discord_all_property_send_issue_counts")
     ok = bool(
@@ -692,6 +739,7 @@ def discord_all_property_send_guard(
         and failed_count == 0
         and plan_digest_ok
         and record_count_matches_current_plan
+        and earlcoin_review_route_ok
     )
     issues: list[str] = []
     if not send_report_loaded and not monthly_run_loaded:
@@ -718,6 +766,12 @@ def discord_all_property_send_guard(
         issues.append(
             f"discord_all_property_send_record_count_mismatch_current_plan={record_count}/{current_plan_record_count}"
         )
+    if not earlcoin_review_route_ok:
+        issues.append(
+            "discord_review_destination_not_canonical_earlcoin_forum:"
+            f"guild={destination_guild_id or 'missing'}:forum={destination_forum_id or 'missing'}:"
+            f"purpose={destination_purpose or 'missing'}"
+        )
     return {
         "ok": ok,
         "required": True,
@@ -740,6 +794,14 @@ def discord_all_property_send_guard(
         "issue_counts": issue_counts,
         "plan_digest": plan_digest,
         "plan_digest_ok": plan_digest_ok,
+        "earlcoin_review_route_ok": earlcoin_review_route_ok,
+        "destination_class": destination_class,
+        "destination_purpose": destination_purpose,
+        "destination_guild_id": destination_guild_id,
+        "destination_forum_id": destination_forum_id,
+        "destination_target": destination_target,
+        "required_earlcoin_review_guild_id": REQUIRED_EARLCOIN_REVIEW_GUILD_ID,
+        "required_earlcoin_review_forum_id": REQUIRED_EARLCOIN_REVIEW_FORUM_ID,
         "issues": issues,
         "send_report_status": discord_send.get("status"),
         "send_report_path": discord_send.get("path"),

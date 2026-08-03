@@ -21,7 +21,7 @@ UPDATES_DIR_NAME = "00 - README & Property Snapshot"
 SNAPSHOT_DIR_NAME = UPDATES_DIR_NAME
 ROOT = Path(__file__).absolute().parents[1]
 DEFAULT_SKILL_MAP = ROOT / "skills/lofty-pm/config/property_update_map.json"
-YHOME_EXCLUDE_MARKERS = ("sold", "selling", "closed", "delisted")
+YHOME_EXCLUDE_MARKERS = ("sold", "closed", "delisted")
 DEFAULT_LISTING_UPDATE_POLICY = ROOT / "config/lofty_listing_update_policy.json"
 PROPERTY_PAYLOAD_SUFFIXES = (
     "update-manager-property.payload.json",
@@ -132,20 +132,19 @@ def portfolio_scope_expected_count(review_candidate_packet: Path | None, live_fi
 
 def runtime_map_scope_guard(
     runtime_map: Path,
-    property_count: int,
+    reporting_target_count: int,
     review_candidate_packet: Path | None,
     live_financial_capture: Path | None,
 ) -> tuple[Path, str | None, int | None]:
     expected_count = portfolio_scope_expected_count(review_candidate_packet, live_financial_capture)
     if runtime_map.name != CANONICAL_MONTHLY_RUNTIME_MAP_NAME or expected_count is None or expected_count < 10:
         return runtime_map, None, expected_count
-    minimum_portfolio_count = max(2, expected_count // 2)
-    if property_count >= minimum_portfolio_count:
+    if reporting_target_count == expected_count:
         return runtime_map, None, expected_count
     sidecar = runtime_map.with_name(f"{runtime_map.stem}.targeted-subset-blocked{runtime_map.suffix}")
     issue = (
         "canonical_runtime_map_subset_refused:"
-        f" properties={property_count}, expected_portfolio_count={expected_count};"
+        f" reporting_targets={reporting_target_count}, expected_portfolio_count={expected_count};"
         " pass a targeted --runtime-map path for one-off property runs"
     )
     return sidecar, issue, expected_count
@@ -1374,6 +1373,47 @@ def manual_exclusion_records(names: list[str]) -> list[dict[str, Any]]:
     ]
 
 
+def authoritative_roster_lifecycle_guards(
+    active_property_roster: Path | None,
+    lifecycle_guards: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not active_property_roster or not active_property_roster.is_file():
+        return lifecycle_guards, []
+    roster = read_json(active_property_roster)
+    records = roster.get("records") if isinstance(roster.get("records"), list) else []
+    try:
+        expected_count = int(roster.get("authoritative_reporting_target_count") or 0)
+    except (TypeError, ValueError):
+        expected_count = 0
+    if roster.get("status") != "ok" or not records or expected_count != len(records):
+        return lifecycle_guards, []
+    active_keys: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        values = [
+            record.get("property_name"),
+            record.get("managed_name"),
+            Path(str(record.get("property_path") or "")).name,
+            *(record.get("physical_addresses") or []),
+        ]
+        for value in values:
+            key = normalize(str(value or ""))
+            if key:
+                active_keys.add(key)
+    conflicts = [
+        guard
+        for guard in lifecycle_guards
+        if any(
+            policy_name_matches(active_key, str(guard.get("normalized_property") or ""))
+            for active_key in active_keys
+        )
+    ]
+    # The roster already applies the sold/listing policy and is built from the
+    # current live manager snapshot. Its 30-row index is the complete lifecycle scope.
+    return [], conflicts
+
+
 def listing_update_policy_exclusion_records(policy_path: Path | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not policy_path or not policy_path.is_file():
         return [], {"status": "missing" if policy_path else "not_configured", "path": str(policy_path) if policy_path else None, "excluded_count": 0}
@@ -1560,8 +1600,40 @@ def guild_test_post_snapshot(path: Path | None, run_month: str) -> dict[str, Any
     }
 
 
-def property_id_candidates(portfolio_map: Path | None, skill_map: Path | None) -> list[dict[str, str]]:
+def property_id_candidates(
+    portfolio_map: Path | None,
+    skill_map: Path | None,
+    active_property_roster: Path | None = None,
+) -> list[dict[str, str]]:
     candidates: list[dict[str, str]] = []
+    if active_property_roster and active_property_roster.is_file():
+        roster = read_json(active_property_roster)
+        rows = roster.get("records") if isinstance(roster.get("records"), list) else []
+        if roster.get("status") == "ok" and rows:
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                property_id = str(row.get("lofty_property_id") or "").strip()
+                if not property_id:
+                    continue
+                keys = [
+                    row.get("property_name"),
+                    row.get("managed_name"),
+                    Path(str(row.get("property_path") or "")).name,
+                    *(row.get("physical_addresses") or []),
+                ]
+                for raw_key in keys:
+                    key = str(raw_key or "").strip()
+                    if key:
+                        candidates.append(
+                            {
+                                "source": "active_roster",
+                                "key": key,
+                                "property_id": property_id,
+                                "normalized": normalize(key),
+                            }
+                        )
+            return candidates
     if portfolio_map and portfolio_map.is_file():
         data = json.loads(portfolio_map.read_text(encoding="utf-8"))
         rows = data.get("properties") if isinstance(data, dict) else data
@@ -1618,7 +1690,7 @@ def match_property_id(property_path: Path, candidates: list[dict[str, str]]) -> 
             continue
         matched_target = next((item for item in target_names if key == item or key in item or item in key), "")
         if matched_target:
-            source_bonus = {"portfolio_map": 100, "skill_map": 50}.get(candidate["source"], 0)
+            source_bonus = {"active_roster": 200, "portfolio_map": 100, "skill_map": 50}.get(candidate["source"], 0)
             score = len(key) + (1000 if key == matched_target else 0) + source_bonus
             matches.append((score, candidate))
     matches.sort(key=lambda item: item[0], reverse=True)
@@ -1861,7 +1933,18 @@ def build_runtime_map(
             **match,
         }
         if not property_id:
-            record["status"] = "blocked_no_property_id"
+            record.update(
+                {
+                    "status": "unavailable_no_live_property_id",
+                    "native_live_action_available": False,
+                    "nonblocking_scope": "native_lofty_listing_actions_only",
+                    "accounting_and_investor_reporting_included": True,
+                    "reason": (
+                        "No native Lofty property ID is mapped; retain this target in accounting and "
+                        "investor reporting while skipping only native Lofty listing actions."
+                    ),
+                }
+            )
             records.append(record)
             continue
         if not updates_md.is_file():
@@ -2446,6 +2529,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rent-roll-source-report", type=Path)
     parser.add_argument("--rent-roll-occupancy-summary-csv", type=Path)
     parser.add_argument("--lofty-live-properties-report", type=Path)
+    parser.add_argument("--active-property-roster-report", type=Path)
     parser.add_argument("--yhome-transition-csv", type=Path)
     parser.add_argument("--listing-update-policy", type=Path, default=DEFAULT_LISTING_UPDATE_POLICY)
     parser.add_argument("--exclude-property", action="append", default=[])
@@ -2546,15 +2630,25 @@ def main(argv: list[str] | None = None) -> int:
 
     rows = load_index(args.index_csv) if args.index_csv.is_file() else []
     effective_skill_map = effective_skill_map_path(args.skill_map)
-    candidates = property_id_candidates(args.portfolio_map, effective_skill_map)
+    candidates = property_id_candidates(
+        args.portfolio_map,
+        effective_skill_map,
+        args.active_property_roster_report,
+    )
     yhome_exclusions, yhome_guard = load_yhome_transition_exclusions(args.yhome_transition_csv)
     if args.yhome_transition_csv and yhome_guard.get("status") != "ok":
         issues.append(f"Yhome Transition Reconciliation guard unavailable: {yhome_guard.get('status')}: {args.yhome_transition_csv}")
     policy_exclusions, _ = listing_update_policy_exclusion_records(args.listing_update_policy)
-    manual_exclusions = manual_exclusion_records([*DEFAULT_MANUAL_EXCLUDED_PROPERTIES, *args.exclude_property])
+    manual_policy_exclusions = manual_exclusion_records(list(DEFAULT_MANUAL_EXCLUDED_PROPERTIES))
+    explicit_exclusions = manual_exclusion_records(list(args.exclude_property))
+    manual_exclusions = [*manual_policy_exclusions, *explicit_exclusions]
     financial_holds = financial_hold_records(args.transfer_reconciliation_report)
     guarded_apply_exclusions = guarded_apply_exclusion_records(guarded_apply)
-    excluded_property_guards = [*yhome_exclusions, *policy_exclusions, *manual_exclusions, *financial_holds]
+    lifecycle_exclusion_guards, authoritative_roster_lifecycle_conflicts = authoritative_roster_lifecycle_guards(
+        args.active_property_roster_report,
+        [*yhome_exclusions, *policy_exclusions, *manual_policy_exclusions],
+    )
+    excluded_property_guards = [*lifecycle_exclusion_guards, *explicit_exclusions, *financial_holds]
     properties, records = build_runtime_map(
         rows,
         candidates,
@@ -2591,6 +2685,26 @@ def main(argv: list[str] | None = None) -> int:
     append_unmapped_exclusion_records(records, guarded_apply_exclusions, candidates, args.payload_dir)
     map_issues = [record for record in records if record.get("status", "").startswith("blocked_")]
     excluded_records = [record for record in records if record.get("status") == "excluded_no_live_update_or_email"]
+    native_unavailable_records = [
+        record for record in records if record.get("status") == "unavailable_no_live_property_id"
+    ]
+    selected_reporting_target_count = len(
+        [record for record in records if record.get("status") != "excluded_no_live_update_or_email"]
+    )
+    active_property_roster = (
+        read_json(args.active_property_roster_report)
+        if args.active_property_roster_report
+        else {}
+    )
+    try:
+        portfolio_physical_property_count = int(
+            active_property_roster.get("physical_property_count")
+            or active_property_roster.get("authoritative_active_property_count")
+            or 0
+        )
+    except (TypeError, ValueError):
+        portfolio_physical_property_count = 0
+    portfolio_physical_property_count = portfolio_physical_property_count or None
     issues.extend(f"{record['status']}: {record['property_name']}" for record in map_issues[:20])
     description_report = description_check_report(
         properties,
@@ -2613,14 +2727,30 @@ def main(argv: list[str] | None = None) -> int:
 
     effective_runtime_map, runtime_map_scope_issue, runtime_map_expected_portfolio_count = runtime_map_scope_guard(
         args.runtime_map,
-        len(properties),
+        selected_reporting_target_count,
         args.review_candidate_packet_report,
         args.live_financial_capture_report,
     )
     if runtime_map_scope_issue:
         issues.append(runtime_map_scope_issue)
     effective_runtime_map.parent.mkdir(parents=True, exist_ok=True)
-    effective_runtime_map.write_text(json.dumps({"properties": properties, "records": records}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    effective_runtime_map.write_text(
+        json.dumps(
+            {
+                "portfolio_physical_property_count": portfolio_physical_property_count,
+                "portfolio_reporting_target_count": selected_reporting_target_count,
+                "native_live_target_count": len(properties),
+                "native_unavailable_count": len(native_unavailable_records),
+                "active_property_roster_report": str(args.active_property_roster_report) if args.active_property_roster_report else None,
+                "properties": properties,
+                "records": records,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     publish_results: list[dict[str, Any]] = []
     financial_publish_results: list[dict[str, Any]] = []
@@ -3027,6 +3157,9 @@ def main(argv: list[str] | None = None) -> int:
         "guarded_apply_actionable_blockers": guarded_apply_blockers,
         "yhome_transition_guard": yhome_guard,
         "manual_excluded_property_names": [row["property_name"] for row in manual_exclusions],
+        "authoritative_roster_lifecycle_conflict_count": len(authoritative_roster_lifecycle_conflicts),
+        "authoritative_roster_lifecycle_conflicts": authoritative_roster_lifecycle_conflicts,
+        "authoritative_roster_lifecycle_policy": "A valid exact-count active roster supersedes older Yhome/listing/manual lifecycle guards for runtime scope; sold/excluded records remain audit-only.",
         "financial_hold_property_count": len(financial_holds),
         "financial_hold_property_names": [row["property_name"] for row in financial_holds],
         "financial_publish_enabled": financial_publish_enabled,
@@ -3043,6 +3176,11 @@ def main(argv: list[str] | None = None) -> int:
         "runtime_map_expected_portfolio_count": runtime_map_expected_portfolio_count,
         "records": records,
         "property_count": len(properties),
+        "portfolio_physical_property_count": portfolio_physical_property_count,
+        "portfolio_reporting_target_count": selected_reporting_target_count,
+        "native_live_target_count": len(properties),
+        "native_unavailable_count": len(native_unavailable_records),
+        "native_unavailable_records": native_unavailable_records,
         "excluded_property_count": len(excluded_records), "excluded_property_names": [r.get("property_name") for r in excluded_records],
         "excluded_payload_file_count": excluded_payload_file_count, "removed_excluded_payload_file_count": removed_excluded_payload_file_count, "excluded_owner_email_candidate_count": excluded_owner_email_candidate_count,
         "active_property_only_policy": "Yhome Transition Reconciliation column-B, listing/manual exclusions are excluded from Lofty PM publish payloads and owner-email candidates",

@@ -25,6 +25,7 @@ ROOT = Path(os.environ.get('WORKSPACE_ROOT') or os.environ.get('OPENCLAW_WORKSPA
 REPORT_DIR = Path(os.environ.get('BASELANE_REPORT_DIR') or ROOT / 'reports')
 REPORT = REPORT_DIR / 'baselane_sync_cdp_report.json'
 EXPORT_SCRIPT = ROOT / 'scripts' / 'baselane_export_human_paced.js'
+SOURCE_INDEX_EXPORT_SCRIPT = ROOT / 'scripts' / 'baselane_export_all_transactions_cdp.py'
 AUTH_PREFLIGHT = ROOT / 'scripts' / 'baselane_cdp_auth_recovery.py'
 SPLIT_SCRIPT = ROOT / 'scripts' / 'split_ledger_public_financials.py'
 FIRST_DAY_PM_FEE_CLEANUP_SCRIPT = ROOT / 'scripts' / 'baselane_first_day_pm_fee_source_cleanup_plan.py'
@@ -46,6 +47,61 @@ ECO_ACCRUAL_NOTE = re.compile(
     r'\|(dao_eco|pm_eco)\|([^|]+)\|\d{4}-\d{2}'
     r'\|(-?\d+(?:\.\d{1,2})?)(?:\s|\||$)'
 )
+
+
+def refresh_source_transaction_index(report: dict, timeout_seconds: int) -> int:
+    """Refresh the ID-bearing live source index after the canonical CSV export.
+
+    The Node export publishes the human-readable canonical ledger, while the
+    Python export preserves Baselane IDs and metadata used by every idempotent
+    mutation lane.  Both artifacts must describe the same live session before
+    cleanup, native splits, or monthly accrual generation may proceed.
+    """
+    report['steps'].append('refresh_source_transaction_index')
+    command = [
+        sys.executable,
+        str(SOURCE_INDEX_EXPORT_SCRIPT),
+        '--report-dir',
+        str(REPORT_DIR),
+    ]
+    refreshed = subprocess.run(
+        command,
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+        timeout=timeout_seconds,
+    )
+    details: dict[str, Any] = {
+        'status': 'ok' if refreshed.returncode == 0 else 'failed',
+        'return_code': refreshed.returncode,
+        'script': str(SOURCE_INDEX_EXPORT_SCRIPT),
+        'stdout_tail': redact_output(refreshed.stdout or '', 2000),
+        'stderr_tail': redact_output(refreshed.stderr or '', 2000),
+    }
+    if refreshed.returncode == 0:
+        try:
+            payload = json.loads((refreshed.stdout or '').strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError):
+            payload = {}
+        source_index = Path(str(payload.get('source_transaction_index') or ''))
+        expected_digest = str(payload.get('source_transaction_index_sha256') or '')
+        if not source_index.is_file() or not expected_digest:
+            details['status'] = 'failed_missing_output_proof'
+            refreshed = subprocess.CompletedProcess(command, 2, refreshed.stdout, refreshed.stderr)
+        else:
+            actual_digest = file_sha256(source_index)
+            details.update(
+                {
+                    'source_transaction_index': str(source_index),
+                    'source_transaction_index_sha256': actual_digest,
+                    'row_count': payload.get('rows'),
+                }
+            )
+            if actual_digest != expected_digest:
+                details['status'] = 'failed_digest_mismatch'
+                refreshed = subprocess.CompletedProcess(command, 2, refreshed.stdout, refreshed.stderr)
+    report['source_transaction_index_refresh'] = details
+    return refreshed.returncode
 
 
 def verified_eco_accrual_row(row: dict[str, Any]) -> tuple[str, str] | None:
@@ -1006,6 +1062,27 @@ def run():
             return 2
         print('FAILED: raw CDP export failed')
         return 4
+
+    try:
+        source_index_rc = refresh_source_transaction_index(report, export_timeout)
+    except subprocess.TimeoutExpired as exc:
+        report['source_transaction_index_refresh'] = {
+            'status': 'failed_timeout',
+            'return_code': None,
+            'script': str(SOURCE_INDEX_EXPORT_SCRIPT),
+            'stdout_tail': redact_output(timeout_output(exc.stdout), 2000),
+            'stderr_tail': redact_output(timeout_output(exc.stderr), 2000),
+        }
+        source_index_rc = 4
+    if source_index_rc != 0:
+        report['status'] = 'review'
+        report['reason'] = 'source_transaction_index_refresh_failed'
+        report['export_failure_class'] = 'baselane_source_transaction_index_refresh_failed'
+        report['finished_at'] = time.time()
+        write_run_report(report)
+        print('REVIEW: ID-bearing Baselane source transaction index did not refresh')
+        return 2
+    write_run_report(report)
 
     if not reconcile_canonical_ledger_from_login_report(ROOT, report):
         report['status'] = 'review'

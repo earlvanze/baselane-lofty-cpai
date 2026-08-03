@@ -379,8 +379,9 @@ def is_source_quality_conflict(item: dict[str, Any]) -> bool:
 
 
 def no_dao_mortgage_property_key(row: dict[str, Any]) -> str | None:
-    haystack = normalize(f"{row.get('Property', '')} {row.get('Account', '')}")
-    raw_haystack = f"{row.get('Property', '')} {row.get('Account', '')}"
+    property_value = text(row.get("Property")).strip()
+    raw_haystack = property_value or text(row.get("Account")).strip()
+    haystack = normalize(raw_haystack)
     if not is_no_dao_mortgage_property_or_state(raw_haystack):
         return None
     for key in NO_DAO_MORTGAGE_PROPERTY_KEYS:
@@ -410,19 +411,29 @@ def raw_no_dao_mortgage_violation_reason(row: dict[str, Any]) -> str:
         )
     )
     merchant = normalize(row.get("Merchant"))
-    if property_key == normalize("90 Madison Ave"):
-        approved_curtailment = (
-            category == "mortgage principal payments"
-            and "approved" in merchant
-            and "noi principal curtailment" in merchant
+    classifications = {category, subcategory}
+    approved_curtailment = (
+        property_key == normalize("90 Madison Ave")
+        and "mortgage principal payments" in classifications
+        and "approved" in merchant
+        and "noi principal curtailment" in merchant
+    )
+    canonical_escrow_component = (
+        (
+            "general escrow payments" in classifications
+            and ("general escrow" in merchant or "mortgage escrow general" in merchant)
         )
-        canonical_escrow_component = (
-            (category == "general escrow payments" and "general escrow" in merchant)
-            or (category == "city state local taxes" and "tax escrow" in merchant)
-            or (category == "rental dwelling" and "rental dwelling escrow" in merchant)
+        or (
+            bool(classifications & {"city state local taxes", "taxes"})
+            and ("tax escrow" in merchant or "mortgage escrow property taxes" in merchant)
         )
-        if approved_curtailment or canonical_escrow_component:
-            return ""
+        or (
+            bool(classifications & {"insurance", "rental dwelling"})
+            and ("rental dwelling escrow" in merchant or "mortgage escrow insurance" in merchant)
+        )
+    )
+    if approved_curtailment or canonical_escrow_component:
+        return ""
     internal_transfer = (
         category == "transfers between accounts"
         or subcategory == "transfers between accounts"

@@ -14,6 +14,7 @@ from typing import Any
 
 
 EOD_TELEGRAM_SEND_APPROVAL_ENV = "BASELANE_EOD_TELEGRAM_SEND_APPROVED"
+REQUIRE_EOD_TELEGRAM_SCHEDULE_ENV = "BASELANE_SCHEDULER_REQUIRE_EOD_TELEGRAM"
 
 JOB_SPECS = [
     {
@@ -26,17 +27,17 @@ JOB_SPECS = [
         "required_scheduler_line_fragment_sets": [
             [
                 "0 9 * * *",
-                'BASELANE_CRON_HUMAN_PACED_FALLBACK=\\"1\\"',
+                '"BASELANE_CRON_HUMAN_PACED_FALLBACK": "1"',
                 "flock -n",
                 "timeout",
-                "baselane_cron_run.sh",
+                "/home/digit/.openclaw/workspace/repos/baselane-lofty-cpai/scripts/baselane_cron_run.sh",
             ],
             [
                 "15 6 * * *",
-                'BASELANE_CRON_HUMAN_PACED_FALLBACK=\\"1\\"',
+                '"BASELANE_CRON_HUMAN_PACED_FALLBACK": "1"',
                 "flock -n",
                 "timeout",
-                "baselane_cron_run.sh",
+                "/home/digit/.openclaw/workspace/repos/baselane-lofty-cpai/scripts/baselane_cron_run.sh",
             ],
         ],
         "required_report_fields": [
@@ -132,6 +133,8 @@ JOB_SPECS = [
         },
     },
 ]
+if os.environ.get(REQUIRE_EOD_TELEGRAM_SCHEDULE_ENV, "0") != "1":
+    JOB_SPECS = [spec for spec in JOB_SPECS if spec.get("name") != "eod_telegram"]
 EOD_ACTIONABLE_MESSAGE_MAX_LINES = 8
 EOD_ACTIONABLE_MESSAGE_MAX_CHARS = 520
 EOD_SEND_PROOF_DUE_HOUR = 22
@@ -153,8 +156,12 @@ OPENCLAW_ALLOWED_BASELANE_BACKUP_JOB_IDS = {
     "baselane-local-model-preflight",
 }
 OPENCLAW_ALLOWED_BASELANE_DECLARATION_KEYS = {
+    "baselane-financials-monthly",
+    "baselane-financials-monthly-recovery",
     "baselane-weekly-file-updates",
 }
+OPENCLAW_CANONICAL_EXT4_REPO = "/home/digit/.openclaw/workspace/repos/baselane-lofty-cpai"
+OPENCLAW_MONTHLY_DISCORD_CODE_ROOT_ENV = "BASELANE_MONTHLY_DISCORD_CODE_ROOT"
 STALE_SYSTEMD_PATH_MARKERS = (
     "/home/umbrel/.openclaw",
     "/home/umbrel/Dropbox",
@@ -183,6 +190,20 @@ def default_root() -> Path:
     if (cwd / "scripts").is_dir() and (cwd / "reports").is_dir():
         return cwd
     return Path(__file__).absolute().parents[1]
+
+
+def resolve_openclaw_root(root: Path) -> Path:
+    configured = str(os.environ.get("OPENCLAW_ROOT") or "").strip()
+    if configured:
+        return Path(configured).expanduser().absolute()
+    absolute_root = root.expanduser().absolute()
+    for candidate in (absolute_root, *absolute_root.parents):
+        if candidate.name == ".openclaw":
+            return candidate
+    default = Path.home() / ".openclaw"
+    if default.is_dir():
+        return default
+    return absolute_root.parent
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -769,8 +790,11 @@ def normalize_openclaw_cron_jobs(raw: str, path: Path) -> tuple[str, list[str], 
         schedule_kind = str(schedule.get("kind") or "").strip().lower()
         normalized_record = {
             "id": job_id,
+            "declarationKey": job.get("declarationKey"),
             "name": job_name,
             "enabled": True,
+            "agentId": job.get("agentId"),
+            "sessionTarget": job.get("sessionTarget"),
             "schedule": schedule,
             "payload": job.get("payload"),
             "delivery": job.get("delivery"),
@@ -781,6 +805,53 @@ def normalize_openclaw_cron_jobs(raw: str, path: Path) -> tuple[str, list[str], 
         else:
             lines.append(json.dumps(normalized_record, sort_keys=True))
     return "\n".join(lines), issues, ignored_records
+
+
+def openclaw_payload_env_value(payload: dict[str, Any], key: str) -> str:
+    env = payload.get("env") if isinstance(payload.get("env"), dict) else {}
+    if key in env:
+        return str(env[key]).strip()
+
+    command_parts = [str(payload.get("message") or "")]
+    if isinstance(payload.get("argv"), list):
+        command_parts.extend(str(value) for value in payload["argv"])
+    command_text = " ".join(command_parts)
+    match = re.search(
+        rf"(?:^|\s){re.escape(key)}=(?:['\"])?([^\s'\";]+)",
+        command_text,
+    )
+    return match.group(1) if match else ""
+
+
+def openclaw_monthly_comms_policy_allowed(payload: dict[str, Any]) -> bool:
+    required = {
+        "SEND_MONTHLY_DISCORD_REVIEW_DRAFTS": "1",
+        "SEND_MONTHLY_DISCORD_PROPERTY_UPDATE": "0",
+        "SEND_OWNER_EMAILS": "0",
+        "SEND_NATIVE_LOFTY_OWNER_EMAILS": "0",
+        "SEND_NON_NATIVE_OWNER_EMAILS": "0",
+        "SEND_TRANSFER_RECONCILIATION_TELEGRAM": "0",
+    }
+    return all(openclaw_payload_env_value(payload, key) == expected for key, expected in required.items())
+
+
+def openclaw_ext4_execution_allowed(payload: dict[str, Any], script_name: str) -> bool:
+    script_path = f"{OPENCLAW_CANONICAL_EXT4_REPO}/scripts/{script_name}"
+    payload_text = json.dumps(payload, sort_keys=True)
+    return (
+        str(payload.get("cwd") or "").rstrip("/") == OPENCLAW_CANONICAL_EXT4_REPO
+        and openclaw_payload_env_value(payload, "WORKSPACE_ROOT").rstrip("/")
+        == OPENCLAW_CANONICAL_EXT4_REPO
+        and script_path in payload_text
+    )
+
+
+def openclaw_monthly_ext4_execution_allowed(payload: dict[str, Any], script_name: str) -> bool:
+    return (
+        openclaw_ext4_execution_allowed(payload, script_name)
+        and openclaw_payload_env_value(payload, OPENCLAW_MONTHLY_DISCORD_CODE_ROOT_ENV).rstrip("/")
+        == OPENCLAW_CANONICAL_EXT4_REPO
+    )
 
 
 def openclaw_baselane_backup_job_allowed(job: dict[str, Any]) -> bool:
@@ -797,43 +868,71 @@ def openclaw_baselane_backup_job_allowed(job: dict[str, Any]) -> bool:
     payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
     payload_text = json.dumps(payload, sort_keys=True).lower()
     if job_id == "baselane-daily-sync":
-        return (
+        base_allowed = (
             job.get("agentId") == "cron-network"
             and job.get("sessionTarget") == "isolated"
             and "baselane_cron_run.sh" in payload_text
+            and openclaw_payload_env_value(payload, "BASELANE_CRON_HUMAN_PACED_FALLBACK") == "1"
+            and openclaw_ext4_execution_allowed(payload, "baselane_cron_run.sh")
+        )
+        if payload.get("kind") == "command":
+            return base_allowed
+        return bool(
+            base_allowed
             and "no_reply" in payload_text
             and "do not use message tool" in payload_text
             and "reports/baselane_daily_run_report.json" in payload_text
         )
-    if job_id == "baselane-financials-monthly":
-        return (
+    if job_id == "baselane-financials-monthly" or declaration_key == "baselane-financials-monthly":
+        base_allowed = (
             job.get("agentId") == "cron-network"
             and job.get("sessionTarget") == "isolated"
             and "baselane_financials_monthly_cron.sh" in payload_text
-            and "dry_run=0" in payload_text
-            and "baselane_monthly_live_actions_approved=1" in payload_text
-            and "auto_approve_safe_review_candidates=1" in payload_text
-            and "apply_lofty_guarded_updates=1" in payload_text
-            and "send_native_lofty_owner_emails=1" in payload_text
-            and "yhome_gsheet_apply=1" in payload_text
-            and "yhome_gsheet_write_enabled=1" in payload_text
+            and openclaw_payload_env_value(payload, "DRY_RUN") == "0"
+            and openclaw_payload_env_value(payload, "BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED") == "1"
+            and openclaw_payload_env_value(payload, "AUTO_APPROVE_SAFE_REVIEW_CANDIDATES") == "1"
+            and openclaw_payload_env_value(payload, "APPLY_LOFTY_GUARDED_UPDATES") == "1"
+            and openclaw_payload_env_value(payload, "YHOME_GSHEET_APPLY") == "1"
+            and openclaw_payload_env_value(payload, "YHOME_GSHEET_WRITE_ENABLED") == "1"
+            and openclaw_monthly_comms_policy_allowed(payload)
+            and openclaw_monthly_ext4_execution_allowed(
+                payload, "baselane_financials_monthly_cron.sh"
+            )
+        )
+        if payload.get("kind") == "command":
+            return base_allowed
+        return bool(
+            base_allowed
+            and job.get("sessionTarget") == "isolated"
             and "must not downgrade" in payload_text
             and "no_reply" in payload_text
             and "do not use message tool" in payload_text
             and "reports/baselane_financials_monthly_run_report.json" in payload_text
         )
-    if job_id == "baselane-financials-monthly-recovery":
-        return (
+    if (
+        job_id == "baselane-financials-monthly-recovery"
+        or declaration_key == "baselane-financials-monthly-recovery"
+    ):
+        base_allowed = (
             job.get("agentId") == "cron-network"
             and job.get("sessionTarget") == "isolated"
             and "baselane_financials_monthly_recovery_cron.sh" in payload_text
-            and "dry_run=0" in payload_text
-            and "baselane_monthly_live_actions_approved=1" in payload_text
-            and "auto_approve_safe_review_candidates=1" in payload_text
-            and "apply_lofty_guarded_updates=1" in payload_text
-            and "send_native_lofty_owner_emails=1" in payload_text
-            and "yhome_gsheet_apply=1" in payload_text
-            and "yhome_gsheet_write_enabled=1" in payload_text
+            and openclaw_payload_env_value(payload, "DRY_RUN") == "0"
+            and openclaw_payload_env_value(payload, "BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED") == "1"
+            and openclaw_payload_env_value(payload, "AUTO_APPROVE_SAFE_REVIEW_CANDIDATES") == "1"
+            and openclaw_payload_env_value(payload, "APPLY_LOFTY_GUARDED_UPDATES") == "1"
+            and openclaw_payload_env_value(payload, "YHOME_GSHEET_APPLY") == "1"
+            and openclaw_payload_env_value(payload, "YHOME_GSHEET_WRITE_ENABLED") == "1"
+            and openclaw_monthly_comms_policy_allowed(payload)
+            and openclaw_monthly_ext4_execution_allowed(
+                payload, "baselane_financials_monthly_recovery_cron.sh"
+            )
+        )
+        if payload.get("kind") == "command":
+            return base_allowed
+        return bool(
+            base_allowed
+            and job.get("sessionTarget") == "isolated"
             and "must not downgrade" in payload_text
             and "no_reply" in payload_text
             and "do not use message tool" in payload_text
@@ -845,10 +944,16 @@ def openclaw_baselane_backup_job_allowed(job: dict[str, Any]) -> bool:
             and "outputmaxbytes" in payload_text
         )
     if declaration_key == "baselane-weekly-file-updates":
-        return (
+        base_allowed = (
             job.get("agentId") == "cron-network"
             and job.get("sessionTarget") == "isolated"
             and "baselane_weekly_file_updates_cron.sh" in payload_text
+            and openclaw_ext4_execution_allowed(payload, "baselane_weekly_file_updates_cron.sh")
+        )
+        if payload.get("kind") == "command":
+            return base_allowed
+        return bool(
+            base_allowed
             and "no_reply" in payload_text
             and "do not use message tool" in payload_text
         )
@@ -1057,7 +1162,7 @@ def scheduler_actionable_summary(root: Path, issues: list[str]) -> dict[str, Any
         }
     runtime_config_issues = scheduler_openclaw_runtime_config_issues(issues)
     if runtime_config_issues:
-        config_path = Path(os.environ.get("OPENCLAW_ROOT") or root.parent) / "openclaw.json"
+        config_path = resolve_openclaw_root(root) / "openclaw.json"
         return {
             "actionable_blocker_count": 1,
             "primary_blocker": {
@@ -1109,7 +1214,11 @@ def write_scheduler_remediation_script(root: Path, actionable_summary: dict[str,
     digest = str(actionable_summary.get("remediation_digest") or "")
     job_ids = [str(record.get("job_id") or "") for record in records if record.get("job_id")]
     sources = sorted({str(record.get("source") or "") for record in records if record.get("source")})
-    jobs_json = sources[0] if len(sources) == 1 else str(root.parent / "cron" / "jobs.json")
+    jobs_json = (
+        sources[0]
+        if len(sources) == 1
+        else str(resolve_openclaw_root(root) / "cron" / "jobs.json")
+    )
     job_args = " ".join(f"--disable-job-id {json.dumps(job_id)}" for job_id in job_ids)
     commands_file.write_text(
         "\n".join(
@@ -1154,7 +1263,7 @@ def read_scheduler_sources(root: Path) -> tuple[list[dict[str, str]], list[str],
         errors.append(systemd_error)
     errors.extend(systemd_user_unit_stale_path_issues())
 
-    openclaw_root = Path(os.environ.get("OPENCLAW_ROOT") or root.parent)
+    openclaw_root = resolve_openclaw_root(root)
     sqlite_raw, sqlite_path, sqlite_errors = read_openclaw_sqlite_cron_jobs(openclaw_root)
     errors.extend(sqlite_errors)
     source_paths = []

@@ -20,8 +20,9 @@ if [ -z "$REAL_ESTATE_ROOT" ]; then
   done
 fi
 REAL_ESTATE_ROOT="${REAL_ESTATE_ROOT:-/mnt/c/Users/digit/Dropbox/Real Estate}"
-PERSONAL_ROOT="${BASELANE_PERSONAL_STATEMENTS_ROOT:-$ROOT/pdf-extracts/personal/07 - P&L & Owner Statements/Bank Statements}"
-HOLDINGS_ROOT="${BASELANE_HOLDINGS_STATEMENTS_ROOT:-$ROOT/pdf-extracts/business-holdings/07 - P&L & Owner Statements/Bank Statements}"
+DROPBOX_ROOT="${BASELANE_DROPBOX_ROOT:-$(dirname "$REAL_ESTATE_ROOT")}"
+PERSONAL_ROOT="${BASELANE_PERSONAL_STATEMENTS_ROOT:-$DROPBOX_ROOT/Finances/Bank Statements/Baselane}"
+HOLDINGS_ROOT="${BASELANE_HOLDINGS_STATEMENTS_ROOT:-$DROPBOX_ROOT/Entities}"
 REPORT="${BASELANE_MONTHLY_STATEMENTS_REPORT:-$ROOT/reports/baselane_monthly_run_report.json}"
 LOCKDIR="${BASELANE_MONTHLY_STATEMENTS_LOCKDIR:-$ROOT/tmp/baselane-monthly.lock}"
 PY="${PYTHON_BIN:-python3}"
@@ -94,7 +95,8 @@ echo "=== Baselane Monthly Statements ${PREV_YEAR}-${PREV_MONTH} ==="
   --downloads "$DOWNLOAD_DIR" \
   --real-estate "$REAL_ESTATE_ROOT" \
   --personal "$PERSONAL_ROOT" \
-  --holdings "$HOLDINGS_ROOT"
+  --holdings "$HOLDINGS_ROOT" \
+  --target-month-cleanup-only
 "$PY" - <<PY
 import json, pathlib, datetime as dt
 report = {

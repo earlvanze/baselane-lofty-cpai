@@ -20,12 +20,18 @@ from typing import Any, Iterator
 
 
 ROOT = Path("/home/digit/.openclaw/workspace")
+REPO_ROOT = Path(__file__).absolute().parents[1]
 DROPBOX_REPORTS = Path(
     "/mnt/c/Users/digit/Dropbox/Projects/cyber-gateway/config/openclaw/workspace/reports"
 )
 DEFAULT_PLAN = DROPBOX_REPORTS / "baselane_full_property_coverage_plan.json"
 DEFAULT_REPORT = DROPBOX_REPORTS / "baselane_full_property_coverage_apply.json"
-BRIDGE = ROOT / "scripts" / "baselane_graphql_via_cdp.js"
+BRIDGE = Path(
+    os.environ.get(
+        "BASELANE_GQL_BRIDGE",
+        str(REPO_ROOT / "scripts" / "baselane_graphql_via_cdp.js"),
+    )
+)
 LOCK_PATH = Path(
     os.environ.get("BASELANE_SOURCE_PIPELINE_LOCK", "/tmp/baselane-source-pipeline.lock")
 )
@@ -45,7 +51,7 @@ query Transactions($input: SortsAndFilters) {
     total
     data {
       id amount date merchantName description name pending propertyId tagId
-      unitId note
+      unitId note bankAccountId isManual tagIdSource propertyTagIdSource
       isSplit parentId hidden isDeleted
     }
   }

@@ -41,6 +41,7 @@ FINANCIALS_SUMMARY_MARKERS = (
     "Financial detail:",
     "Financial summary from FINANCIALS.md:",
     "Financial summary as of ",
+    "Actual ",
 )
 SOLD_PROPERTY_NAME_MARKERS = (
     "9919 S Oglesby",
@@ -232,6 +233,9 @@ def load_candidates(index_csv: Path, candidate_packet_report: Path | None = None
                     "route_matched": result.get("route_matched") is True,
                     "target": result.get("target"),
                     "guild_id": result.get("guild_id"),
+                    "guild_name": discord_route.LOFTY_GUILD_NAME,
+                    "destination_purpose": discord_route.DESTINATION_PURPOSE,
+                    "human_approval_required": True,
                     "route_report": route_report,
                     "envelope": envelope,
                 }
@@ -369,6 +373,10 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "valid": valid and not issues,
         "posted": posted and not issues,
         "post_status": "posted" if posted and not issues else "not_posted",
+        "destination_purpose": discord_route.DESTINATION_PURPOSE,
+        "human_approval_required": True,
+        "approval_scope": "lofty_guild_financial_summary_publish",
+        "guild_name": discord_route.LOFTY_GUILD_NAME,
         "run_month": args.run_month,
         "path": str(args.report),
         "message_file": str(message_file),
@@ -394,6 +402,9 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "route_matched",
                 "target",
                 "guild_id",
+                "guild_name",
+                "destination_purpose",
+                "human_approval_required",
             )
         },
         "target": selected.get("target"),
@@ -404,7 +415,9 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "posted_at": args.posted_at or None,
         "evidence_required": ["posted_message_id", "posted_channel_id", "posted_at", "digest", "run_month"],
         "next_action": (
-            "After explicit approval, post message_file to the selected Lofty guild property channel, then rerun this script with --posted-message-id and --posted-channel-id."
+            "This is a Lofty Investors publication candidate. After property-specific human approval, post "
+            "message_file to the selected Lofty guild property channel, then rerun this script with "
+            "--posted-message-id and --posted-channel-id."
             if not posted
             else "Guild property-channel test post evidence recorded; owner email gate may proceed if all other monthly guards are clean."
         ),

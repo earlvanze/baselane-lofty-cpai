@@ -2842,18 +2842,21 @@ def monthly_candidate_file_consistency_issues(record: dict, summary: dict, prope
         text = update_candidate.read_text(encoding="utf-8", errors="replace")
         expected_reserve_line = f"- Lofty-held current maintenance reserve: {reserve}"
         expected_eco_line = f"- ECO GL Column E sum: {eco_sum} ({row_count} rows)"
+        balance_reserve_line = f"- Lofty Operating Reserve: {reserve}"
+        balance_eco_line = f"- ECO Net DAO Funds (spendable cash held by ECO): {eco_cash}"
         concise_reserve_line = f"Lofty Operating Cash: {reserve} (Lofty curr_maintenance_reserve)"
         concise_eco_line = f"ECO Operating Cash: {eco_cash} (ECO Systems General Ledger Column E ({cash_row_count} rows))"
         concise_gl_line = f"ECO General Ledger: {eco_sum} (ECO Systems General Ledger Column E ({row_count} rows))"
         sentence_eco_line = f"ECO Operating Cash is {eco_cash} from the full ECO Systems General Ledger Column E balance."
         position_eco_line = f"ECO GL Column E position is {eco_sum}"
-        if expected_reserve_line not in text and concise_reserve_line not in text:
+        if expected_reserve_line not in text and concise_reserve_line not in text and balance_reserve_line not in text:
             issues.append(issue("monthly_candidate_update_reserve_summary_mismatch", f"{property_name}:{expected_reserve_line}"))
         if (
             concise_eco_line not in text
             and sentence_eco_line not in text
             and position_eco_line not in text
             and expected_eco_line not in text
+            and balance_eco_line not in text
         ):
             issues.append(issue("monthly_candidate_update_eco_summary_mismatch", f"{property_name}:{expected_eco_line}"))
         for match in re.finditer(r"Lofty Operating Cash of (Not available|-?\$[\d,]+\.\d{2})", text, re.I):

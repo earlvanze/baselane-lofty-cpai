@@ -1,0 +1,68 @@
+{
+  "version": "2026-08-02.1",
+  "effective_month": "2026-07",
+  "authority": "The current Schedule of Real Estate Owned supplies physical-property and DAO membership. A fresh Lofty manager snapshot may add only explicitly configured live-ready properties omitted from the schedule. DAO grouping determines reporting targets; it never reduces physical-property coverage.",
+  "expected_counts": {
+    "active_physical_properties": 32,
+    "active_reporting_targets": 30
+  },
+  "schedule": {
+    "workbook_candidates": [
+      "/mnt/c/Users/digit/Dropbox/Real Estate/Lofty PM/Earl Co - Schedule of Real Estate Owned.xlsx"
+    ],
+    "worksheet": "Sheet1",
+    "active_marker": "Yes",
+    "required_columns": [
+      "Address",
+      "On Lofty?",
+      "DAO"
+    ]
+  },
+  "manager_snapshot_candidates": [
+    "reports/lofty-pm-current/get-manager-properties.full-response.json"
+  ],
+  "legacy_index_candidates": [
+    "/home/digit/.openclaw/workspace-lofty-vp/updates/2026-07-portfolio-update-index.csv"
+  ],
+  "property_map": "skills/lofty-pm/config/property_update_map.json",
+  "listing_update_policy": "config/lofty_listing_update_policy.json",
+  "live_ready_additions": [
+    {
+      "address": "49 Bannbury Ln, Palm Coast, FL 32137",
+      "dao": "Cherry LFTY0412 DAO LLC",
+      "reason": "Live Lofty manager property is ready but the current ownership schedule omits it.",
+      "property_path": "/mnt/c/Users/digit/Dropbox/Real Estate/FL/49 Bannbury Ln, Palm Coast, FL 32137"
+    }
+  ],
+  "reporting_target_overrides": [
+    {
+      "dao": "Lofty Holding 1518 Dille Road DAO LLC",
+      "managed_name": "Ohio 3 Property Package",
+      "property_path": "/mnt/c/Users/digit/Dropbox/Real Estate/OH/Ohio 3-Property Package"
+    },
+    {
+      "dao": "Lofty Holding 7542 & 7656 S Colfax Avenue DAO LLC",
+      "managed_name": "7542 and 7656 S Colfax Ave",
+      "property_path": "/mnt/c/Users/digit/Dropbox/Real Estate/IL/7542 and 7656 S Colfax Ave, Chicago, IL 60649"
+    }
+  ],
+  "property_path_overrides": [
+    {
+      "address": "724 3rd Avenue, Watervliet, NY 12189",
+      "property_path": "/mnt/c/Users/digit/Dropbox/Real Estate/NY/724 3rd Ave, Watervliet, NY 12189"
+    },
+    {
+      "address": "2094 W 34th Pl Cleveland, OH 44113",
+      "property_path": "/mnt/c/Users/digit/Dropbox/Real Estate/OH/2094 W 34th Place, Cleveland, OH 44113"
+    },
+    {
+      "address": "665 Chapman St, Edwardsville, IL 62025",
+      "property_path": "/mnt/c/Users/digit/Dropbox/Real Estate/IL/665 Chapman St, Edwardsville, IL 62025"
+    }
+  ],
+  "exclusion_rules": {
+    "sold_policy_is_authoritative": true,
+    "operational_policy_requires_split_exclude": true,
+    "selling_is_active": true
+  }
+}

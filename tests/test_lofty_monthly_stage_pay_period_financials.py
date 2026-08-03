@@ -4,9 +4,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import unittest
+import sys
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "lofty_monthly_stage_pay_period_financials.py"
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("stage_pay_period", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
@@ -14,6 +16,45 @@ SPEC.loader.exec_module(MODULE)
 
 
 class LoftyPayPeriodStagingTests(unittest.TestCase):
+    def test_categoryless_short_term_rent_split_is_included_in_pay_period_totals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "umland.csv"
+            with ledger.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "Date",
+                        "Merchant",
+                        "Description",
+                        "Amount",
+                        "Type",
+                        "Category",
+                        "Sub-category",
+                        "Notes",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "Date": "July 2, 2026",
+                        "Merchant": "Airbnb",
+                        "Description": "Split child",
+                        "Amount": "1646.95",
+                    }
+                )
+                writer.writerow(
+                    {
+                        "Date": "July 3, 2026",
+                        "Merchant": "Booking.com",
+                        "Description": "Refund",
+                        "Amount": "-25.00",
+                    }
+                )
+
+            totals = MODULE.ledger_buckets(ledger, "2026-07")
+
+        self.assertEqual(totals["rents"], 1646.95)
+
     def build_record(self, ledger_path: Path) -> dict:
         with ledger_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(

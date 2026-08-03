@@ -23,7 +23,7 @@ const TRACKER = process.env.BASELANE_LEDGER_DIR || path.join(DROPBOX_ROOT, 'Proj
 const OUT_PATH = process.env.BASELANE_LEDGER_PATH || path.join(TRACKER, 'ECO Systems General Ledger.csv');
 const versionUrl = process.env.BASELANE_CDP_VERSION_URL || 'http://[::1]:9222/json/version';
 const maxPages = Number(process.env.BASELANE_MAX_PAGES || 200);
-const pageLimit = Number(process.env.BASELANE_PAGE_LIMIT || 200);
+const pageLimit = Number(process.env.BASELANE_PAGE_LIMIT || 500);
 const MIN_ROWS = Number(process.env.BASELANE_MIN_ROWS || 6000);
 const MAX_ROWS = Number(process.env.BASELANE_MAX_ROWS || 25000);
 const commandTimeoutMs = Math.max(1000, Number(process.env.BASELANE_EXPORT_CDP_COMMAND_TIMEOUT_MS || 30000));
@@ -36,6 +36,7 @@ const requestDelay = () => delay(requestDelayMs);
 const authPollDelay = () => delay(authPollDelayMs);
 
 const EXCLUDE_RAW = [
+  '1 Coolwood Dr.', '1 Coolwood Dr',
   '3880 Dover St.', '3880 Dover St', 'Crypto Investments',
   'Dome', 'EVCO Holdings', 'Mining, Sales, Consulting, and PM',
   'Mining, Sales, Consulting, & PM', 'NARWALL Holdings', 'Personal', 'Vehicles',
@@ -44,6 +45,7 @@ function normalizeName(v) {
   return String(v || '').trim().toLowerCase().replaceAll('&', ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 const EXCLUDE_NORM = new Set(EXCLUDE_RAW.map(normalizeName));
+const ECO_SOURCE_PROPERTY_NORM = normalizeName('Mining, Sales, Consulting, and PM');
 const ECO_ACCRUAL_NOTE = /^AOPS-(?:(?:MONTHLY|OHIL|PAU|PNL)-ACCRUAL|PM-FEE)\|(dao_eco|pm_eco)\|([^|]+)\|(\d{4}-\d{2})\|(-?\d+(?:\.\d{1,2})?)(?:\s|\||$)/;
 
 function ecoAccrualTargetProperty(row) {
@@ -360,7 +362,8 @@ async function main() {
     if (page > 1) await requestDelay();
 
     const input = {
-      sort: {direction: 'DESC', field: 'date'},
+      // Stable pagination prevents same-date manual rows from drifting between pages.
+      sort: {direction: 'DESC', field: 'id'},
       filter: {search: '', isHidden: false, isDeleted: false},
       page,
       pageLimit,
@@ -386,7 +389,13 @@ async function main() {
         Category: tagPair[1],
         Notes: noteText(tx.note),
       };
-      const excludedEcoTarget = ecoAccrualTargetProperty(row);
+      const sourceProperty = propMap[pid] || '';
+      const candidateEcoTarget = normalizeName(sourceProperty) === ECO_SOURCE_PROPERTY_NORM
+        ? ecoAccrualTargetProperty(row)
+        : '';
+      const excludedEcoTarget = candidateEcoTarget && !EXCLUDE_NORM.has(normalizeName(candidateEcoTarget))
+        ? candidateEcoTarget
+        : '';
       if (!selectedPropertyIds.has(pid) && !excludedEcoTarget) continue;
       rows.push([
         excludedEcoTarget || propMap[pid] || pid,

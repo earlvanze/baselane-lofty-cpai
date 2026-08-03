@@ -6,7 +6,10 @@ cd "$ROOT"
 
 python3 -m compileall -q scripts skills/baselane-mcp/src skills/baselane-financials/scripts
 python3 -c 'import openpyxl' >/dev/null
-python3 -m unittest discover -s tests -p 'test_*.py' >/dev/null
+# Scope discovery to the canonical test directory. The repository intentionally
+# contains runtime symlinks (reports and companion skills); unconstrained pytest
+# discovery can traverse those external trees and hang before collecting tests.
+python3 -m pytest -q tests
 
 while IFS= read -r -d '' script; do
   bash -n "$script"

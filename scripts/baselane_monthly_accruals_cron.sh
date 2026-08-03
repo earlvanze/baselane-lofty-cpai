@@ -9,6 +9,8 @@
 #   BASELANE_MONTHLY_ACCRUALS_MONTH - target accrual month YYYY-MM (defaults to previous month)
 #   BASELANE_MONTHLY_ACCRUALS_DRY_RUN - set to 1 for dry-run only
 #   BASELANE_MONTHLY_ACCRUALS_APPLY - set to 1 to append to the local GL CSV (default: 0)
+#   BASELANE_MONTHLY_ACCRUALS_REPORTING_CUTOFF_DATE - close boundary YYYY-MM-DD;
+#     falls back to BASELANE_REPORTING_CUTOFF_DATE or REPORTING_CUTOFF_DATE
 #   BASELANE_MONTHLY_ACCRUALS_ACTIVE_PROPERTY_MAP - active property map requiring accrual template coverage
 #   BASELANE_PM_RATE_SCHEDULE - bookkeeping workbook containing per-property PM fee percentages
 #   BASELANE_LOFTY_RESERVE_SNAPSHOT - fresh get-manager-properties response used by the co-ownership OR policy
@@ -77,6 +79,7 @@ fi
 
 DRY_RUN="${BASELANE_MONTHLY_ACCRUALS_DRY_RUN:-0}"
 APPLY="${BASELANE_MONTHLY_ACCRUALS_APPLY:-0}"
+ACCRUAL_REPORTING_CUTOFF_DATE="${BASELANE_MONTHLY_ACCRUALS_REPORTING_CUTOFF_DATE:-${BASELANE_REPORTING_CUTOFF_DATE:-${REPORTING_CUTOFF_DATE:-}}}"
 
 ACCRUAL_ARGS=(
   --gl-csv "$BASELANE_LEDGER_PATH"
@@ -88,6 +91,9 @@ ACCRUAL_ARGS=(
   --gap-approval-import-commands "${BASELANE_MONTHLY_ACCRUALS_GAP_APPROVAL_IMPORT_COMMANDS:-$REPORT_DIR/baselane_monthly_accrual_gap_approvals_import.requires-explicit-approval.sh}"
   --update-amount-mismatches
 )
+if [ -n "$ACCRUAL_REPORTING_CUTOFF_DATE" ]; then
+  ACCRUAL_ARGS+=(--reporting-cutoff-date "$ACCRUAL_REPORTING_CUTOFF_DATE")
+fi
 
 HEMLANE_LIVE_TRANSACTIONS="${BASELANE_HEMLANE_LIVE_TRANSACTIONS_REPORT:-$REPORT_DIR/hemlane_live_transactions.json}"
 if [ -f "$HEMLANE_LIVE_TRANSACTIONS" ]; then

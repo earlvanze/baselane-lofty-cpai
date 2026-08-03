@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import hashlib
 import sys
 from pathlib import Path
 
@@ -12,6 +13,35 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import baselane_sync_cdp_deterministic as sync
+
+
+def test_source_index_refresh_requires_current_digest_proof(tmp_path, monkeypatch):
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    source_index = reports / "baselane_source_transaction_index.csv"
+    source_index.write_text("BaselaneId\n123\n", encoding="utf-8")
+    digest = hashlib.sha256(source_index.read_bytes()).hexdigest()
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "status": "ok",
+                "rows": 1,
+                "source_transaction_index": str(source_index),
+                "source_transaction_index_sha256": digest,
+            }
+        )
+        stderr = ""
+
+    monkeypatch.setattr(sync, "REPORT_DIR", reports)
+    monkeypatch.setattr(sync.subprocess, "run", lambda *args, **kwargs: Result())
+    report = {"steps": []}
+
+    assert sync.refresh_source_transaction_index(report, 30) == 0
+    assert report["steps"] == ["refresh_source_transaction_index"]
+    assert report["source_transaction_index_refresh"]["status"] == "ok"
+    assert report["source_transaction_index_refresh"]["source_transaction_index_sha256"] == digest
 
 
 def test_storage_paths_use_one_existing_dropbox_lane(tmp_path):

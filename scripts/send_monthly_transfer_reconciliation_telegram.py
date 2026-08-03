@@ -472,10 +472,12 @@ def main(argv: list[str] | None = None) -> int:
     payload["blocked_report_delivery_allowed"] = blocked_delivery_allowed
     payload["transfer_actions_safe_to_move"] = transfer_report.get("bank_transfer_actions_final") is True
 
-    token, chat_id = telegram.telegram_config()
+    live_send = bool(args.send and not args.dry_run)
+    token, chat_id = telegram.telegram_config() if live_send else ("", "")
+    payload["telegram_config_checked"] = live_send
     payload["telegram_token_present"] = bool(token)
     payload["telegram_chat_id_present"] = bool(chat_id)
-    if args.send and not args.dry_run:
+    if live_send:
         if quality_issues:
             payload.update({"status": "failed", "issue": "message quality/report validation failed"})
             write_report(args.report, payload)

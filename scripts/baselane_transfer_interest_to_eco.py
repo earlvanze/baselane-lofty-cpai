@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
+import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -18,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills" / "baselane-mcp" / "src"))
 
 from baselane_mcp.transfers import (  # noqa: E402
+    TransferAuthenticationRequired,
     build_transfer_plan,
     execute_transfer,
     list_active_transfer_accounts,
@@ -33,13 +37,14 @@ from baselane_settle_madison_pm_mortgage import (  # noqa: E402
 
 
 REPORT = WORKSPACE / "reports" / "baselane_live_dao_cash_reconciliation.json"
+SOURCE_INDEX = WORKSPACE / "reports" / "baselane_source_transaction_index.csv"
 STATE = ROOT / "reports" / "baselane_interest_transfer_state.json"
 DRY_RUN = ROOT / "reports" / "baselane_interest_transfer_dry_run.json"
 APPLIED = ROOT / "reports" / "baselane_interest_transfer_applied.json"
 AUDIT_ONLY = ROOT / "reports" / "baselane_interest_transfer_audit_only.json"
+FOLD_MFA = ROOT / "scripts" / "baselane_fold7_mfa.py"
 ECO_TRANSFER_ACCOUNT_ID = 29732
 TAG_ID = "24"
-MARKER = "ECO bank interest through June 2026"
 CENT = Decimal("0.01")
 
 PROPERTY_IDS = {
@@ -70,8 +75,8 @@ def alphanumeric(value: str) -> str:
     return " ".join("".join(ch if ch.isalnum() else " " for ch in value).split())
 
 
-def load_reconciliation() -> dict[str, Any]:
-    payload = json.loads(REPORT.read_text(encoding="utf-8"))
+def load_reconciliation(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("status") != "ok":
         raise RuntimeError("cash reconciliation report is not status=ok")
     if payload.get("issues"):
@@ -81,10 +86,28 @@ def load_reconciliation() -> dict[str, Any]:
     return payload
 
 
-def completed_confirmation_tokens() -> set[str]:
-    if not STATE.is_file():
+def source_property_ids(path: Path) -> dict[str, str]:
+    """Return only unambiguous property IDs from the canonical source index."""
+    candidates: dict[str, set[str]] = {}
+    if not path.is_file():
+        return {}
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            name = str(row.get("Property") or "").strip()
+            property_id = str(row.get("PropertyId") or "").strip()
+            if name and property_id.isdigit():
+                candidates.setdefault(name, set()).add(property_id)
+    return {
+        name: next(iter(values))
+        for name, values in candidates.items()
+        if len(values) == 1
+    }
+
+
+def completed_confirmation_tokens(state_path: Path = STATE) -> set[str]:
+    if not state_path.is_file():
         return set()
-    payload = json.loads(STATE.read_text(encoding="utf-8"))
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
     transfers = payload.get("transfers") or {}
     return {
         str(token)
@@ -107,8 +130,11 @@ def build_specs(
     *,
     selected_properties: set[str] | None,
     completed_tokens: set[str] | None = None,
+    property_ids: dict[str, str] | None = None,
+    through_month: str,
 ) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]], list[str]]:
     completed_tokens = completed_tokens or set()
+    property_ids = property_ids or PROPERTY_IDS
     live_rows = list_active_transfer_accounts(graphql)
     live = {int(row["transfer_account_id"]): row for row in live_rows}
     issues: list[str] = []
@@ -122,7 +148,7 @@ def build_specs(
         row["property"]
         for row in report["properties"]
         if money(row.get("validated_interest_cash_transfer")) > 0
-        and row["property"] not in PROPERTY_IDS
+        and row["property"] not in property_ids
     )
     if missing_ids:
         issues.append(f"missing Baselane property IDs: {missing_ids}")
@@ -138,7 +164,7 @@ def build_specs(
         expected_total = money(prop.get("validated_interest_cash_transfer"))
         if expected_total <= 0:
             continue
-        if property_name not in PROPERTY_IDS:
+        if property_name not in property_ids:
             continue
 
         account_rows = {
@@ -178,10 +204,10 @@ def build_specs(
             live_balance = money(live_account["available_balance"])
             floor = principal_floor(report_account)
             note = alphanumeric(
-                f"{MARKER} {property_name} source {transfer_id}"
+                f"ECO bank interest through {through_month} {property_name} source {transfer_id}"
             )
             label = (
-                f"ECO interest | {property_name} | through 2026-06 | "
+                f"ECO interest | {property_name} | through {through_month} | "
                 f"{source['nickname']}"
             )
             plan = build_transfer_plan(
@@ -189,7 +215,7 @@ def build_specs(
                 to_transfer_account_id=ECO_TRANSFER_ACCOUNT_ID,
                 amount=amount,
                 bookkeeping_note=note,
-                property_id=PROPERTY_IDS[property_name],
+                property_id=property_ids[property_name],
                 tag_id=TAG_ID,
                 same_day=True,
             )
@@ -203,7 +229,7 @@ def build_specs(
             specs.append(
                 {
                     "property": property_name,
-                    "property_id": PROPERTY_IDS[property_name],
+                    "property_id": property_ids[property_name],
                     "active": bool(prop.get("active")),
                     "source_kind": source["source"],
                     "source_nickname": source["nickname"],
@@ -231,6 +257,7 @@ def public_plan(
     live: dict[int, dict[str, Any]],
     issues: list[str],
     report: dict[str, Any],
+    through_month: str,
 ) -> dict[str, Any]:
     total = sum((money(row["amount"]) for row in specs), Decimal("0"))
     return {
@@ -242,7 +269,7 @@ def public_plan(
             "destination_transfer_account_id": ECO_TRANSFER_ACCOUNT_ID,
             "tag_id": TAG_ID,
             "category": "Transfers Between Accounts",
-            "period": "through 2026-06",
+            "period": f"through {through_month}",
             "one_transfer_per_physical_source_account": True,
             "security_and_reserve_principal_preserved": True,
             "active_property_protected_minimum_preserved": True,
@@ -366,6 +393,17 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--audit-only", action="store_true")
     parser.add_argument("--digest")
+    parser.add_argument("--report", type=Path, default=REPORT)
+    parser.add_argument("--source-index", type=Path, default=SOURCE_INDEX)
+    parser.add_argument("--state", type=Path, default=STATE)
+    parser.add_argument("--dry-run-report", type=Path, default=DRY_RUN)
+    parser.add_argument("--applied-report", type=Path, default=APPLIED)
+    parser.add_argument("--through-month", help="Inclusive YYYY-MM accounting cutoff")
+    parser.add_argument(
+        "--auto-mfa",
+        action="store_true",
+        help="On a rejected bank-OTP challenge, use the authorized Fold helper once.",
+    )
     parser.add_argument(
         "--property",
         action="append",
@@ -376,7 +414,12 @@ def main() -> int:
         parser.error("--apply and --audit-only are mutually exclusive")
 
     selected = set(args.property or []) or None
-    report = load_reconciliation()
+    report = load_reconciliation(args.report)
+    through_month = args.through_month or str(report.get("as_of") or "")[:7]
+    if len(through_month) != 7 or through_month[4] != "-":
+        raise RuntimeError("--through-month must be YYYY-MM or report as_of must be dated")
+    discovered_ids = source_property_ids(args.source_index)
+    property_ids = {**discovered_ids, **PROPERTY_IDS}
     specs, live, issues = build_specs(
         report,
         selected_properties=selected,
@@ -384,13 +427,15 @@ def main() -> int:
         # bank transactions can be found and verified. Apply/dry-run mode
         # continues to omit completed tokens idempotently.
         completed_tokens=(
-            set() if args.audit_only else completed_confirmation_tokens()
+            set() if args.audit_only else completed_confirmation_tokens(args.state)
         ),
+        property_ids=property_ids,
+        through_month=through_month,
     )
-    public = public_plan(specs, live, issues, report)
+    public = public_plan(specs, live, issues, report, through_month)
     digest = plan_digest(public)
     dry = {"digest": digest, **public}
-    write_json(DRY_RUN, dry)
+    write_json(args.dry_run_report, dry)
 
     destination_bank_id = str(
         live.get(ECO_TRANSFER_ACCOUNT_ID, {}).get("bank_account_id") or ""
@@ -411,7 +456,7 @@ def main() -> int:
         return 0
 
     if not args.apply:
-        print(json.dumps({**dry, "report": str(DRY_RUN)}, indent=2))
+        print(json.dumps({**dry, "report": str(args.dry_run_report)}, indent=2))
         return 0 if not issues else 2
     if args.digest != digest:
         raise RuntimeError(f"live digest is {digest}; exact --digest required")
@@ -421,12 +466,43 @@ def main() -> int:
     receipts: list[dict[str, Any]] = []
     audits: list[dict[str, Any]] = []
     for spec in specs:
-        result = execute_transfer(
-            plan=spec["plan"],
-            confirmation_token=spec["plan"]["confirmation_token"],
-            graphql_runner=graphql,
-            state_path=STATE,
-        )
+        try:
+            result = execute_transfer(
+                plan=spec["plan"],
+                confirmation_token=spec["plan"]["confirmation_token"],
+                graphql_runner=graphql,
+                state_path=args.state,
+            )
+        except TransferAuthenticationRequired as challenge:
+            if not args.auto_mfa or not challenge.bank_account_id:
+                raise
+            not_before_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - 5000
+            helper = subprocess.run(
+                [
+                    sys.executable,
+                    str(FOLD_MFA),
+                    "--bank-id",
+                    str(challenge.bank_account_id),
+                    "--not-before-ms",
+                    str(not_before_ms),
+                    "--timeout",
+                    "90",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if helper.returncode != 0:
+                raise RuntimeError(
+                    "Fold MFA helper did not complete the Baselane bank challenge; "
+                    "cash was rejected before movement and the exact token is retry-safe"
+                ) from challenge
+            result = execute_transfer(
+                plan=spec["plan"],
+                confirmation_token=spec["plan"]["confirmation_token"],
+                graphql_runner=graphql,
+                state_path=args.state,
+            )
         receipts.append({"property": spec["property"], **result})
         audits.append(
             {
@@ -452,8 +528,8 @@ def main() -> int:
         "receipts": receipts,
         "audits": audits,
     }
-    write_json(APPLIED, applied)
-    print(json.dumps({**applied, "report": str(APPLIED)}, indent=2))
+    write_json(args.applied_report, applied)
+    print(json.dumps({**applied, "report": str(args.applied_report)}, indent=2))
     return 0
 
 

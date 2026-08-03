@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "effective_date": "2026-08-03",
+  "rules": [
+    {
+      "baselane_id": "161632370",
+      "expected_date": "2025-05-29",
+      "expected_amount": "-700.00",
+      "expected_account": "ECO Systems, LLC-ECO Systems Operations-2624",
+      "expected_property": "Mining, Sales, Consulting, and PM",
+      "property": "326 South Alcott Street",
+      "action": "include",
+      "classification": "approved_property_retag_from_generic_bucket",
+      "rationale": "Exact ECO vendor payment for Alcott photography/marketing; matches reimbursement transaction 161632325.",
+      "evidence_baselane_ids": ["161632325"]
+    },
+    {
+      "baselane_id": "163895097",
+      "expected_date": "2025-06-06",
+      "expected_amount": "1800.00",
+      "expected_account": "ECO Systems, LLC-ECO Systems Operations-2624",
+      "expected_property": "326 South Alcott Street",
+      "property": "326 South Alcott Street",
+      "action": "exclude",
+      "classification": "purpose_reimbursement_matched_to_external_advance",
+      "rationale": "Reimbursement was explicitly for an Alcott HVAC payment made via external Chase/Zelle; it settles that historical advance and cannot offset later remodeling advances.",
+      "evidence_reference": "Canonical Alcott GL matching external Chase/Zelle HVAC advance"
+    },
+    {
+      "baselane_id": "165413797",
+      "expected_date": "2025-06-13",
+      "expected_amount": "334.11",
+      "expected_account": "ECO Systems, LLC-ECO Systems Operations-2624",
+      "expected_property": "326 South Alcott Street",
+      "property": "326 South Alcott Street",
+      "action": "exclude",
+      "classification": "purpose_reimbursement_matched_to_external_advance",
+      "rationale": "The canonical Alcott GL contains the matching ECO furnishings advance; this purpose-specific reimbursement cannot offset later remodeling advances.",
+      "evidence_reference": "Canonical Alcott GL matching 334.11 ECO furnishings advance"
+    },
+    {
+      "baselane_id": "165875707",
+      "expected_date": "2025-06-14",
+      "expected_amount": "350.00",
+      "expected_account": "ECO Systems, LLC-ECO Systems Operations-2624",
+      "expected_property": "326 South Alcott Street",
+      "property": "326 South Alcott Street",
+      "action": "exclude",
+      "classification": "purpose_reimbursement_matched_to_external_advance",
+      "rationale": "The canonical Alcott GL contains the matching ECO AC-duct advance; this purpose-specific reimbursement cannot offset later advances.",
+      "evidence_reference": "Canonical Alcott GL matching 350.00 ECO AC-duct advance"
+    },
+    {
+      "baselane_id": "222511426",
+      "expected_date": "2025-12-22",
+      "expected_amount": "5000.00",
+      "expected_account": "ECO Systems, LLC-ECO Systems Operations-2624",
+      "expected_property": "Mining, Sales, Consulting, and PM",
+      "property": "326 South Alcott Street",
+      "action": "include",
+      "classification": "approved_property_retag_from_generic_bucket",
+      "rationale": "Exact mirror of Alcott DAO transaction 222511424 in the same portfolio-consolidation transfer batch.",
+      "evidence_baselane_ids": ["222511424"]
+    },
+    {
+      "baselane_id": "230718433",
+      "expected_date": "2026-01-13",
+      "expected_amount": "1500.00",
+      "expected_account": "ECO Systems, LLC-ECO Systems Operations-2624",
+      "expected_property": "Mining, Sales, Consulting, and PM",
+      "property": "326 South Alcott Street",
+      "action": "include",
+      "classification": "approved_property_retag_from_generic_bucket",
+      "rationale": "Alcott-to-ECO reimbursement for 332 turnover paid to Alirio; exact DAO mirror 230718429.",
+      "evidence_baselane_ids": ["230718429"]
+    },
+    {
+      "baselane_id": "244569774",
+      "expected_date": "2026-02-20",
+      "expected_amount": "2000.00",
+      "expected_account": "ECO Systems, LLC-ECO Systems Operations-2624",
+      "expected_property": "Mining, Sales, Consulting, and PM",
+      "property": "326 South Alcott Street",
+      "action": "include",
+      "classification": "approved_property_retag_from_generic_bucket",
+      "rationale": "Alcott-to-ECO reimbursement for 332 remodeling paid to Alirio; exact DAO mirror 244569771.",
+      "evidence_baselane_ids": ["244569771"]
+    },
+    {
+      "baselane_id": "254375549",
+      "expected_date": "2026-03-16",
+      "expected_amount": "5250.00",
+      "expected_account": "ECO Systems, LLC-ECO Systems Operations-2624",
+      "expected_property": "Mining, Sales, Consulting, and PM",
+      "property": "326 South Alcott Street",
+      "action": "include",
+      "classification": "approved_property_retag_from_generic_bucket",
+      "rationale": "Alcott-to-ECO reimbursement for 332 turnover payments to Alirio; exact DAO mirror 254375543.",
+      "evidence_baselane_ids": ["254375543"]
+    },
+    {
+      "baselane_id": "254379287",
+      "expected_date": "2026-03-16",
+      "expected_amount": "-1500.00",
+      "expected_account": "ECO Systems, LLC-ECO Systems Operations-2624",
+      "expected_property": "Mining, Sales, Consulting, and PM",
+      "property": "326 South Alcott Street",
+      "action": "include",
+      "classification": "approved_property_retag_from_generic_bucket",
+      "rationale": "ECO returned an Alcott overpayment for Alirio; exact DAO mirror 254379307.",
+      "evidence_baselane_ids": ["254379307"]
+    },
+    {
+      "baselane_id": "261220897",
+      "expected_date": "2026-03-30",
+      "expected_amount": "-500.00",
+      "expected_account": "ECO Systems, LLC-ECO Systems Reserves-9971",
+      "expected_property": "Mining, Sales, Consulting, and PM",
+      "property": "326 South Alcott Street",
+      "action": "include",
+      "classification": "approved_property_retag_from_generic_bucket",
+      "rationale": "Exact ECO-to-Alcott internal transfer mirror 261220900; upstream property was generic.",
+      "evidence_baselane_ids": ["261220900"]
+    },
+    {
+      "baselane_id": "323014975",
+      "expected_date": "2026-07-31",
+      "expected_amount": "500.00",
+      "expected_account": "ECO Systems, LLC-ECO Systems Operations-2624",
+      "expected_property": "",
+      "property": "326 South Alcott Street",
+      "action": "include",
+      "classification": "approved_property_retag_from_blank_property",
+      "rationale": "Exact Alcott-to-ECO internal transfer mirror 323014970; ECO-side property was blank.",
+      "evidence_baselane_ids": ["323014970"]
+    }
+  ]
+}

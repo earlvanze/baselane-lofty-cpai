@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-08-02",
+  "reason": "Baselane retains active transactions tagged to superseded property records after those records disappear from PropertyList. Preserve their reviewed canonical property identity without weakening the full-export metadata guard.",
+  "aliases": {
+    "33733": {
+      "property": "90 Madison Ave",
+      "current_property_id": "31525",
+      "evidence": "Live transactions name Strawberry LFTY402 DAO LLC; current PropertyList and repository entity mapping identify 90 Madison Ave."
+    },
+    "33734": {
+      "property": "1 Coolwood Dr.",
+      "current_property_id": "31855",
+      "evidence": "Live transaction names Berry LFTY0410 DAO LLC; Baselane statement manifest identifies its 1 Coolwood Dr. operations and reserves accounts."
+    },
+    "34289": {
+      "property": "88 Madison Ave",
+      "current_property_id": "31499",
+      "evidence": "Live transactions name Heron LFTY0314 DAO LLC; current PropertyList and repository entity mapping identify 88 Madison Ave."
+    },
+    "55871": {
+      "property": "3560 Saint Albans Rd",
+      "current_property_id": "56135",
+      "evidence": "Live transaction names Avocado LFTY0423 DAO LLC; Baselane statement manifest identifies its 3560 Saint Albans operations account."
+    },
+    "56668": {
+      "property": "724 3rd Ave",
+      "current_property_id": "33594",
+      "evidence": "Live HEML transaction 302971232 and existing reviewed vendor reconciliation identify 724 3rd Ave."
+    },
+    "78308": {
+      "property": "84 Madison Ave",
+      "current_property_id": "60548",
+      "evidence": "Live Hemlane transactions 298642323 and 298642841 and existing reviewed vendor reconciliation identify 84 Madison Ave."
+    }
+  }
+}

@@ -157,7 +157,14 @@ ROW_TO_GL_CATEGORIES = {
     "Solar Loan Payments": ["Solar Lease Payments", "Other Loan Payments", "Other Loan Payments (P&I)"],
 }
 
-ECO_PHYSICAL_BANK_CASH_LABEL = "ECO Operating Cash"
+ECO_PHYSICAL_BANK_CASH_LABEL = "ECO Net DAO Funds"
+ECO_PHYSICAL_BANK_CASH_LEGACY_LABELS = (
+    "ECO Operating Cash",
+)
+ECO_PHYSICAL_BANK_CASH_LABELS = (
+    ECO_PHYSICAL_BANK_CASH_LABEL,
+    *ECO_PHYSICAL_BANK_CASH_LEGACY_LABELS,
+)
 ECO_GL_NET_CASH_BALANCE_LABEL = "ECO General Ledger (ECO GL Column E Total)"
 ECO_GL_NET_CASH_BALANCE_LEGACY_LABELS = (
     "ECO Operating Cash (ECO GL Column E Total)",
@@ -176,7 +183,7 @@ CITADEL_TEXT_RE = re.compile(r"\b(CITADEL|ACRA|LOANSPHERE|LOANDEPOT|FREEDOM|NEWR
 BALANCE_SHEET_ROWS = {
     "Lofty Operating Reserve (OR) Balance",
     "Operating Reserve (OR) Balance",
-    ECO_PHYSICAL_BANK_CASH_LABEL,
+    *ECO_PHYSICAL_BANK_CASH_LABELS,
     *ECO_GL_NET_CASH_BALANCE_LABELS,
     "Total DAO Cash Balance",
     "Mortgage Principal Balance",

@@ -17,3 +17,6 @@ botocore>=1.34,<2
 # Mortgage statement parsing and visible-browser CDP helpers.
 pypdf>=4,<7
 websocket-client>=1.8,<2
+
+# Repository and deterministic accounting-policy regression checks.
+pytest>=8,<9

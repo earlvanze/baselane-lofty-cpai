@@ -9,6 +9,9 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "baselane_daily_sourc
 
 
 def load_module():
+    scripts_path = str(SCRIPT.parent)
+    if scripts_path not in sys.path:
+        sys.path.insert(0, scripts_path)
     spec = importlib.util.spec_from_file_location("baselane_daily_source_cash_manifest", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -79,3 +82,25 @@ def test_manifest_does_not_cross_property_boundaries_for_public_layout(tmp_path:
     files, _metadata = module.cf_files_from_manifest(fake_cf(), manifest)
 
     assert files == {"target": target_workbook}
+
+
+def test_package_source_excludes_dropbox_conflicted_ledger_copies(tmp_path: Path):
+    module = load_module()
+    statement_dir = tmp_path / fake_cf().OWNER_STATEMENTS_DIR
+    statement_dir.mkdir(parents=True)
+    workbook = statement_dir / "Cash Flow Statement - Ohio 3-Property Package.xlsx"
+    canonical = statement_dir / "ECO Systems General Ledger - 1518 Dille Rd.csv"
+    conflicted = (
+        statement_dir
+        / "ECO Systems General Ledger - 1518 Dille Rd (Earl Co's conflicted copy 2026-08-01).csv"
+    )
+    workbook.touch()
+    canonical.write_text("canonical\n", encoding="utf-8")
+    conflicted.write_text("duplicate\n", encoding="utf-8")
+
+    sources = module.canonical_property_split_gls(
+        workbook,
+        "Ohio 3-Property Package",
+    )
+
+    assert sources == [canonical]

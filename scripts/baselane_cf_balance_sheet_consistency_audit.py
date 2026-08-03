@@ -56,7 +56,10 @@ LOFTY_OR_LABELS = (
     "Lofty Operating Reserve (OR) Balance",
     "Operating Reserve (OR) Balance",
 )
-ECO_CASH_LABEL = "ECO Operating Cash"
+ECO_CASH_LABEL = "ECO Net DAO Funds"
+ECO_CASH_LEGACY_LABELS = (
+    "ECO Operating Cash",
+)
 ECO_GL_LABEL = "ECO General Ledger (ECO GL Column E Total)"
 ECO_GL_LABELS = (
     ECO_GL_LABEL,
@@ -69,7 +72,7 @@ RETAINED_EARNINGS_LABEL = "Retained Earnings"
 RETAINED_EARNINGS_LOFTY_EXEMPTIONS = {
     ("22164 umland cir jenner ca 95450", "2026-06"),
 }
-ECO_CASH_LABELS = (ECO_CASH_LABEL,)
+ECO_CASH_LABELS = (ECO_CASH_LABEL, *ECO_CASH_LEGACY_LABELS)
 YHOME_LOFTY_CASH_COLUMN = "Lofty Operating Cash"
 YHOME_ECO_CASH_COLUMN = "ECO Net DAO Funds"
 YHOME_NEW_PM_COLUMN = "New PM"
@@ -99,9 +102,8 @@ def parse_month(value: str | None) -> tuple[int, int]:
 
 
 def source_cash_mode_for_month(year: int, month: int, today: date | None = None) -> str:
-    # The full canonical property GL is an internal accounting control,
-    # including accruals, regardless of report month. It is not custody cash.
-    return "full_column_e"
+    current_date = today or datetime.now(timezone.utc).date()
+    return "as_of_month_end" if (year, month) < (current_date.year, current_date.month) else "full_column_e"
 
 
 def generated_at() -> str:
@@ -546,7 +548,7 @@ def probe_workbook_payload(path: Path, year: int, month: int) -> dict[str, Any]:
     values = {}
     for labels, source_name in (
         (LOFTY_OR_LABELS, "Lofty Operating Cash"),
-        (ECO_CASH_LABELS, "ECO Operating Cash"),
+        (ECO_CASH_LABELS, "ECO Net DAO Funds"),
         (ECO_GL_LABELS, "ECO General Ledger"),
         ((RETAINED_EARNINGS_LABEL,), RETAINED_EARNINGS_LABEL),
     ):
@@ -1294,7 +1296,7 @@ def audit_workbook(
                 issues.append(issue)
     row_specs = [
         ("Lofty Operating Cash", LOFTY_OR_LABELS[0], lofty_expected),
-        ("ECO Operating Cash", ECO_CASH_LABEL, eco_expected),
+        ("ECO Net DAO Funds", ECO_CASH_LABEL, eco_expected),
         ("ECO General Ledger", ECO_GL_LABEL, eco_gl_expected),
     ]
     for source_name, fallback_label, expected in row_specs:
@@ -1302,7 +1304,7 @@ def audit_workbook(
             local_financials_only or retained_earnings_exemption or (lofty_pm_access_unavailable and expected is None)
         ):
             continue
-        if source_name == "ECO Operating Cash" and expected is None:
+        if source_name == "ECO Net DAO Funds" and expected is None:
             summary["eco_operating_cash_verification_status"] = "not_verified_no_mapped_bank_authority"
             continue
         source_probe = probe_values.get(source_name) if isinstance(probe_values.get(source_name), dict) else {}
@@ -1329,8 +1331,13 @@ def audit_workbook(
             file_path=workbook_path or property_path,
             cell=str(coordinate or ""),
         )
-        summary[f"{normalize_header(source_name).replace(' ', '_')}_actual"] = parse_money(value)
-        summary[f"{normalize_header(source_name).replace(' ', '_')}_cell"] = coordinate
+        summary_key = (
+            "eco_operating_cash"
+            if source_name == "ECO Net DAO Funds"
+            else normalize_header(source_name).replace(" ", "_")
+        )
+        summary[f"{summary_key}_actual"] = parse_money(value)
+        summary[f"{summary_key}_cell"] = coordinate
         if issue:
             issue["source"] = source_name
             issues.append(issue)
@@ -1663,8 +1670,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "yhome_unmatched_candidates": yhome_missing_candidates[:100],
         "yhome_action_counts": dict(sorted(yhome_action_counts.items())),
         "cf_balance_sheet_policy": (
-            "Lofty Operating Cash comes from curr_maintenance_reserve. ECO Operating Cash comes from a dated live "
-            "Baselane DAO bank snapshot, while ECO General Ledger comes from canonical property-split Column E. "
+            "Lofty Operating Cash comes from curr_maintenance_reserve. ECO Net DAO Funds is verified nonnegative "
+            "spendable cash in ECO custody after recorded obligations and restrictions, while ECO General Ledger "
+            "comes from canonical property-split Column E. "
             "Closed-month workbooks require an exact month-end bank snapshot. Column E is an internal accounting "
             "control and must not be relabeled as custody or spendable cash."
         ),

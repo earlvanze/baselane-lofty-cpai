@@ -12,6 +12,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from lofty_monthly_balance_sheet_snapshot import (
+    has_verified_intercompany_position,
+    reconciled_obligation_breakdown,
+    render_balance_sheet_snapshot,
+)
+
 SCRIPT_DIR = Path(__file__).absolute().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -34,8 +40,8 @@ INTERNAL_OWNER_UPDATE_CONTENT_RE = re.compile(
     r"|do not use native Lofty owner email"
     r"|send-property-updates"
 )
-LOFTY_RESERVE_SUMMARY_RE = re.compile(r"(?mi)^\s*-\s*Lofty-held current maintenance reserve:\s*-?\$[\d,]+\.\d{2}\s*$")
-ECO_GL_SUMMARY_RE = re.compile(r"(?mi)^\s*-\s*ECO GL Column E sum:\s*-?\$[\d,]+\.\d{2}(?:\s+\(\d+\s+rows\))?\s*$")
+LOFTY_RESERVE_SUMMARY_RE = re.compile(r"(?mi)^\s*-\s*Lofty Operating Reserve:\s*-?\$[\d,]+\.\d{2}\s*$")
+ECO_GL_SUMMARY_RE = re.compile(r"(?mi)^\s*-\s*ECO Net DAO Funds \(spendable cash held by ECO\):\s*\$[\d,]+\.\d{2}\s*$")
 
 
 def iso_z() -> str:
@@ -94,9 +100,13 @@ def format_money(value: object) -> str:
 def verified_candidate_summary(summary: dict[str, Any] | None) -> bool:
     return (
         isinstance(summary, dict)
-        and summary.get("lofty_curr_maintenance_reserve") is not None
         and summary.get("eco_gl_column_e_status") == "ok"
         and summary.get("eco_gl_column_e_sum") is not None
+        and summary.get("total_dao_spendable_cash_status") == "ok"
+        and summary.get("eco_held_unrestricted_cash_status") == "ok"
+        and summary.get("open_accrued_obligations_status") == "ok"
+        and reconciled_obligation_breakdown(summary) is not None
+        and has_verified_intercompany_position(summary)
     )
 
 
@@ -114,14 +124,7 @@ def monthly_financial_summary_guard_issues(text: str, *, required_summary_count:
 
 
 def render_monthly_financial_summary(summary: dict[str, Any]) -> str:
-    lines = [
-        "Financial summary:",
-        f"- Lofty-held current maintenance reserve: {format_money(summary.get('lofty_curr_maintenance_reserve'))}",
-        f"- ECO GL Column E sum: {format_money(summary.get('eco_gl_column_e_sum'))}",
-    ]
-    if summary.get("eco_gl_column_e_row_count") is not None:
-        lines[-1] += f" ({int(summary.get('eco_gl_column_e_row_count') or 0)} rows)"
-    return "\n".join(lines)
+    return render_balance_sheet_snapshot(summary, summary.get("as_of_month"))
 
 
 def append_verified_financial_summary_if_missing(text: str, summary: dict[str, Any] | None) -> tuple[str, bool]:

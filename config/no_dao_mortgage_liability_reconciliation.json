@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "effective_date": "2026-07-31",
+    "basis": "For no-DAO-mortgage properties, DAO-bank principal, interest, and lender late/return fees are due from ECO; escrow is restricted DAO cash. Only an ID-bearing, purpose-supported ECO credit reduces the mortgage receivable. Unlabeled transfers remain review candidates.",
+    "cash_cutoff": "2026-07-31",
+    "dao_llc_admin_fee": {
+      "annual_charge_to_dao": "750.00",
+      "monthly_accrual": "62.50",
+      "annual_eco_payable_to_lofty": "200.00",
+      "eco_filing_cost_reference": "125.00",
+      "treatment": "The DAO owes ECO the full annual charge. ECO's Lofty payable and actual filing-vendor costs are separate ECO expenses and never reduce the DAO payable."
+    }
+  },
+  "properties": {
+    "85-104 Alawa Pl": {
+      "property_id": "73461",
+      "mortgage_reporting_property_id": "37648",
+      "dao_bank_account_ids": ["102389"],
+      "servicer": "LoanDepot",
+      "payment_events": [
+        {"installment_months": ["2025-05"], "parent_id": "159692484", "date": "2025-05-21", "components": {"principal": "1315.97", "interest": "1527.74", "escrow_tax": "141.56", "escrow_insurance": "58.58", "escrow_general": "135.74", "eco_fee": "257.50"}, "source": "Mortgage Statement - 2025-06-16"},
+        {"installment_months": ["2025-06"], "parent_id": "166734631", "date": "2025-06-18", "components": {"principal": "1319.12", "interest": "1524.59", "escrow_tax": "141.56", "escrow_insurance": "58.58", "escrow_general": "135.74"}, "source": "Mortgage Statement - 2025-06-16"},
+        {"installment_months": ["2025-07"], "parent_id": "175642834", "date": "2025-07-21", "components": {"principal": "1322.28", "interest": "1521.43", "escrow_tax": "141.56", "escrow_insurance": "58.58", "escrow_general": "135.74", "eco_fee": "113.75"}, "source": "Mortgage Statement - 2025-08-11"},
+        {"installment_months": ["2025-08"], "parent_id": "182276398", "date": "2025-08-15", "components": {"principal": "1325.45", "interest": "1518.26", "escrow_tax": "141.56", "escrow_insurance": "58.58", "escrow_general": "135.74"}, "source": "Mortgage Statement - 2025-08-11"},
+        {"installment_months": ["2025-09"], "parent_id": "189723277", "date": "2025-09-11", "components": {"principal": "1328.62", "interest": "1515.09", "escrow_tax": "141.56", "escrow_insurance": "58.58", "escrow_general": "135.74", "eco_fee": "30.00"}, "source": "Mortgage Statement - 2025-09-10"},
+        {"installment_months": ["2025-10"], "parent_id": "200485288", "date": "2025-10-16", "components": {"principal": "1331.81", "interest": "1511.90", "escrow_tax": "141.56", "escrow_insurance": "58.58", "escrow_general": "135.74"}, "source": "Mortgage Statement - 2025-10-16"},
+        {"installment_months": ["2026-01", "2026-02"], "parent_id": "235412299", "date": "2026-01-27", "components": {"principal": "2686.02", "interest": "3001.40", "escrow_tax": "560.90", "escrow_insurance": "375.76", "escrow_general": "601.32"}, "source": "Mortgage Statement - 2026-02-09; two installments applied by the $7,225.40 payment"},
+        {"installment_months": ["2026-03"], "parent_id": "249155207", "date": "2026-03-03", "components": {"principal": "1347.84", "interest": "1495.87", "escrow_tax": "280.45", "escrow_insurance": "187.88", "escrow_general": "300.66", "eco_fee": "257.50"}, "source": "Monthly Billing Statement - 2026-03-16"},
+        {"installment_months": ["2026-04"], "parent_id": "262196625", "date": "2026-04-01", "components": {"principal": "1351.07", "interest": "1492.64", "escrow_tax": "280.45", "escrow_insurance": "187.88", "escrow_general": "300.66"}, "source": "Mortgage Statement - 2026-04-09"},
+        {"installment_months": ["2026-05"], "parent_id": "274587114", "date": "2026-04-28", "components": {"principal": "1354.30", "interest": "1489.41", "escrow_tax": "280.45", "escrow_insurance": "187.88", "escrow_general": "300.66"}, "source": "LoanDepot fixed-rate amortization anchored to 2026-04 statement"},
+        {"installment_months": ["2026-06"], "parent_id": "289871689", "date": "2026-05-29", "components": {"principal": "1357.55", "interest": "1486.16", "escrow_tax": "280.45", "escrow_insurance": "187.88", "escrow_general": "300.66"}, "source": "LoanDepot fixed-rate amortization anchored to 2026-04 statement"},
+        {"installment_months": ["2026-07"], "parent_id": "304093755", "date": "2026-06-26", "components": {"principal": "1360.80", "interest": "1482.91", "escrow_tax": "280.45", "escrow_insurance": "187.88", "escrow_general": "300.66"}, "source": "LoanDepot fixed-rate amortization anchored to 2026-04 statement"},
+        {"installment_months": ["2026-08"], "parent_id": "321949940", "date": "2026-07-29", "components": {"principal": "1364.06", "interest": "1479.65", "escrow_tax": "280.45", "escrow_insurance": "187.88", "escrow_general": "300.66"}, "source": "LoanDepot fixed-rate amortization anchored to 2026-04 statement; prepaid before cutoff"}
+      ],
+      "confirmed_reimbursements": [
+        {"id": "159222101", "date": "2025-05-19", "amount": "3437.09", "applied_to_eco_responsibility": "3101.21", "memo": "For Mortgage Payment May 2025 + Late Fees"},
+        {"id": "166695175", "date": "2025-06-17", "amount": "3200.00", "applied_to_eco_responsibility": "2843.71", "memo": "For mortgage payment"},
+        {"id": "174724351", "date": "2025-07-18", "amount": "5041.00", "applied_to_eco_responsibility": "2957.46", "memo": "For mortgage and rent credit"},
+        {"id": "180859457", "date": "2025-08-09", "amount": "1000.00", "applied_to_eco_responsibility": "1000.00", "memo": "For August mortgage payment"},
+        {"id": "199792203", "date": "2025-10-14", "amount": "2843.71", "applied_to_eco_responsibility": "2843.71", "memo": "Principal and Interest"},
+        {"id": "248730631", "date": "2026-03-03", "amount": "4000.00", "applied_to_eco_responsibility": "3101.21", "memo": "For mortgage payment"},
+        {"id": "228196379", "date": "2026-01-07", "amount": "6000.00", "applied_to_eco_responsibility": "5687.42", "memo": "For Mortgage Payment and July Rent and Water Bill", "native_split_merchant": "ECO reimbursement | Alawa mortgage P&I | 2026-01 and 2026-02", "native_split_amount": "5687.42"},
+        {"id": "256733613", "date": "2026-03-21", "amount": "4000.00", "applied_to_eco_responsibility": "2843.71", "memo": "", "native_split_merchant": "ECO reimbursement | Alawa mortgage P&I | 2026-04", "native_split_amount": "2843.71"},
+        {"id": "274569716", "date": "2026-04-28", "amount": "2000.00", "applied_to_eco_responsibility": "2000.00", "memo": "", "native_split_merchant": "ECO reimbursement | Alawa mortgage P&I partial | 2026-05", "native_split_amount": "2000.00"},
+        {"id": "289087164", "date": "2026-05-27", "amount": "3000.00", "applied_to_eco_responsibility": "2843.71", "memo": "", "native_split_merchant": "ECO reimbursement | Alawa mortgage P&I | 2026-06", "native_split_amount": "2843.71"},
+        {"id": "304071333", "date": "2026-06-26", "amount": "3000.00", "applied_to_eco_responsibility": "2843.71", "memo": "", "native_split_merchant": "ECO reimbursement | Alawa mortgage P&I | 2026-07", "native_split_amount": "2843.71"},
+        {"id": "321917918", "date": "2026-07-29", "amount": "2843.71", "applied_to_eco_responsibility": "2843.71", "memo": "August 2026 Mortgage Principal and Interest"}
+      ],
+      "candidate_reimbursements": [],
+      "other_open_dao_payables_to_eco": {"pm_fees_through_2026_07": "3605.20", "annual_dao_llc_admin_fee": "750.00"}
+    }
+  }
+}

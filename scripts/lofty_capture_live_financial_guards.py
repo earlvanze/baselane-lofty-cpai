@@ -15,6 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from lofty_index_status import is_active_index_status, is_excluded_index_status, normalize_index_status
+from lofty_live_native_scope import (
+    enrich_targets_from_active_roster,
+    live_manager_mutation_ready,
+    load_active_roster_scope,
+    partition_current_manager_targets,
+    validate_full_reporting_scope,
+)
 from lofty_monthly_exclusions import (
     DEFAULT_MANUAL_EXCLUDED_PROPERTIES,
     append_unmapped_exclusion_records,
@@ -56,6 +63,7 @@ DEFAULT_COO_OWNERSHIP_DISTRIBUTION_STATES = ("NY", "CA", "HI", "FL", "CO")
 DEFAULT_COO_OWNERSHIP_ECO_CASH_MINIMUM = 3000.0
 DEFAULT_LOFTY_TOKEN_PRICE = 50.0
 PERCENT_READBACK_TOLERANCE = 0.01
+DEFAULT_LISTING_UPDATE_POLICY = Path(__file__).resolve().parents[1] / "config" / "lofty_listing_update_policy.json"
 
 
 def iso_z() -> str:
@@ -81,6 +89,53 @@ def property_id_from_href(value: str) -> str:
 
 def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def listing_cash_flow_projection_override(
+    policy: Any,
+    property_name: str | None,
+    run_month: str,
+    *,
+    policy_path: Path | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(policy, dict):
+        return None
+    target_key = normalize(property_name or "")
+    if not target_key:
+        return None
+    for item in policy.get("projected_annual_cash_flow_overrides") or []:
+        if not isinstance(item, dict):
+            continue
+        policy_name = str(item.get("address") or item.get("property_name") or "").strip()
+        policy_key = normalize(policy_name)
+        if not policy_key or not (
+            target_key == policy_key or target_key in policy_key or policy_key in target_key
+        ):
+            continue
+        exact_month = str(item.get("run_month") or "").strip()
+        effective_from = str(item.get("effective_from") or "").strip()
+        effective_through = str(item.get("effective_through") or "").strip()
+        if exact_month and exact_month != run_month:
+            continue
+        if effective_from and run_month < effective_from:
+            continue
+        if effective_through and run_month > effective_through:
+            continue
+        amount = parse_live_number(item.get("projected_annual_cash_flow"))
+        if amount is None:
+            continue
+        return {
+            "projected_annual_cash_flow": round(max(amount, 0.0), 2),
+            "property_name": policy_name,
+            "run_month": exact_month or None,
+            "effective_from": effective_from or None,
+            "effective_through": effective_through or None,
+            "reason": item.get("reason"),
+            "evidence": item.get("evidence"),
+            "approved_at": item.get("approved_at"),
+            "policy_path": str(policy_path) if policy_path else None,
+        }
+    return None
 
 
 def stable_digest(payload: Any) -> str:
@@ -298,6 +353,12 @@ def parse_money_cell(value: str) -> float | None:
 def financials_table_value(text: str, label: str) -> float | None:
     match = re.search(rf"^\|\s*{re.escape(label)}\s*\|\s*([^|]+)\|", text, flags=re.IGNORECASE | re.MULTILINE)
     if not match:
+        match = re.search(
+            rf"^\s*[-*]?\s*{re.escape(label)}:\s*([^\n]+)$",
+            text,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+    if not match:
         return None
     return parse_money_cell(match.group(1))
 
@@ -384,7 +445,9 @@ def cash_source_distribution_guard_sources(financials_md: Path, property_name: s
     if cash_source_guard_disabled(property_name, financials_md):
         return []
     text = financials_md.read_text(encoding="utf-8", errors="ignore")
-    lofty_cash = financials_table_value(text, "Lofty maintenance reserve balance")
+    lofty_cash = financials_table_value(text, "Lofty Operating Reserve")
+    if lofty_cash is None:
+        lofty_cash = financials_table_value(text, "Lofty maintenance reserve balance")
     if lofty_cash is None:
         lofty_cash = financials_table_value(text, "Cash held separately by Lofty")
     if lofty_cash is None:
@@ -394,13 +457,24 @@ def cash_source_distribution_guard_sources(financials_md: Path, property_name: s
         eco_cash = financials_table_value(text, "Spendable cash ECO owes this DAO (ECO Net DAO Funds)")
     if eco_cash is None:
         eco_cash = financials_table_value(text, "ECO Operating Cash")
-    physical_bank_cash = financials_table_value(text, "Cash in this DAO's own Baselane bank account")
-    dao_spendable_cash = (
-        round(eco_cash + physical_bank_cash, 2)
-        if eco_cash is not None and physical_bank_cash is not None
-        else eco_cash
+    dao_spendable_cash = financials_table_value(
+        text,
+        "Spendable Baselane/ECO cash after recorded obligations (before Lofty OR)",
     )
-    eco_cash_source = "total_dao_spendable_cash" if physical_bank_cash is not None else "eco_held_unrestricted_cash"
+    if dao_spendable_cash is None:
+        dao_spendable_cash = financials_table_value(
+            text,
+            "Spendable Baselane/ECO cash after recorded obligations",
+        )
+    eco_cash_source = "total_dao_spendable_cash"
+    if dao_spendable_cash is None:
+        physical_bank_cash = financials_table_value(text, "Cash in this DAO's own Baselane bank account")
+        dao_spendable_cash = (
+            round(eco_cash + physical_bank_cash, 2)
+            if eco_cash is not None and physical_bank_cash is not None
+            else eco_cash
+        )
+        eco_cash_source = "total_dao_spendable_cash" if physical_bank_cash is not None else "eco_held_unrestricted_cash"
     combined_cash, reserve_clear = combined_operating_cash_clearance(lofty_cash, dao_spendable_cash)
     if reserve_clear is True:
         return []
@@ -563,12 +637,27 @@ def percent_readback_ok(actual: float | None, expected: float | None) -> bool:
     return abs(actual - expected) <= PERCENT_READBACK_TOLERANCE + 1e-9
 
 
-def verify_live_distribution(financials_md: Path, live_row: dict[str, Any], property_name: str | None = None) -> dict[str, Any]:
+def verify_live_distribution(
+    financials_md: Path,
+    live_row: dict[str, Any],
+    property_name: str | None = None,
+    projection_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     local_expected = expected_live_cash_flow(financials_md, property_name)
     local_expected_current_month_distribution_value = expected_current_month_distribution(financials_md, property_name)
     live_unit_expected, live_unit_expected_source = live_cashflow_per_unit_annual_cash_flow(live_row)
     use_live_unit_expected = False
-    expected = local_expected
+    override_amount = parse_live_number(
+        projection_override.get("projected_annual_cash_flow")
+        if isinstance(projection_override, dict)
+        else None
+    )
+    expected = round(max(override_amount, 0.0), 2) if override_amount is not None else local_expected
+    expected_source = (
+        "listing_update_policy_override"
+        if override_amount is not None
+        else "local_financials_md"
+    )
     expected_current_month_distribution_value = (
         round(expected / 12, 2) if expected is not None else local_expected_current_month_distribution_value
     )
@@ -633,9 +722,11 @@ def verify_live_distribution(financials_md: Path, live_row: dict[str, Any], prop
         "targeted": True,
         "ok": cash_flow_ok and coc_ok and yield_ok and occupancy_ok and no_mortgage_downstream_ok,
         "expected": expected,
+        "expected_source": expected_source,
         "expected_current_month_distribution": expected_current_month_distribution_value,
         "local_expected": local_expected,
         "local_expected_current_month_distribution": local_expected_current_month_distribution_value,
+        "listing_cash_flow_projection_override": projection_override,
         "live_cashflow_per_unit_annual_cash_flow": live_unit_expected,
         "live_cashflow_per_unit_annual_cash_flow_source": live_unit_expected_source,
         "live_cashflow_per_unit_used": use_live_unit_expected,
@@ -739,11 +830,16 @@ def capture_rerun_command(args: argparse.Namespace, *, apply: bool) -> str:
         parts.extend(["--portfolio-map", args.portfolio_map])
     if args.skill_map:
         parts.extend(["--skill-map", args.skill_map])
+    if args.active_roster_report:
+        parts.extend(["--active-roster-report", args.active_roster_report])
     if args.max_properties:
         parts.extend(["--max-properties", args.max_properties])
     if args.yhome_transition_csv:
         parts.extend(["--yhome-transition-csv", args.yhome_transition_csv])
-    parts.extend(["--year", args.year, "--month", args.month])
+    if args.transfer_reconciliation_report:
+        parts.extend(["--transfer-reconciliation-report", args.transfer_reconciliation_report])
+    if args.guarded_apply_report:
+        parts.extend(["--guarded-apply-report", args.guarded_apply_report])
     for property_name in args.manual_excluded_property or []:
         parts.extend(["--manual-excluded-property", property_name])
     if apply:
@@ -809,7 +905,7 @@ def report_next_action(status: str, args: argparse.Namespace, issues: list[str],
     if capture_ready:
         return {
             "status": "ready",
-            "summary": "Live Lofty FINANCIALS.md guard capture is current for all active targets.",
+            "summary": "Live Lofty FINANCIALS.md guard capture is current for all manager-actionable reporting targets.",
             "rerun_command": rerun_command,
             "requires_authenticated_cdp": False,
             "holds_live_publish_and_owner_email": False,
@@ -946,6 +1042,7 @@ def add_next_action(record: dict[str, Any], live_guard: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Capture live Lofty PM financial data and register FINANCIALS.md live-file guard artifacts.")
     parser.add_argument("--index-csv", required=True, type=Path)
+    parser.add_argument("--active-roster-report", type=Path)
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--portfolio-map", type=Path)
     parser.add_argument("--skill-map", type=Path)
@@ -959,6 +1056,7 @@ def main() -> int:
     parser.add_argument("--manual-excluded-property", action="append", default=[])
     parser.add_argument("--transfer-reconciliation-report", type=Path)
     parser.add_argument("--guarded-apply-report", type=Path)
+    parser.add_argument("--listing-update-policy", type=Path, default=DEFAULT_LISTING_UPDATE_POLICY)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--bootstrap-missing", action="store_true")
     parser.add_argument("--close-extra-tabs", action="store_true")
@@ -966,6 +1064,7 @@ def main() -> int:
     run_month = f"{args.year:04d}-{args.month:02d}"
 
     issues: list[str] = []
+    listing_update_policy: dict[str, Any] = {}
     if not args.index_csv.is_file():
         issues.append(f"monthly index missing: {args.index_csv}")
     if not args.live_guard.is_file():
@@ -974,6 +1073,17 @@ def main() -> int:
         issues.append(f"Lofty PM helper missing: {args.skill_scripts_dir / 'update_lofty_pm_property.py'}")
     if not (args.skill_scripts_dir / "extract_lofty_property_data.py").is_file():
         issues.append(f"Lofty PM financial formatter missing: {args.skill_scripts_dir / 'extract_lofty_property_data.py'}")
+    if not args.listing_update_policy.is_file():
+        issues.append(f"Lofty listing update policy missing: {args.listing_update_policy}")
+    else:
+        try:
+            policy_payload = load_json(args.listing_update_policy)
+            if isinstance(policy_payload, dict):
+                listing_update_policy = policy_payload
+            else:
+                issues.append(f"Lofty listing update policy must be a JSON object: {args.listing_update_policy}")
+        except (OSError, json.JSONDecodeError) as exc:
+            issues.append(f"Lofty listing update policy unreadable: {args.listing_update_policy}: {exc}")
 
     if issues and args.apply:
         report = {
@@ -1005,6 +1115,13 @@ def main() -> int:
         return 1
 
     rows = load_index(args.index_csv) if args.index_csv.is_file() else []
+    targeted_run = args.max_properties > 0
+    active_roster_scope = load_active_roster_scope(args.active_roster_report)
+    authoritative_roster_scope = (
+        not targeted_run
+        and active_roster_scope.get("status") == "ok"
+        and bool(active_roster_scope.get("records"))
+    )
     skipped_records = skipped_index_records(rows)
     manual_names = [*DEFAULT_MANUAL_EXCLUDED_PROPERTIES, *args.manual_excluded_property]
     exclusion_guards, yhome_guard, manual_exclusions = monthly_exclusion_guards(
@@ -1016,16 +1133,41 @@ def main() -> int:
     guarded_apply_exclusions = guarded_apply_exclusion_records(args.guarded_apply_report)
     exclusion_guards.extend(financial_hold_exclusions)
     target_exclusion_guards.extend([*financial_hold_exclusions, *guarded_apply_exclusions])
-    external_excluded_records = externally_excluded_records(rows, exclusion_guards)
-    append_unmapped_exclusion_records(
-        external_excluded_records,
-        guarded_apply_exclusions,
-        represented_records=skipped_records,
-    )
+    external_exclusion_candidates = externally_excluded_records(rows, exclusion_guards)
+    if not authoritative_roster_scope:
+        append_unmapped_exclusion_records(
+            external_exclusion_candidates,
+            guarded_apply_exclusions,
+            represented_records=skipped_records,
+        )
+    external_excluded_records = [] if authoritative_roster_scope else external_exclusion_candidates
     candidates = property_id_candidates(args.portfolio_map, args.skill_map)
-    targets = index_targets(rows, candidates, target_exclusion_guards)
+    reporting_targets = index_targets(
+        rows,
+        candidates,
+        [] if authoritative_roster_scope else target_exclusion_guards,
+    )
     if args.max_properties > 0:
-        targets = targets[: args.max_properties]
+        reporting_targets = reporting_targets[: args.max_properties]
+    reporting_targets, roster_unmatched_records = enrich_targets_from_active_roster(
+        reporting_targets,
+        active_roster_scope,
+    )
+    if authoritative_roster_scope and roster_unmatched_records:
+        issues.append(
+            "active roster failed to match reporting targets: "
+            + ", ".join(str(record.get("property_name") or record.get("property_path") or "unknown") for record in roster_unmatched_records)
+        )
+    issues.extend(
+        validate_full_reporting_scope(
+            active_roster_scope,
+            len(reporting_targets),
+            targeted=targeted_run,
+        )
+    )
+    portfolio_reporting_target_count = (
+        active_roster_scope.get("portfolio_reporting_target_count") or len(reporting_targets)
+    )
 
     live_by_id: dict[str, dict[str, Any]] = {}
     if args.apply and not issues:
@@ -1037,6 +1179,26 @@ def main() -> int:
                 property_id = property_id_for_api_row(api_row)
                 if property_id:
                     live_by_id[property_id] = api_row
+    partition = partition_current_manager_targets(
+        reporting_targets,
+        live_property_ids=set(live_by_id) if args.apply and not api_error and not issues else None,
+        mutation_ready_property_ids=(
+            {property_id for property_id, row in live_by_id.items() if live_manager_mutation_ready(row)}
+            if args.apply and not api_error and not issues
+            else None
+        ),
+    )
+    targets = partition["captureable"]
+    mutation_ready_targets = partition["actionable"]
+    known_id_targets = partition["known_id"]
+    manager_unavailable_records = partition["manager_unavailable"]
+    mutation_unavailable_targets = partition["mutation_unavailable"]
+    native_unavailable_records = partition["no_id"]
+    live_scope_source = (
+        "authenticated_get_manager_properties"
+        if args.apply and not api_error and not issues
+        else "active_property_roster"
+    )
 
     records: list[dict[str, Any]] = []
     bootstrap_count = 0
@@ -1048,13 +1210,15 @@ def main() -> int:
         record = dict(target)
         property_id = target.get("lofty_property_id")
         financials_md = Path(target["financials_md"])
-        if not property_id:
-            record["status"] = "blocked_no_property_id"
-            add_next_action(record, args.live_guard)
-            records.append(record)
-            continue
         snapshot_path = args.artifact_dir / property_id / "live-FINANCIALS.md"
         record["snapshot_path"] = str(snapshot_path)
+        if record.get("live_capture_guard_applicable") is False:
+            record["status"] = "guard_not_applicable_mutation_unavailable"
+            record["target_exists"] = financials_md.is_file()
+            record["nonblocking_scope"] = "native_lofty_listing_actions_only"
+            record["accounting_and_investor_reporting_included"] = True
+            records.append(record)
+            continue
         if not financials_md.is_file():
             record["status"] = "blocked_missing_financials_md"
             record["target_exists"] = False
@@ -1100,7 +1264,19 @@ def main() -> int:
             register_count += 1
         check = run_guard([sys.executable, str(args.live_guard), "check", str(financials_md)])
         record["check"] = check
-        distribution_verify = verify_live_distribution(financials_md, live_row, str(target.get("property_name") or ""))
+        projection_override = listing_cash_flow_projection_override(
+            listing_update_policy,
+            str(target.get("property_name") or ""),
+            run_month,
+            policy_path=args.listing_update_policy,
+        )
+        record["listing_cash_flow_projection_override"] = projection_override
+        distribution_verify = verify_live_distribution(
+            financials_md,
+            live_row,
+            str(target.get("property_name") or ""),
+            projection_override,
+        )
         record["live_distribution_verify"] = distribution_verify
         if check["ok"]:
             check_ok_count += 1
@@ -1121,9 +1297,19 @@ def main() -> int:
 
     planned_count = sum(1 for record in records if record.get("status") == "planned")
     blocked_count = sum(1 for record in records if str(record.get("status", "")).startswith("blocked_"))
-    capture_ready_count = register_count
+    capture_ready_count = sum(
+        1
+        for record in records
+        if (
+            isinstance(record.get("register"), dict)
+            and record["register"].get("ok") is True
+            and str(record.get("status") or "").startswith("guard_ok")
+        )
+        or record.get("status") == "guard_not_applicable_mutation_unavailable"
+    )
     local_reconcile_required_count = sparse_snapshot_diff_count
     unverified_count = max(0, len(targets) - capture_ready_count)
+    all_records = [*records, *manager_unavailable_records, *native_unavailable_records]
     target_digest = stable_digest(
         {
             "records": [
@@ -1139,11 +1325,19 @@ def main() -> int:
                     "next_action_file": record.get("next_action_file"),
                     "next_action_command": record.get("next_action_command"),
                 }
-                for record in records
+                for record in all_records
             ]
         }
     )
-    capture_ready = bool(args.apply) and not issues and not planned_count and not blocked_count and capture_ready_count == len(targets)
+    capture_ready = (
+        bool(args.apply)
+        and not issues
+        and not planned_count
+        and not blocked_count
+        and register_count == len(mutation_ready_targets)
+        and check_ok_count == len(mutation_ready_targets)
+        and capture_ready_count == len(targets)
+    )
     status = "failed" if issues and args.apply else "ok" if capture_ready else "review"
     next_action = report_next_action(status, args, issues, capture_ready)
     review_blocker_list = (
@@ -1157,7 +1351,7 @@ def main() -> int:
             unverified_count=unverified_count,
         )
     )
-    record_status_counts = status_counts(records)
+    record_status_counts = status_counts(all_records)
     report = {
         "generated_at": iso_z(),
         "status": status,
@@ -1180,7 +1374,35 @@ def main() -> int:
         "rerun_command": next_action["rerun_command"],
         "requires_authenticated_cdp": next_action["requires_authenticated_cdp"],
         "holds_live_publish_and_owner_email": next_action["holds_live_publish_and_owner_email"],
-        "target_count": len(targets),
+        "physical_property_count": active_roster_scope.get("physical_property_count"),
+        "portfolio_reporting_target_count": portfolio_reporting_target_count,
+        "selected_reporting_target_count": len(reporting_targets),
+        "target_count": len(reporting_targets),
+        "target_count_semantics": "monthly_reporting_targets",
+        "capture_target_count": len(targets),
+        "native_live_target_count": len(targets),
+        "known_lofty_property_id_count": len(known_id_targets),
+        "current_manager_live_target_count": len(targets),
+        "current_manager_mutation_ready_count": len(mutation_ready_targets),
+        "current_manager_mutation_unavailable_count": len(mutation_unavailable_targets),
+        "current_manager_unavailable_count": len(manager_unavailable_records),
+        "native_unavailable_count": len(native_unavailable_records),
+        "live_action_unavailable_count": (
+            len(mutation_unavailable_targets) + len(manager_unavailable_records) + len(native_unavailable_records)
+        ),
+        "current_manager_scope_source": live_scope_source,
+        "listing_update_policy": str(args.listing_update_policy),
+        "current_manager_mutation_unavailable_records": mutation_unavailable_targets,
+        "current_manager_unavailable_records": manager_unavailable_records,
+        "native_unavailable_records": native_unavailable_records,
+        "active_roster_scope": {key: value for key, value in active_roster_scope.items() if key != "records"},
+        "active_roster_record_count": len(active_roster_scope.get("records") or []),
+        "authoritative_roster_scope_applied": authoritative_roster_scope,
+        "legacy_exclusion_scope_reduction_applied": not authoritative_roster_scope,
+        "external_exclusion_candidate_count": len(external_exclusion_candidates),
+        "external_exclusion_candidates": external_exclusion_candidates,
+        "active_roster_unmatched_count": len(roster_unmatched_records),
+        "active_roster_unmatched_records": roster_unmatched_records,
         "skipped_index_count": len(skipped_records),
         "skipped_index_status_counts": {
             status: sum(1 for record in skipped_records if record.get("status") == status)
@@ -1201,9 +1423,10 @@ def main() -> int:
         "blocked_count": blocked_count,
         "bootstrap_count": bootstrap_count,
         "register_count": register_count,
+        "required_register_count": len(mutation_ready_targets),
         "guard_check_ok_count": check_ok_count,
-        "check_ok_count": capture_ready_count,
-        "required_check_ok_count": len(targets),
+        "check_ok_count": check_ok_count,
+        "required_check_ok_count": len(mutation_ready_targets),
         "unverified_count": unverified_count,
         "capture_ready_count": capture_ready_count,
         "capture_missing_count": unverified_count,
@@ -1222,12 +1445,29 @@ def main() -> int:
             "external_mutation_count": 0,
             "capture_semantics": "authenticated_read_and_guard_registration_only",
             "sends_owner_email": False,
-            "target_count": len(targets),
+            "physical_property_count": active_roster_scope.get("physical_property_count"),
+            "portfolio_reporting_target_count": portfolio_reporting_target_count,
+            "selected_reporting_target_count": len(reporting_targets),
+            "target_count": len(reporting_targets),
+            "target_count_semantics": "monthly_reporting_targets",
+            "capture_target_count": len(targets),
+            "native_live_target_count": len(targets),
+            "known_lofty_property_id_count": len(known_id_targets),
+            "current_manager_live_target_count": len(targets),
+            "current_manager_mutation_ready_count": len(mutation_ready_targets),
+            "current_manager_mutation_unavailable_count": len(mutation_unavailable_targets),
+            "current_manager_unavailable_count": len(manager_unavailable_records),
+            "native_unavailable_count": len(native_unavailable_records),
+            "live_action_unavailable_count": (
+                len(mutation_unavailable_targets) + len(manager_unavailable_records) + len(native_unavailable_records)
+            ),
+            "current_manager_scope_source": live_scope_source,
             "bootstrap_count": bootstrap_count,
             "register_count": register_count,
+            "required_register_count": len(mutation_ready_targets),
             "guard_check_ok_count": check_ok_count,
-            "check_ok_count": capture_ready_count,
-            "required_check_ok_count": len(targets),
+            "check_ok_count": check_ok_count,
+            "required_check_ok_count": len(mutation_ready_targets),
             "planned_count": planned_count,
             "blocked_count": blocked_count,
             "capture_ready_count": capture_ready_count,
@@ -1241,11 +1481,11 @@ def main() -> int:
             "record_status_counts": record_status_counts,
             "target_digest": target_digest,
         },
-        "records": records,
+        "records": all_records,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({key: report[key] for key in ("status", "issue_count", "review_blocker_count", "target_count", "bootstrap_count", "register_count", "check_ok_count", "guard_check_ok_count", "unverified_count", "mismatch_count")}, indent=2, sort_keys=True))
+    print(json.dumps({key: report[key] for key in ("status", "issue_count", "review_blocker_count", "physical_property_count", "portfolio_reporting_target_count", "known_lofty_property_id_count", "current_manager_live_target_count", "current_manager_mutation_ready_count", "current_manager_mutation_unavailable_count", "current_manager_unavailable_count", "native_unavailable_count", "bootstrap_count", "register_count", "check_ok_count", "guard_check_ok_count", "unverified_count", "mismatch_count")}, indent=2, sort_keys=True))
     return 0 if status == "ok" else 2 if status == "review" else 1
 
 

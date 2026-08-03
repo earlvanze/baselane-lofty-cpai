@@ -21,6 +21,7 @@ statements/
 downloads/
 tmp/
 .cache/
+.openclaw/
 .pytest_cache/
 __pycache__/
 *.py[cod]
@@ -36,3 +37,4 @@ scripts/.*_state*
 /scripts/.baselane_source_pipeline.lock
 /.secrets/
 /skills/lofty-pm
+/skills/baselane-mcp/har-skills

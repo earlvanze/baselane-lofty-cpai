@@ -10,6 +10,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${WORKSPACE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+MONTHLY_DISCORD_CODE_ROOT="${BASELANE_MONTHLY_DISCORD_CODE_ROOT:-$ROOT}"
 OPENCLAW_ROOT="${OPENCLAW_ROOT:-$(cd "$ROOT/.." && pwd)}"
 PY="${PYTHON_BIN:-python3}"
 BASELANE_CANONICAL_CRONTAB_FILE="${BASELANE_CANONICAL_CRONTAB_FILE:-$ROOT/config/openclaw-wsl-worker.crontab}"
@@ -97,12 +98,15 @@ RUN_MONTH="${RUN_MONTH:-$DEFAULT_RUN_MONTH}"
 RUN_YEAR="${RUN_MONTH%-*}"
 RUN_MONTH_NUMBER="${RUN_MONTH#*-}"
 DRY_RUN="${DRY_RUN:-0}"
+OPERATOR_REQUESTED_DRY_RUN="$DRY_RUN"
 BASELANE_AUTH_DEGRADED_MODE="${BASELANE_AUTH_DEGRADED_MODE:-0}"
 BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED="${BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED:-0}"
 BASELANE_MONTHLY_LIVE_ACTIONS_BLOCKED_REASON=""
 BASELANE_MONTHLY_DRY_RUN_FORCED_BY_APPROVAL_GATE="0"
 SEND_OWNER_EMAILS="${SEND_OWNER_EMAILS:-0}"
-SEND_NATIVE_LOFTY_OWNER_EMAILS="${SEND_NATIVE_LOFTY_OWNER_EMAILS:-1}"
+# Email delivery is a separate human-approved action. Enabling a live close or
+# the master email switch must not implicitly enable either transport.
+SEND_NATIVE_LOFTY_OWNER_EMAILS="${SEND_NATIVE_LOFTY_OWNER_EMAILS:-0}"
 SEND_NON_NATIVE_OWNER_EMAILS="${SEND_NON_NATIVE_OWNER_EMAILS:-0}"
 REQUIRE_NATIVE_LOFTY_OWNER_EMAILS="${REQUIRE_NATIVE_LOFTY_OWNER_EMAILS:-1}"
 OWNER_EMAIL_FAILURE_NONBLOCKING="${OWNER_EMAIL_FAILURE_NONBLOCKING:-${BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED:-0}}"
@@ -131,7 +135,6 @@ REQUIRE_CF_MORTGAGE_BALANCE_INTEGRITY_GUARD="${REQUIRE_CF_MORTGAGE_BALANCE_INTEG
 PUBLISH_LOFTY_PM_UPDATES="${PUBLISH_LOFTY_PM_UPDATES:-0}"
 APPLY_LOFTY_LIVE_FINANCIAL_CORRECTIONS="${APPLY_LOFTY_LIVE_FINANCIAL_CORRECTIONS:-0}"
 STAGE_LOFTY_PAY_PERIOD_FINANCIALS="${STAGE_LOFTY_PAY_PERIOD_FINANCIALS:-1}"
-export LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES="${LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES:-Ohio 3-Property Package}"
 export LOFTY_LIVE_RECOVERY_DISCARD_LOCAL_ONLY_HISTORY="${LOFTY_LIVE_RECOVERY_DISCARD_LOCAL_ONLY_HISTORY:-1}"
 BUILD_LOFTY_LISTING_CLEANUP_QUEUE="${BUILD_LOFTY_LISTING_CLEANUP_QUEUE:-1}"
 RUN_LEGACY_OWNER_EMAIL_WEEKLY="${RUN_LEGACY_OWNER_EMAIL_WEEKLY:-0}"
@@ -154,11 +157,18 @@ REQUIRE_MONTHLY_ACCRUAL_COMPLETENESS="${REQUIRE_MONTHLY_ACCRUAL_COMPLETENESS:-1}
 RUN_BASELANE_MONTHLY_FINANCE_TRUTH_REFRESH="${RUN_BASELANE_MONTHLY_FINANCE_TRUTH_REFRESH:-1}"
 REQUIRE_BASELANE_MONTHLY_FINANCE_TRUTH_REFRESH="${REQUIRE_BASELANE_MONTHLY_FINANCE_TRUTH_REFRESH:-1}"
 RUN_BASELANE_MONTHLY_FINANCE_TRUTH_AUTH_PREFLIGHT="${RUN_BASELANE_MONTHLY_FINANCE_TRUTH_AUTH_PREFLIGHT:-1}"
+RUN_PROPERTY_RECONCILIATION_HOLD_REFRESH="${RUN_PROPERTY_RECONCILIATION_HOLD_REFRESH:-1}"
+PROPERTY_RECONCILIATION_HOLD_TIMEOUT_SECONDS="${PROPERTY_RECONCILIATION_HOLD_TIMEOUT_SECONDS:-120}"
 BASELANE_MONTHLY_REUSE_FRESH_LOFTY_DRAFTS="${BASELANE_MONTHLY_REUSE_FRESH_LOFTY_DRAFTS:-0}"
 # Scheduled live closes own their Baselane accrual writes. The 28th job remains
 # an idempotent recovery pass, not the only writer.
 APPLY_BASELANE_MONTHLY_ACCRUALS_LIVE="${APPLY_BASELANE_MONTHLY_ACCRUALS_LIVE:-$BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED}"
 SETTLE_MONTHLY_RESERVE_RETENTION_CASH="${SETTLE_MONTHLY_RESERVE_RETENTION_CASH:-1}"
+SWEEP_MONTHLY_DAO_INTEREST_TO_ECO="${SWEEP_MONTHLY_DAO_INTEREST_TO_ECO:-1}"
+# Standing owner authorization: exact Baselane savings-interest credits may be
+# swept internally to ECO. This is independent of owner-email/listing approval.
+# An operator can still force a no-mutation rehearsal with DRY_RUN=1.
+APPLY_MONTHLY_DAO_INTEREST_SWEEP_LIVE="${APPLY_MONTHLY_DAO_INTEREST_SWEEP_LIVE:-1}"
 RUN_BASELANE_MONTHLY_WEEKLY_REFRESH="${RUN_BASELANE_MONTHLY_WEEKLY_REFRESH:-1}"
 RUN_DAO_VENDOR_UPSTREAM_NORMALIZATION="${RUN_DAO_VENDOR_UPSTREAM_NORMALIZATION:-1}"
 RUN_NONPROPERTY_CATEGORY_NORMALIZATION="${RUN_NONPROPERTY_CATEGORY_NORMALIZATION:-1}"
@@ -279,6 +289,12 @@ LIVE_DAO_CASH_TIMEOUT_SECONDS="${BASELANE_LIVE_DAO_CASH_TIMEOUT_SECONDS:-300}"
 REVIEW_CANDIDATE_LOFTY_PROFILE_JSON="${REVIEW_CANDIDATE_LOFTY_PROFILE_JSON:-}"
 REVIEW_CANDIDATE_LOFTY_ALL_PROPERTIES_JSON="${REVIEW_CANDIDATE_LOFTY_ALL_PROPERTIES_JSON:-}"
 REVIEW_CANDIDATE_SOURCE_LEDGER="${REVIEW_CANDIDATE_SOURCE_LEDGER:-/mnt/c/Users/digit/Dropbox/Projects/assetrail/ECO Systems General Ledger.csv}"
+SOURCE_CASH_REPORTING_LEDGER="${SOURCE_CASH_REPORTING_LEDGER:-$REPORT_DIR/baselane_weekly_no_dao_mortgage_clean_reporting_ledger.csv}"
+SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_FILE="${SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_FILE:-$REPORT_DIR/baselane_monthly_reporting_ledger_authority.json}"
+SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_TIMEOUT_SECONDS="${BASELANE_SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_TIMEOUT_SECONDS:-300}"
+REPORTING_PROPERTY_LEDGER_REFRESH_FILE="${REPORTING_PROPERTY_LEDGER_REFRESH_FILE:-$REPORT_DIR/baselane_monthly_reporting_property_ledger_refresh.json}"
+REPORTING_PROPERTY_LEDGER_SPLIT_FILE="${REPORTING_PROPERTY_LEDGER_SPLIT_FILE:-$REPORT_DIR/split_ledger_public_financials_last.json}"
+REPORTING_PROPERTY_LEDGER_REFRESH_TIMEOUT_SECONDS="${BASELANE_REPORTING_PROPERTY_LEDGER_REFRESH_TIMEOUT_SECONDS:-600}"
 SOURCE_TRANSACTION_INDEX_FILE="${SOURCE_TRANSACTION_INDEX_FILE:-$REPORT_DIR/baselane_source_transaction_index.csv}"
 REVIEW_SAFETY_SCAN_FILE="$REPORT_DIR/baselane_financials_monthly_review_safety_scan.json"
 REVIEW_SAFETY_SCAN_MARKDOWN_FILE="$REPORT_DIR/baselane_financials_monthly_review_safety_scan.md"
@@ -297,6 +313,9 @@ LOFTY_LIVE_PROPERTIES_REPORT_FILE="${LOFTY_LIVE_PROPERTIES_REPORT_FILE:-$REPORT_
 LOFTY_MANAGER_PROPERTIES_RESPONSE_FILE="${LOFTY_MANAGER_PROPERTIES_RESPONSE_FILE:-$REPORT_DIR/lofty-pm-current/get-manager-properties.full-response.json}"
 LOFTY_MANAGER_PROPERTIES_REFRESH_FILE="${LOFTY_MANAGER_PROPERTIES_REFRESH_FILE:-$REPORT_DIR/lofty-pm-current/get-manager-properties.full-response.refresh.json}"
 LOFTY_MANAGER_PROPERTIES_REFRESH_LOG_FILE="${LOFTY_MANAGER_PROPERTIES_REFRESH_LOG_FILE:-$REPORT_DIR/lofty-pm-current/get-manager-properties.full-response.refresh.log}"
+ACTIVE_PROPERTY_ROSTER_FILE="${ACTIVE_PROPERTY_ROSTER_FILE:-$REPORT_DIR/lofty_monthly_active_property_roster.json}"
+ACTIVE_REPORTING_INDEX_FILE="${ACTIVE_REPORTING_INDEX_FILE:-$REPORT_DIR/lofty_monthly_active_reporting_index.csv}"
+ACTIVE_PROPERTY_ROSTER_SCRIPT="$ROOT/scripts/lofty_monthly_active_roster.py"
 OWNER_REVIEW_GATE_FILE="$REPORT_DIR/baselane_monthly_owner_review_gate.json"
 OWNER_REVIEW_GATE_MARKDOWN_FILE="$REPORT_DIR/baselane_monthly_owner_review_gate.md"
 LIVE_UPDATE_CAPTURE_FILE="$REPORT_DIR/baselane_financials_monthly_live_update_capture.json"
@@ -351,10 +370,10 @@ tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="u
 os.replace(tmp, target)
 PY
 }
-# The same full Column E balance must feed CF, DAO net cash, transfer, and
-# Lofty publish gates. Month-end reporting is calculated separately and must
-# not overwrite this canonical source-cash guard.
-MONTHLY_SOURCE_CASH_MODE="${BASELANE_MONTHLY_SOURCE_CASH_MODE:-full_column_e}"
+# Closed CF columns must use the property GL through the target month-end.
+# Current-control jobs outside this close retain their full_column_e default,
+# and the Yhome current view is explicitly kept in full_column_e mode.
+MONTHLY_SOURCE_CASH_MODE="${BASELANE_MONTHLY_SOURCE_CASH_MODE:-as_of_month_end}"
 case "$MONTHLY_SOURCE_CASH_MODE" in
   full_column_e|as_of_month_end) ;;
   *)
@@ -403,8 +422,8 @@ OWNER_EMAIL_RECIPIENTS_CSV="${OWNER_EMAIL_RECIPIENTS_CSV:-$REPORT_DIR/lofty_owne
 OWNER_EMAIL_PACKET_REVIEW_CANDIDATE_FILE="${OWNER_EMAIL_PACKET_REVIEW_CANDIDATE_FILE:-$REVIEW_CANDIDATE_PACKET_FILE}"
 YHOME_TRANSITION_RECONCILIATION_CSV="${YHOME_TRANSITION_RECONCILIATION_CSV:-$REPORT_DIR/yhome_transition_reconciliation.csv}"
 GUILD_TEST_POST_REPORT_FILE="${GUILD_TEST_POST_REPORT_FILE:-$REPORT_DIR/baselane_financials_monthly_guild_test_post.json}"
-MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE="${MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE:-$REPORT_DIR/baselane_financials_monthly_discord_property_update_send.json}"
 MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE="${MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE:-$REPORT_DIR/baselane_financials_monthly_discord_review_drafts.json}"
+MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE="${MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE:-$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE}"
 MONTHLY_DISCORD_REVIEW_DRAFT_AGENT_FILE="${MONTHLY_DISCORD_REVIEW_DRAFT_AGENT_FILE:-$REPORT_DIR/baselane_financials_monthly_discord_review_drafts_agent.json}"
 MONTHLY_DISCORD_ALL_SEND_PLAN_FILE="${MONTHLY_DISCORD_ALL_SEND_PLAN_FILE:-$REPORT_DIR/baselane_financials_monthly_discord_all_send_plan.json}"
 MONTHLY_DISCORD_ALL_SEND_PLAN_VALIDATION_FILE="${MONTHLY_DISCORD_ALL_SEND_PLAN_VALIDATION_FILE:-$REPORT_DIR/baselane_financials_monthly_discord_all_send_plan_validation.json}"
@@ -414,6 +433,10 @@ MONTHLY_ACCRUALS_REVIEW_MARKDOWN_FILE="${MONTHLY_ACCRUALS_REVIEW_MARKDOWN_FILE:-
 MONTHLY_RESERVE_RETENTION_TRANSFER_SCRIPT="$ROOT/scripts/baselane_settle_monthly_reserve_retention.py"
 MONTHLY_RESERVE_RETENTION_TRANSFER_PLAN_FILE="${MONTHLY_RESERVE_RETENTION_TRANSFER_PLAN_FILE:-$REPORT_DIR/baselane_monthly_reserve_retention_transfer_plan.json}"
 MONTHLY_RESERVE_RETENTION_TRANSFER_APPLIED_FILE="${MONTHLY_RESERVE_RETENTION_TRANSFER_APPLIED_FILE:-$REPORT_DIR/baselane_monthly_reserve_retention_transfer_applied.json}"
+MONTHLY_INTEREST_SWEEP_SCRIPT="$ROOT/scripts/baselane_transfer_interest_to_eco.py"
+MONTHLY_INTEREST_SWEEP_PLAN_FILE="${MONTHLY_INTEREST_SWEEP_PLAN_FILE:-$REPORT_DIR/baselane_monthly_interest_sweep_plan.json}"
+MONTHLY_INTEREST_SWEEP_APPLIED_FILE="${MONTHLY_INTEREST_SWEEP_APPLIED_FILE:-$REPORT_DIR/baselane_monthly_interest_sweep_applied.json}"
+MONTHLY_INTEREST_SWEEP_STATE_FILE="${MONTHLY_INTEREST_SWEEP_STATE_FILE:-$REPORT_DIR/baselane_interest_transfer_state.json}"
 MONTHLY_FINANCE_TRUTH_REFRESH_FILE="${MONTHLY_FINANCE_TRUTH_REFRESH_FILE:-$REPORT_DIR/baselane_monthly_finance_truth_refresh.json}"
 BASELANE_AUTH_RECOVERY_REPORT_FILE="${BASELANE_AUTH_RECOVERY_REPORT_FILE:-$REPORT_DIR/baselane_auth_recovery_report.json}"
 LIVE_CF_STATEMENT_STANDARDIZE_SCRIPT="$ROOT/scripts/baselane_live_cf_statement_standardize.py"
@@ -463,6 +486,8 @@ QUITMAN_804_CASH_ALIGNMENT_REVIEW_MARKDOWN_FILE="${QUITMAN_804_CASH_ALIGNMENT_RE
 QUITMAN_804_CASH_ALIGNMENT_DECISION_VALIDATION_FILE="${QUITMAN_804_CASH_ALIGNMENT_DECISION_VALIDATION_FILE:-$REPORT_DIR/baselane_804_quitman_cash_alignment_decision_validation.json}"
 QUITMAN_804_UPSTREAM_RETAG_QUEUE_CSV="${QUITMAN_804_UPSTREAM_RETAG_QUEUE_CSV:-$REPORT_DIR/baselane_804_quitman_upstream_retag_queue.csv}"
 TRANSFER_RECONCILIATION_FILE="${TRANSFER_RECONCILIATION_FILE:-$REPORT_DIR/baselane_lofty_transfer_requirements.json}"
+PROPERTY_RECONCILIATION_HOLDS_FILE="${PROPERTY_RECONCILIATION_HOLDS_FILE:-$REPORT_DIR/baselane_property_reconciliation_holds.json}"
+NINE_COUNTRY_CLUB_RECONCILIATION_FILE="${NINE_COUNTRY_CLUB_RECONCILIATION_FILE:-$REPORT_DIR/baselane_9_country_club_reconciliation.monthly.json}"
 TRANSFER_RECONCILIATION_CSV="${TRANSFER_RECONCILIATION_CSV:-$REPORT_DIR/baselane_lofty_transfer_requirements.csv}"
 TRANSFER_RECONCILIATION_MARKDOWN="${TRANSFER_RECONCILIATION_MARKDOWN:-$REPORT_DIR/baselane_lofty_transfer_requirements.md}"
 TRANSFER_RECONCILIATION_TELEGRAM_MARKDOWN="${TRANSFER_RECONCILIATION_TELEGRAM_MARKDOWN:-$REPORT_DIR/baselane_lofty_transfer_requirements.telegram.md}"
@@ -497,11 +522,14 @@ NATIONAL_GRID_STATEMENT_AUDIT_STATUS="not_started"
 LOFTY_DOC_BOOTSTRAP_STATUS="not_started"
 LOFTY_CDP_ENSURE_STATUS="not_started"
 LOFTY_CDP_PREFLIGHT_STATUS="not_started"
+LOFTY_MANAGER_PROPERTIES_REFRESH_STATUS="not_started"
+LOFTY_ACTIVE_PROPERTY_ROSTER_STATUS="not_started"
 LOFTY_LIVE_UPDATE_CAPTURE_STATUS="not_started"
 LOFTY_LIVE_UPDATES_FULL_LOCAL_RESTORE_STATUS="not_started"
 LOFTY_LIVE_UPDATES_HISTORY_CONTAINMENT_STATUS="not_started"
 LOFTY_LIVE_FINANCIAL_CAPTURE_STATUS="not_started"
 NO_MORTGAGE_FINANCIALS_GUARD_STATUS="not_started"
+PROPERTY_RECONCILIATION_HOLD_STATUS="not_started"
 CF_MORTGAGE_BALANCE_INTEGRITY_GUARD_STATUS="not_started"
 LOFTY_GUARD_STATUS="not_started"
 LOFTY_GUARDED_APPLY_STATUS="not_started"
@@ -522,6 +550,7 @@ MONTHLY_FINANCIAL_DATA_PUBLISH_ALLOWED="0"
 MONTHLY_FINANCIAL_DATA_PUBLISH_BLOCKED_REASON=""
 MONTHLY_ACCRUALS_STATUS="not_started"
 MONTHLY_RESERVE_RETENTION_TRANSFER_STATUS="not_started"
+MONTHLY_INTEREST_SWEEP_STATUS="not_started"
 MONTHLY_FINANCE_TRUTH_REFRESH_STATUS="not_started"
 MONTHLY_ACCRUALS_MISSING_COUNT="0"
 MONTHLY_ACCRUALS_AMOUNT_MISMATCH_COUNT="0"
@@ -867,7 +896,11 @@ refresh_monthly_readiness_report() {
   READINESS_SCRIPT="$ROOT/scripts/baselane_monthly_readiness_report.py"
   if [ -f "$READINESS_SCRIPT" ]; then
     set +e
-    $PY "$READINESS_SCRIPT" --root "$ROOT" --report "$READINESS_FILE" --markdown "$READINESS_MARKDOWN_FILE" >/dev/null
+    $PY "$READINESS_SCRIPT" \
+      --root "$ROOT" \
+      --report "$READINESS_FILE" \
+      --markdown "$READINESS_MARKDOWN_FILE" \
+      --current-run-started-at "$RUN_STARTED_AT" >/dev/null
     readiness_rc="$?"
     set -e
     if [ "$readiness_rc" -eq 0 ]; then
@@ -988,6 +1021,8 @@ write_monthly_report() {
   BASELANE_MONTHLY_CRON_SCRIPT_FILE="$0" \
   BASELANE_MONTHLY_HISTORY_FILE="$HISTORY_FILE" \
   BASELANE_MONTHLY_GUARD_AUDIT_FILE="$GUARD_AUDIT_FILE" \
+  BASELANE_MONTHLY_PROPERTY_RECONCILIATION_HOLDS_FILE="$PROPERTY_RECONCILIATION_HOLDS_FILE" \
+  BASELANE_MONTHLY_NINE_COUNTRY_CLUB_RECONCILIATION_FILE="$NINE_COUNTRY_CLUB_RECONCILIATION_FILE" \
   BASELANE_MONTHLY_DOC_BOOTSTRAP_FILE="$DOC_BOOTSTRAP_FILE" \
   BASELANE_MONTHLY_NO_MORTGAGE_FINANCIALS_GUARD_FILE="$NO_MORTGAGE_FINANCIALS_GUARD_FILE" \
   BASELANE_MONTHLY_CF_MORTGAGE_BALANCE_INTEGRITY_GUARD_FILE="$CF_MORTGAGE_BALANCE_INTEGRITY_GUARD_FILE" \
@@ -1013,8 +1048,10 @@ write_monthly_report() {
   BASELANE_MONTHLY_DISK_PREFLIGHT_MIN_FREE_MIB="$BASELANE_DISK_PREFLIGHT_MIN_FREE_MIB" \
   BASELANE_MONTHLY_STATEMENTS_IDEMPOTENT_FILE="$MONTHLY_STATEMENTS_IDEMPOTENT_FILE" \
   BASELANE_MONTHLY_STATEMENTS_OPERATOR_FILE="$MONTHLY_STATEMENTS_OPERATOR_FILE" \
-  BASELANE_MONTHLY_DAILY_SYNC_REPORT_FILE="$DAILY_SYNC_REPORT_FILE" \
-  BASELANE_MONTHLY_DAILY_SOURCE_CASH_BALANCE_REPORT_FILE="$DAILY_SOURCE_CASH_BALANCE_REPORT_FILE" \
+	  BASELANE_MONTHLY_DAILY_SYNC_REPORT_FILE="$DAILY_SYNC_REPORT_FILE" \
+	  BASELANE_MONTHLY_REPORTING_PROPERTY_LEDGER_REFRESH_FILE="$REPORTING_PROPERTY_LEDGER_REFRESH_FILE" \
+	  BASELANE_MONTHLY_REPORTING_PROPERTY_LEDGER_SPLIT_FILE="$REPORTING_PROPERTY_LEDGER_SPLIT_FILE" \
+	  BASELANE_MONTHLY_DAILY_SOURCE_CASH_BALANCE_REPORT_FILE="$DAILY_SOURCE_CASH_BALANCE_REPORT_FILE" \
   BASELANE_MONTHLY_SOURCE_CASH_RECONCILIATION_ACTIONS_FILE="$SOURCE_CASH_RECONCILIATION_ACTIONS_FILE" \
   BASELANE_MONTHLY_SOURCE_CASH_RECONCILIATION_ACTIONS_CSV="$SOURCE_CASH_RECONCILIATION_ACTIONS_CSV" \
   BASELANE_MONTHLY_DAO_VENDOR_PROPERTY_RECONCILIATION_FILE="$DAO_VENDOR_PROPERTY_RECONCILIATION_FILE" \
@@ -1107,12 +1144,16 @@ BASELANE_MONTHLY_OPENCLAW_CRON_JOBS_FILE="$OPENCLAW_CRON_JOBS_FILE" \
   BASELANE_MONTHLY_LOFTY_DOC_BOOTSTRAP_STATUS="$LOFTY_DOC_BOOTSTRAP_STATUS" \
   BASELANE_MONTHLY_LOFTY_CDP_ENSURE_STATUS="$LOFTY_CDP_ENSURE_STATUS" \
 	  BASELANE_MONTHLY_LOFTY_CDP_PREFLIGHT_STATUS="$LOFTY_CDP_PREFLIGHT_STATUS" \
+	  BASELANE_MONTHLY_LOFTY_ACTIVE_PROPERTY_ROSTER_STATUS="$LOFTY_ACTIVE_PROPERTY_ROSTER_STATUS" \
+	  BASELANE_MONTHLY_LOFTY_ACTIVE_PROPERTY_ROSTER_FILE="$ACTIVE_PROPERTY_ROSTER_FILE" \
+	  BASELANE_MONTHLY_LOFTY_ACTIVE_REPORTING_INDEX_FILE="$ACTIVE_REPORTING_INDEX_FILE" \
 	  BASELANE_MONTHLY_LOFTY_LIVE_UPDATE_CAPTURE_STATUS="$LOFTY_LIVE_UPDATE_CAPTURE_STATUS" \
 	  BASELANE_MONTHLY_LOFTY_LIVE_UPDATES_FULL_LOCAL_RESTORE_STATUS="$LOFTY_LIVE_UPDATES_FULL_LOCAL_RESTORE_STATUS" \
 	  BASELANE_MONTHLY_LOFTY_LIVE_UPDATES_HISTORY_CONTAINMENT_STATUS="$LOFTY_LIVE_UPDATES_HISTORY_CONTAINMENT_STATUS" \
 	  BASELANE_MONTHLY_LOFTY_LIVE_FINANCIAL_CAPTURE_STATUS="$LOFTY_LIVE_FINANCIAL_CAPTURE_STATUS" \
   BASELANE_MONTHLY_NO_MORTGAGE_FINANCIALS_GUARD_STATUS="$NO_MORTGAGE_FINANCIALS_GUARD_STATUS" \
   BASELANE_MONTHLY_CF_MORTGAGE_BALANCE_INTEGRITY_GUARD_STATUS="$CF_MORTGAGE_BALANCE_INTEGRITY_GUARD_STATUS" \
+  BASELANE_MONTHLY_PROPERTY_RECONCILIATION_HOLD_STATUS="$PROPERTY_RECONCILIATION_HOLD_STATUS" \
   BASELANE_MONTHLY_LOFTY_GUARD_STATUS="$LOFTY_GUARD_STATUS" \
   BASELANE_MONTHLY_LOFTY_GUARDED_APPLY_STATUS="$LOFTY_GUARDED_APPLY_STATUS" \
   BASELANE_MONTHLY_LOFTY_UNREVIEWED_FINANCIAL_QUARANTINE_STATUS="$LOFTY_UNREVIEWED_FINANCIAL_QUARANTINE_STATUS" \
@@ -1295,11 +1336,12 @@ def monthly_disk_next_action(path_text):
     return "Free local Dropbox/Windows disk space, rerun scripts/baselane_cron_run.sh, then rerun monthly publish/email."
 
 MONTHLY_CHAIN_REQUIRED_ORDER = [
+    "dao_vendor_upstream_normalization",
+    "property_reconciliation_hold_refresh",
     "monthly_accruals_completeness",
     "cf_balance_sheet_consistency",
     "yhome_operating_cash_apply_verify",
     "quitman_804_cash_alignment",
-    "dao_vendor_upstream_normalization",
     "source_cash_reconciliation_actions",
     "transfer_reconciliation",
     "transfer_reconciliation_telegram",
@@ -1361,6 +1403,8 @@ daily_source_cash_balance_path = os.environ.get("BASELANE_MONTHLY_DAILY_SOURCE_C
 source_cash_reconciliation_actions_path = os.environ.get("BASELANE_MONTHLY_SOURCE_CASH_RECONCILIATION_ACTIONS_FILE") or ""
 source_cash_reconciliation_actions_csv_path = os.environ.get("BASELANE_MONTHLY_SOURCE_CASH_RECONCILIATION_ACTIONS_CSV") or ""
 dao_vendor_property_reconciliation_path = os.environ.get("BASELANE_MONTHLY_DAO_VENDOR_PROPERTY_RECONCILIATION_FILE") or ""
+property_reconciliation_holds_path = os.environ.get("BASELANE_MONTHLY_PROPERTY_RECONCILIATION_HOLDS_FILE") or ""
+nine_country_club_reconciliation_path = os.environ.get("BASELANE_MONTHLY_NINE_COUNTRY_CLUB_RECONCILIATION_FILE") or ""
 future_cf_values_apply_path = os.environ.get("BASELANE_MONTHLY_FUTURE_CF_VALUES_APPLY_REPORT_FILE") or ""
 future_cf_values_clear_path = os.environ.get("BASELANE_MONTHLY_FUTURE_CF_VALUES_CLEAR_REPORT_FILE") or ""
 cf_mortgage_balance_integrity_guard_path = os.environ.get("BASELANE_MONTHLY_CF_MORTGAGE_BALANCE_INTEGRITY_GUARD_FILE") or ""
@@ -1398,6 +1442,22 @@ daily_sync = read_json(daily_sync_path) if daily_sync_path else {}
 daily_source_cash_balance = read_json(daily_source_cash_balance_path) if daily_source_cash_balance_path else {}
 source_cash_reconciliation_actions = read_json(source_cash_reconciliation_actions_path) if source_cash_reconciliation_actions_path else {}
 dao_vendor_property_reconciliation = read_json(dao_vendor_property_reconciliation_path) if dao_vendor_property_reconciliation_path else {}
+property_reconciliation_holds = read_json(property_reconciliation_holds_path) if property_reconciliation_holds_path else {}
+property_reconciliation_held_details = (
+    property_reconciliation_holds.get("held_properties")
+    if isinstance(property_reconciliation_holds.get("held_properties"), list)
+    else []
+)
+property_reconciliation_held_names = [
+    str(detail.get("property") or detail.get("property_name") or "").strip()
+    for detail in property_reconciliation_held_details
+    if isinstance(detail, dict)
+    and str(detail.get("property") or detail.get("property_name") or "").strip()
+]
+property_reconciliation_holds_current_for_run = generated_at_current_for_run(
+    property_reconciliation_holds.get("generated_at"),
+    os.environ.get("BASELANE_MONTHLY_STARTED_AT"),
+)
 future_cf_values_apply = read_json(future_cf_values_apply_path) if future_cf_values_apply_path else {}
 future_cf_values_clear = read_json(future_cf_values_clear_path) if future_cf_values_clear_path else {}
 cf_mortgage_balance_integrity_guard = read_json(cf_mortgage_balance_integrity_guard_path) if cf_mortgage_balance_integrity_guard_path else {}
@@ -1665,6 +1725,12 @@ report = {
     "dao_vendor_property_reconciliation_applied_count": int(dao_vendor_property_reconciliation.get("applied_count") or 0),
     "dao_vendor_property_reconciliation_unresolved_count": int(dao_vendor_property_reconciliation.get("unresolved_count") or 0),
     "dao_vendor_property_reconciliation_guard_failure_count": int(dao_vendor_property_reconciliation.get("guard_failure_count") or 0),
+    "property_reconciliation_hold_status": os.environ.get("BASELANE_MONTHLY_PROPERTY_RECONCILIATION_HOLD_STATUS") or property_reconciliation_holds.get("status"),
+    "property_reconciliation_held_count": int(property_reconciliation_holds.get("held_property_count") or len(property_reconciliation_held_details)),
+    "property_reconciliation_held_properties": property_reconciliation_held_names,
+    "property_reconciliation_live_state_verified": property_reconciliation_holds.get("live_state_verified") is True,
+    "property_reconciliation_source_digest": property_reconciliation_holds.get("source_digest"),
+    "property_reconciliation_holds_current_for_run": property_reconciliation_holds_current_for_run is True,
     "dry_run": os.environ.get("DRY_RUN") == "1",
     "dry_run_forced_by_approval_gate": os.environ.get("BASELANE_MONTHLY_DRY_RUN_FORCED_BY_APPROVAL_GATE") == "1",
     "live_actions_approved": os.environ.get("BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED") == "1",
@@ -2141,11 +2207,13 @@ report = {
         "lofty_public_doc_bootstrap": os.environ.get("BASELANE_MONTHLY_LOFTY_DOC_BOOTSTRAP_STATUS"),
 	        "lofty_cdp_ensure": os.environ.get("BASELANE_MONTHLY_LOFTY_CDP_ENSURE_STATUS"),
 	        "lofty_cdp_preflight": os.environ.get("BASELANE_MONTHLY_LOFTY_CDP_PREFLIGHT_STATUS"),
+	        "lofty_active_property_roster": os.environ.get("BASELANE_MONTHLY_LOFTY_ACTIVE_PROPERTY_ROSTER_STATUS"),
 	        "lofty_live_update_capture": os.environ.get("BASELANE_MONTHLY_LOFTY_LIVE_UPDATE_CAPTURE_STATUS"),
 	        "lofty_live_updates_full_local_restore": os.environ.get("BASELANE_MONTHLY_LOFTY_LIVE_UPDATES_FULL_LOCAL_RESTORE_STATUS"),
 	        "lofty_live_updates_history_containment": os.environ.get("BASELANE_MONTHLY_LOFTY_LIVE_UPDATES_HISTORY_CONTAINMENT_STATUS"),
-	        "lofty_live_financial_capture": os.environ.get("BASELANE_MONTHLY_LOFTY_LIVE_FINANCIAL_CAPTURE_STATUS"),
+        "lofty_live_financial_capture": os.environ.get("BASELANE_MONTHLY_LOFTY_LIVE_FINANCIAL_CAPTURE_STATUS"),
         "no_mortgage_financials_guard": os.environ.get("BASELANE_MONTHLY_NO_MORTGAGE_FINANCIALS_GUARD_STATUS"),
+        "property_reconciliation_hold_refresh": os.environ.get("BASELANE_MONTHLY_PROPERTY_RECONCILIATION_HOLD_STATUS"),
         "lofty_guard_audit": os.environ.get("BASELANE_MONTHLY_LOFTY_GUARD_STATUS"),
         "lofty_guarded_apply": os.environ.get("BASELANE_MONTHLY_LOFTY_GUARDED_APPLY_STATUS"),
         "lofty_unreviewed_financial_quarantine": os.environ.get("BASELANE_MONTHLY_LOFTY_UNREVIEWED_FINANCIAL_QUARANTINE_STATUS"),
@@ -2187,11 +2255,15 @@ report = {
         "monthly_close_status_report": os.environ.get("BASELANE_MONTHLY_CLOSE_STATUS_FILE"),
         "monthly_close_status_markdown": os.environ.get("BASELANE_MONTHLY_CLOSE_STATUS_MARKDOWN_FILE"),
         "guard_audit": os.environ.get("BASELANE_MONTHLY_GUARD_AUDIT_FILE"),
+        "property_reconciliation_holds": property_reconciliation_holds_path or None,
+        "nine_country_club_reconciliation": nine_country_club_reconciliation_path or None,
         "doc_bootstrap": os.environ.get("BASELANE_MONTHLY_DOC_BOOTSTRAP_FILE"),
         "no_mortgage_financials_guard": os.environ.get("BASELANE_MONTHLY_NO_MORTGAGE_FINANCIALS_GUARD_FILE"),
         "cf_mortgage_balance_integrity_guard": os.environ.get("BASELANE_MONTHLY_CF_MORTGAGE_BALANCE_INTEGRITY_GUARD_FILE"),
 	        "lofty_cdp_ensure": os.environ.get("BASELANE_MONTHLY_LOFTY_CDP_ENSURE_FILE"),
 	        "lofty_cdp_preflight": os.environ.get("BASELANE_MONTHLY_LOFTY_CDP_PREFLIGHT_FILE"),
+	        "lofty_active_property_roster": os.environ.get("BASELANE_MONTHLY_LOFTY_ACTIVE_PROPERTY_ROSTER_FILE"),
+	        "lofty_active_reporting_index": os.environ.get("BASELANE_MONTHLY_LOFTY_ACTIVE_REPORTING_INDEX_FILE"),
 	        "live_update_capture": os.environ.get("BASELANE_MONTHLY_LIVE_UPDATE_CAPTURE_FILE"),
 	        "lofty_live_updates_full_local_restore": os.environ.get("BASELANE_MONTHLY_LOFTY_LIVE_UPDATES_FULL_LOCAL_RESTORE_FILE"),
 	        "lofty_live_updates_history_containment": os.environ.get("BASELANE_MONTHLY_LIVE_UPDATES_HISTORY_CONTAINMENT_FILE"),
@@ -2210,8 +2282,10 @@ report = {
         "monthly_statements_idempotent": statements_idempotent_path or None,
         "stale_financial_artifact_guard": os.environ.get("BASELANE_MONTHLY_STALE_FINANCIAL_ARTIFACT_GUARD_FILE"),
         "monthly_statements_operator": statements_operator_path or None,
-        "daily_sync_report": daily_sync_path or None,
-        "daily_source_cash_balance": daily_source_cash_balance_path or None,
+	        "daily_sync_report": daily_sync_path or None,
+	        "reporting_property_ledger_refresh": os.environ.get("BASELANE_MONTHLY_REPORTING_PROPERTY_LEDGER_REFRESH_FILE"),
+	        "reporting_property_ledger_split": os.environ.get("BASELANE_MONTHLY_REPORTING_PROPERTY_LEDGER_SPLIT_FILE"),
+	        "daily_source_cash_balance": daily_source_cash_balance_path or None,
         "source_cash_reconciliation_actions": source_cash_reconciliation_actions_path or None,
         "source_cash_reconciliation_actions_csv": source_cash_reconciliation_actions_csv_path or None,
         "dao_vendor_property_reconciliation": dao_vendor_property_reconciliation_path or None,
@@ -2426,9 +2500,13 @@ def live_lofty_publish_completion_command(report: dict[str, Any]) -> str:
 def live_discord_property_update_command(report: dict[str, Any]) -> str:
     account = str(report.get("discord_property_update_discord_account_id") or "").strip()
     command = (
-        "python3 scripts/send_monthly_discord_property_update.py "
+        "python3 scripts/run_monthly_discord_review_via_agent.py "
         "--plan reports/baselane_financials_monthly_discord_all_send_plan.json "
-        "--report reports/baselane_financials_monthly_discord_property_update_send.json"
+        "--report reports/baselane_financials_monthly_discord_review_drafts.json "
+        "--agent-report reports/baselane_financials_monthly_discord_review_drafts_agent.json "
+        "--sender-script scripts/send_monthly_discord_review_drafts.py "
+        "--plan-validation reports/baselane_financials_monthly_discord_all_send_plan_validation.json "
+        "--send"
     )
     if account:
         command += f" --account {account}"
@@ -4304,14 +4382,11 @@ report = {
         "valid": False,
         "posted": False,
         "run_month": os.environ["RUN_MONTH"],
-        "target": "channel:1362189256163856594",
-        "guild_id": "847877825373012018",
-        "selected": {
-            "guild_id": "847877825373012018",
-            "route_matched": True,
-            "target": "channel:1362189256163856594",
-            "property_name": "disk-preflight-hold",
-        },
+        "target": None,
+        "guild_id": None,
+        "selected": None,
+        "publication_state": "held_not_posted",
+        "human_approval_required": True,
         "next_action": "Resolve disk preflight before preparing or posting a guild test update.",
     },
     "yhome_transition_guard": {
@@ -5731,7 +5806,8 @@ if [ "$REQUIRE_YHOME_SOLD_GUARD" = "1" ] && [ "$YHOME_SOLD_GUARD_STATUS" != "ok"
   echo "[baselane-monthly] refusing monthly Lofty PM draft prep without Yhome sold/selling guard: $YHOME_SOLD_GUARD_STATUS" >&2
   exit 2
 fi
-MONTHLY_INDEX_CSV="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-portfolio-update-index.csv"
+MONTHLY_DRIVER_INDEX_CSV="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-portfolio-update-index.csv"
+MONTHLY_INDEX_CSV="$MONTHLY_DRIVER_INDEX_CSV"
 MONTHLY_SUMMARY_MD="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-portfolio-update-summary.md"
 MONTHLY_CHECKLIST_MD="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-monthly-review-checklist.md"
 if [ "$BASELANE_MONTHLY_REUSE_FRESH_LOFTY_DRAFTS" = "1" ]; then
@@ -5955,8 +6031,78 @@ PY
 else
   LOFTY_MANAGER_PROPERTIES_REFRESH_STATUS="review_unavailable"
 fi
-if [ "$LOFTY_MANAGER_PROPERTIES_REFRESH_STATUS" != "ok" ]; then
+if [ "$LOFTY_MANAGER_PROPERTIES_REFRESH_STATUS" != "ok" ] \
+  && [ "$LOFTY_MANAGER_PROPERTIES_REFRESH_STATUS" != "review_targets_failed" ]; then
   OWNER_EMAIL_SEND_BLOCKED_REASON="${OWNER_EMAIL_SEND_BLOCKED_REASON:-fresh Lofty manager-properties read failed; refusing live publish and owner email send}"
+fi
+
+CURRENT_STEP="lofty_active_property_roster"
+if [ "$LOFTY_MANAGER_PROPERTIES_REFRESH_STATUS" != "ok" ] \
+  && [ "$LOFTY_MANAGER_PROPERTIES_REFRESH_STATUS" != "review_targets_failed" ]; then
+  LOFTY_ACTIVE_PROPERTY_ROSTER_STATUS="failed_stale_manager_snapshot"
+  echo "[baselane-monthly] a fresh Lofty manager snapshot is required to prove the 32-property active roster" >&2
+  exit 2
+elif [ ! -f "$ACTIVE_PROPERTY_ROSTER_SCRIPT" ]; then
+  LOFTY_ACTIVE_PROPERTY_ROSTER_STATUS="failed_missing_script"
+  echo "[baselane-monthly] missing active-property roster builder: $ACTIVE_PROPERTY_ROSTER_SCRIPT" >&2
+  exit 1
+elif [ ! -s "$MONTHLY_DRIVER_INDEX_CSV" ]; then
+  LOFTY_ACTIVE_PROPERTY_ROSTER_STATUS="failed_missing_driver_index"
+  echo "[baselane-monthly] missing monthly driver index needed for deterministic property-path resolution: $MONTHLY_DRIVER_INDEX_CSV" >&2
+  exit 2
+else
+  set +e
+  "$PY" "$ACTIVE_PROPERTY_ROSTER_SCRIPT" \
+    --run-month "$RUN_MONTH" \
+    --manager-snapshot "$LOFTY_MANAGER_PROPERTIES_RESPONSE_FILE" \
+    --legacy-index "$MONTHLY_DRIVER_INDEX_CSV" \
+    --report "$ACTIVE_PROPERTY_ROSTER_FILE" \
+    --index-csv "$ACTIVE_REPORTING_INDEX_FILE"
+  active_roster_rc="$?"
+  set -e
+  if [ "$active_roster_rc" -eq 0 ] \
+    && [ -s "$ACTIVE_PROPERTY_ROSTER_FILE" ] \
+    && [ -s "$ACTIVE_REPORTING_INDEX_FILE" ]; then
+    LOFTY_ACTIVE_PROPERTY_ROSTER_STATUS="ok"
+    MONTHLY_INDEX_CSV="$ACTIVE_REPORTING_INDEX_FILE"
+  else
+    LOFTY_ACTIVE_PROPERTY_ROSTER_STATUS="review"
+    OWNER_EMAIL_SEND_BLOCKED_REASON="${OWNER_EMAIL_SEND_BLOCKED_REASON:-authoritative active-property roster is incomplete; refusing review publication and owner email send}"
+    echo "[baselane-monthly] authoritative roster did not prove exactly 32 physical properties and 30 grouped reporting targets" >&2
+    exit 2
+  fi
+fi
+
+# Re-run the idempotent bootstrap over the canonical 30-target index. The
+# external monthly driver index is path evidence only and may contain a subset.
+if [ -f "$DOC_BOOTSTRAP_SCRIPT" ] && [ -n "$COMMS_WORKSPACE" ]; then
+  CANONICAL_BOOTSTRAP_ARGS=(
+    --index-csv "$MONTHLY_INDEX_CSV"
+    --report "$DOC_BOOTSTRAP_FILE"
+    --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV"
+  )
+  if [ "$DRY_RUN" != "1" ] && [ "$BOOTSTRAP_LOFTY_PUBLIC_DOCS" = "1" ]; then
+    CANONICAL_BOOTSTRAP_ARGS+=(--apply)
+  fi
+  set +e
+  "$PY" "$DOC_BOOTSTRAP_SCRIPT" "${CANONICAL_BOOTSTRAP_ARGS[@]}"
+  canonical_bootstrap_rc="$?"
+  set -e
+  if [ "$canonical_bootstrap_rc" -eq 0 ]; then
+    if [ "$DRY_RUN" = "1" ]; then
+      LOFTY_DOC_BOOTSTRAP_STATUS="ok_dry_run"
+    else
+      LOFTY_DOC_BOOTSTRAP_STATUS="ok"
+    fi
+  elif [ "$canonical_bootstrap_rc" -eq 2 ]; then
+    if [ "$DRY_RUN" = "1" ]; then
+      LOFTY_DOC_BOOTSTRAP_STATUS="review_dry_run"
+    else
+      LOFTY_DOC_BOOTSTRAP_STATUS="review"
+    fi
+  else
+    exit "$canonical_bootstrap_rc"
+  fi
 fi
 
 CURRENT_STEP="yhome_sold_guard"
@@ -5983,6 +6129,7 @@ elif [ -z "$COMMS_WORKSPACE" ]; then
 else
   CAPTURE_ARGS=(
     --index-csv "$MONTHLY_INDEX_CSV"
+    --active-roster-report "$ACTIVE_PROPERTY_ROSTER_FILE"
     --report "$LIVE_UPDATE_CAPTURE_FILE"
     --updates-guard "$UPDATES_GUARD"
     --skill-scripts-dir "$ROOT/skills/lofty-pm/scripts"
@@ -5991,6 +6138,7 @@ else
     --month "$RUN_MONTH_NUMBER"
     --transfer-reconciliation-report "$TRANSFER_RECONCILIATION_FILE"
     --guarded-apply-report "$GUARDED_APPLY_FILE"
+    --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json"
   )
   if [ -f "$LOFTY_PM_PORTFOLIO_MAP" ]; then
     CAPTURE_ARGS+=(--portfolio-map "$LOFTY_PM_PORTFOLIO_MAP")
@@ -6001,14 +6149,6 @@ else
   if [ -s "$YHOME_TRANSITION_RECONCILIATION_CSV" ]; then
     CAPTURE_ARGS+=(--yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV")
   fi
-  IFS=',' read -ra TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES <<< "$LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES"
-  for unavailable_property in "${TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES[@]}"; do
-    unavailable_property="${unavailable_property#"${unavailable_property%%[![:space:]]*}"}"
-    unavailable_property="${unavailable_property%"${unavailable_property##*[![:space:]]}"}"
-    if [ -n "$unavailable_property" ]; then
-      CAPTURE_ARGS+=(--manual-excluded-property "$unavailable_property")
-    fi
-  done
   if [ "$DRY_RUN" != "1" ] || [ "$CAPTURE_LOFTY_LIVE_GUARDS_IN_DRY_RUN" = "1" ]; then
     CAPTURE_ARGS+=(--apply)
   fi
@@ -6048,6 +6188,7 @@ elif [ -z "$COMMS_WORKSPACE" ]; then
 else
   FINANCIAL_CAPTURE_ARGS=(
     --index-csv "$MONTHLY_INDEX_CSV"
+    --active-roster-report "$ACTIVE_PROPERTY_ROSTER_FILE"
     --report "$LIVE_FINANCIAL_CAPTURE_FILE"
     --live-guard "$LIVE_GUARD"
     --skill-scripts-dir "$ROOT/skills/lofty-pm/scripts"
@@ -6066,14 +6207,6 @@ else
   if [ -s "$YHOME_TRANSITION_RECONCILIATION_CSV" ]; then
     FINANCIAL_CAPTURE_ARGS+=(--yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV")
   fi
-  IFS=',' read -ra TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES <<< "$LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES"
-  for unavailable_property in "${TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES[@]}"; do
-    unavailable_property="${unavailable_property#"${unavailable_property%%[![:space:]]*}"}"
-    unavailable_property="${unavailable_property%"${unavailable_property##*[![:space:]]}"}"
-    if [ -n "$unavailable_property" ]; then
-      FINANCIAL_CAPTURE_ARGS+=(--manual-excluded-property "$unavailable_property")
-    fi
-  done
   if [ "$DRY_RUN" != "1" ] || [ "$CAPTURE_LOFTY_LIVE_GUARDS_IN_DRY_RUN" = "1" ]; then
     FINANCIAL_CAPTURE_ARGS+=(--apply)
   fi
@@ -6154,10 +6287,105 @@ else
   fi
 fi
 
+write_nine_country_club_refresh_hold() {
+  local reason_code="$1"
+  local refresh_rc="${2:-0}"
+  "$PY" - "$PROPERTY_RECONCILIATION_HOLDS_FILE" "$NINE_COUNTRY_CLUB_RECONCILIATION_FILE" "$reason_code" "$refresh_rc" <<'PY'
+import datetime as dt
+import json
+import sys
+from pathlib import Path
+
+hold_path = Path(sys.argv[1])
+source_report = Path(sys.argv[2])
+reason_code = sys.argv[3]
+refresh_rc = int(sys.argv[4])
+generated_at = dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+hold = {
+    "schema_version": 1,
+    "generated_at": generated_at,
+    "status": "held",
+    "source": "baselane_reconcile_9_country_club",
+    "source_report": str(source_report),
+    "source_digest": None,
+    "live_state_verified": False,
+    "refresh_exit_code": refresh_rc,
+    "held_property_count": 1,
+    "held_properties": [{
+        "property": "9 Country Club Ln N",
+        "property_name": "9 Country Club Ln N",
+        "property_id": "91341",
+        "hold_scope": "lofty_financial_summary_and_owner_email",
+        "hold_reason": (
+            "The live 9 Country Club reconciliation preflight did not complete; "
+            "retain the property hold without blocking other properties."
+        ),
+        "issue_count": 1,
+        "issue_codes": [reason_code],
+        "mutation_allowed": False,
+        "live_state_verified": False,
+        "source_digest": None,
+        "source_report": str(source_report),
+    }],
+}
+hold_path.parent.mkdir(parents=True, exist_ok=True)
+hold_path.write_text(json.dumps(hold, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+CURRENT_STEP="property_reconciliation_hold_refresh"
+NINE_COUNTRY_CLUB_RECONCILIATION_SCRIPT="$ROOT/scripts/baselane_reconcile_9_country_club.py"
+if [ "$RUN_PROPERTY_RECONCILIATION_HOLD_REFRESH" != "1" ]; then
+  write_nine_country_club_refresh_hold "reconciliation_refresh_disabled" 0
+  PROPERTY_RECONCILIATION_HOLD_STATUS="refresh_disabled_held"
+elif [ ! -f "$NINE_COUNTRY_CLUB_RECONCILIATION_SCRIPT" ]; then
+  write_nine_country_club_refresh_hold "reconciliation_refresh_script_missing" 1
+  PROPERTY_RECONCILIATION_HOLD_STATUS="refresh_script_missing_held"
+else
+  set +e
+  WORKSPACE_ROOT="$ROOT" timeout --kill-after=15s "${PROPERTY_RECONCILIATION_HOLD_TIMEOUT_SECONDS}s" \
+    "$PY" "$NINE_COUNTRY_CLUB_RECONCILIATION_SCRIPT" \
+      --report "$NINE_COUNTRY_CLUB_RECONCILIATION_FILE" \
+      --hold-report "$PROPERTY_RECONCILIATION_HOLDS_FILE" >/dev/null
+  property_reconciliation_hold_rc="$?"
+  set -e
+  if [ "$property_reconciliation_hold_rc" -ne 0 ]; then
+    write_nine_country_club_refresh_hold "reconciliation_refresh_failed" "$property_reconciliation_hold_rc"
+    PROPERTY_RECONCILIATION_HOLD_STATUS="refresh_failed_held"
+  else
+    PROPERTY_RECONCILIATION_HOLD_STATUS="$($PY - "$PROPERTY_RECONCILIATION_HOLDS_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    print("report_unreadable")
+else:
+    status = str(report.get("status") or "").strip().lower()
+    held_count = int(report.get("held_property_count") or 0)
+    if status == "held" and held_count > 0:
+        print("held")
+    elif status == "ok" and held_count == 0:
+        print("ok")
+    else:
+        print("report_invalid")
+PY
+)"
+    if [ "$PROPERTY_RECONCILIATION_HOLD_STATUS" = "report_unreadable" ] \
+      || [ "$PROPERTY_RECONCILIATION_HOLD_STATUS" = "report_invalid" ]; then
+      write_nine_country_club_refresh_hold "reconciliation_refresh_report_invalid" 2
+      PROPERTY_RECONCILIATION_HOLD_STATUS="refresh_report_invalid_held"
+    fi
+  fi
+fi
+
 CURRENT_STEP="lofty_guard_audit"
 set +e
-ROOT="$ROOT" MONTHLY_INDEX_CSV="$MONTHLY_INDEX_CSV" UPDATES_GUARD="$UPDATES_GUARD" LIVE_GUARD="$LIVE_GUARD" GUARD_AUDIT_FILE="$GUARD_AUDIT_FILE" YHOME_TRANSITION_RECONCILIATION_CSV="$YHOME_TRANSITION_RECONCILIATION_CSV" TRANSFER_RECONCILIATION_FILE="$TRANSFER_RECONCILIATION_FILE" $PY - <<'PY'
+ROOT="$ROOT" MONTHLY_INDEX_CSV="$MONTHLY_INDEX_CSV" UPDATES_GUARD="$UPDATES_GUARD" LIVE_GUARD="$LIVE_GUARD" GUARD_AUDIT_FILE="$GUARD_AUDIT_FILE" YHOME_TRANSITION_RECONCILIATION_CSV="$YHOME_TRANSITION_RECONCILIATION_CSV" TRANSFER_RECONCILIATION_FILE="$TRANSFER_RECONCILIATION_FILE" PROPERTY_RECONCILIATION_HOLDS_FILE="$PROPERTY_RECONCILIATION_HOLDS_FILE" RUN_STARTED_AT="$RUN_STARTED_AT" $PY - <<'PY'
 import csv
+import datetime as dt
 import json
 import os
 import subprocess
@@ -6191,6 +6419,8 @@ live_guard = Path(os.environ["LIVE_GUARD"]) if os.environ.get("LIVE_GUARD") else
 audit_file = Path(os.environ["GUARD_AUDIT_FILE"])
 yhome_csv = Path(os.environ["YHOME_TRANSITION_RECONCILIATION_CSV"]) if os.environ.get("YHOME_TRANSITION_RECONCILIATION_CSV") else None
 transfer_reconciliation_file = Path(os.environ["TRANSFER_RECONCILIATION_FILE"]) if os.environ.get("TRANSFER_RECONCILIATION_FILE") else None
+property_reconciliation_holds_file = Path(os.environ["PROPERTY_RECONCILIATION_HOLDS_FILE"]) if os.environ.get("PROPERTY_RECONCILIATION_HOLDS_FILE") else None
+run_started_at = str(os.environ.get("RUN_STARTED_AT") or "").strip()
 issues = []
 records = []
 externally_excluded_records = []
@@ -6237,28 +6467,107 @@ def append_guard_issue(kind, path, check, issue_text=None):
         detail = f"{detail} :: {error}"
     issues.append(detail)
 
-def load_source_held_guards():
-    if not transfer_reconciliation_file or not transfer_reconciliation_file.is_file():
-        return []
+def parse_utc(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
     try:
-        transfer = json.loads(transfer_reconciliation_file.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+def reconciliation_hold_guard(reason_code, reason):
+    property_name = "9 Country Club Ln N"
+    return {
+        "source": "property_reconciliation_hold",
+        "property_name": property_name,
+        "normalized_property": normalize_exclusion(property_name),
+        "exclude_reason": reason,
+        "source_clean_status": "held",
+        "review_rows_remaining": 1,
+        "high_priority_unresolved_sum": None,
+        "issue_codes": [reason_code],
+        "live_state_verified": False,
+        "source_digest": None,
+    }
+
+def load_source_held_guards():
     guards = []
-    for detail in transfer.get("property_cash_review_details") or []:
+    if transfer_reconciliation_file and transfer_reconciliation_file.is_file():
+        try:
+            transfer = json.loads(transfer_reconciliation_file.read_text(encoding="utf-8"))
+        except Exception:
+            transfer = {}
+        for detail in transfer.get("property_cash_review_details") or []:
+            if not isinstance(detail, dict):
+                continue
+            property_name = str(detail.get("property") or detail.get("property_name") or "").strip()
+            if not property_name:
+                continue
+            guards.append({
+                "source": "property_cash_review",
+                "property_name": property_name,
+                "normalized_property": normalize_exclusion(property_name),
+                "exclude_reason": "property source-cash/cash-alignment review is held; suppress live update/email guard until source-clean",
+                "source_clean_status": detail.get("source_clean_status"),
+                "review_rows_remaining": detail.get("property_cash_review_unreviewed_group_count"),
+                "high_priority_unresolved_sum": detail.get("property_cash_review_high_priority_unresolved_sum"),
+            })
+
+    if not property_reconciliation_holds_file or not property_reconciliation_holds_file.is_file():
+        guards.append(reconciliation_hold_guard(
+            "property_reconciliation_hold_report_missing",
+            "The current-run 9 Country Club reconciliation hold report is missing; retain the property hold without blocking other properties.",
+        ))
+        return guards
+    try:
+        hold_report = json.loads(property_reconciliation_holds_file.read_text(encoding="utf-8"))
+    except Exception:
+        guards.append(reconciliation_hold_guard(
+            "property_reconciliation_hold_report_unreadable",
+            "The current-run 9 Country Club reconciliation hold report is unreadable; retain the property hold without blocking other properties.",
+        ))
+        return guards
+
+    generated_at = parse_utc(hold_report.get("generated_at"))
+    started_at = parse_utc(run_started_at)
+    if generated_at is None or started_at is None or generated_at < started_at:
+        guards.append(reconciliation_hold_guard(
+            "property_reconciliation_hold_report_stale",
+            "The 9 Country Club reconciliation hold report is not current for this run; retain the property hold without blocking other properties.",
+        ))
+        return guards
+
+    status = str(hold_report.get("status") or "").strip().lower()
+    held_properties = hold_report.get("held_properties")
+    if status == "ok" and int(hold_report.get("held_property_count") or 0) == 0:
+        return guards
+    if status != "held" or not isinstance(held_properties, list) or not held_properties:
+        guards.append(reconciliation_hold_guard(
+            "property_reconciliation_hold_report_invalid",
+            "The 9 Country Club reconciliation hold report is invalid; retain the property hold without blocking other properties.",
+        ))
+        return guards
+    for detail in held_properties:
         if not isinstance(detail, dict):
             continue
         property_name = str(detail.get("property") or detail.get("property_name") or "").strip()
         if not property_name:
             continue
         guards.append({
-            "source": "property_cash_review",
+            "source": "property_reconciliation_hold",
             "property_name": property_name,
             "normalized_property": normalize_exclusion(property_name),
-            "exclude_reason": "property source-cash/cash-alignment review is held; suppress live update/email guard until source-clean",
-            "source_clean_status": detail.get("source_clean_status"),
-            "review_rows_remaining": detail.get("property_cash_review_unreviewed_group_count"),
-            "high_priority_unresolved_sum": detail.get("property_cash_review_high_priority_unresolved_sum"),
+            "exclude_reason": str(detail.get("hold_reason") or "Property reconciliation is held; suppress live update and owner email until source-clean."),
+            "source_clean_status": "held",
+            "review_rows_remaining": detail.get("issue_count"),
+            "high_priority_unresolved_sum": None,
+            "issue_codes": detail.get("issue_codes") if isinstance(detail.get("issue_codes"), list) else [],
+            "live_state_verified": detail.get("live_state_verified") is True,
+            "source_digest": detail.get("source_digest"),
         })
     return guards
 
@@ -6330,7 +6639,11 @@ else:
         source_hold = match_exclusion_guard(property_path, source_held_guards)
         if source_hold:
             source_held_records.append({
-                "status": "held_source_cash_review",
+                "status": (
+                    "held_property_reconciliation"
+                    if source_hold.get("source") == "property_reconciliation_hold"
+                    else "held_source_cash_review"
+                ),
                 "property_name": property_path.name,
                 "property_path": str(property_path),
                 "hold_source": source_hold.get("source"),
@@ -6339,6 +6652,9 @@ else:
                 "source_clean_status": source_hold.get("source_clean_status"),
                 "review_rows_remaining": source_hold.get("review_rows_remaining"),
                 "high_priority_unresolved_sum": source_hold.get("high_priority_unresolved_sum"),
+                "issue_codes": source_hold.get("issue_codes"),
+                "live_state_verified": source_hold.get("live_state_verified"),
+                "source_digest": source_hold.get("source_digest"),
                 **path_resolution,
             })
             continue
@@ -6455,6 +6771,55 @@ else
   LOFTY_GUARD_STATUS="failed_not_required"
 fi
 
+CURRENT_STEP="reporting_ledger_authority"
+SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_SCRIPT="$ROOT/scripts/baselane_reporting_ledger_authority.py"
+if [ ! -f "$SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_SCRIPT" ]; then
+  echo "[baselane-monthly] missing reporting-ledger authority script: $SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_SCRIPT" >&2
+  exit 1
+fi
+set +e
+timeout --kill-after=30s "${SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_TIMEOUT_SECONDS}s" \
+  "$PY" "$SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_SCRIPT" \
+    --root "$ROOT" \
+    --raw-ledger "$REVIEW_CANDIDATE_SOURCE_LEDGER" \
+    --month "$RUN_MONTH" \
+    --reporting-ledger "$SOURCE_CASH_REPORTING_LEDGER" \
+    --report "$SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_FILE" \
+    --refresh >/dev/null
+source_cash_reporting_ledger_authority_rc="$?"
+set -e
+if [ "$source_cash_reporting_ledger_authority_rc" -ne 0 ]; then
+  echo "[baselane-monthly] current raw ECO GL could not produce a verified reporting ledger; refusing source-cash and investor-report writes" >&2
+  exit "$source_cash_reporting_ledger_authority_rc"
+fi
+
+CURRENT_STEP="reporting_property_ledger_refresh"
+REPORTING_PROPERTY_LEDGER_REFRESH_SCRIPT="$ROOT/scripts/baselane_reporting_property_ledger_refresh.py"
+if [ ! -f "$REPORTING_PROPERTY_LEDGER_REFRESH_SCRIPT" ]; then
+  echo "[baselane-monthly] missing reporting property-ledger refresh script: $REPORTING_PROPERTY_LEDGER_REFRESH_SCRIPT" >&2
+  exit 1
+fi
+reporting_property_ledger_refresh_args=(
+  --source "$SOURCE_CASH_REPORTING_LEDGER"
+  --real-estate-root "$REAL_ESTATE_ROOT"
+  --authority-report "$SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_FILE"
+  --split-report "$REPORTING_PROPERTY_LEDGER_SPLIT_FILE"
+  --report "$REPORTING_PROPERTY_LEDGER_REFRESH_FILE"
+)
+if [ "$DRY_RUN" != "1" ]; then
+  reporting_property_ledger_refresh_args+=(--apply)
+fi
+set +e
+timeout --kill-after=30s "${REPORTING_PROPERTY_LEDGER_REFRESH_TIMEOUT_SECONDS}s" \
+  "$PY" "$REPORTING_PROPERTY_LEDGER_REFRESH_SCRIPT" \
+    "${reporting_property_ledger_refresh_args[@]}" >/dev/null
+reporting_property_ledger_refresh_rc="$?"
+set -e
+if [ "$reporting_property_ledger_refresh_rc" -ne 0 ]; then
+  echo "[baselane-monthly] canonical property ledgers could not be verified from the current reporting ledger; refusing source-cash and investor-report writes" >&2
+  exit "$reporting_property_ledger_refresh_rc"
+fi
+
 CURRENT_STEP="source_cash_preapply_freshness_refresh"
 DAILY_SOURCE_CASH_BALANCE_SCRIPT="$ROOT/scripts/baselane_daily_source_cash_balance_audit.py"
 if [ ! -f "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" ]; then
@@ -6464,6 +6829,7 @@ elif [ -z "$YHOME_TRANSITION_RECONCILIATION_CSV" ] || [ ! -f "$YHOME_TRANSITION_
 else
   source_cash_preapply_args=(
     --month "$RUN_MONTH"
+    --gl-csv "$SOURCE_CASH_REPORTING_LEDGER"
     --source-cash-mode "$MONTHLY_SOURCE_CASH_MODE"
     --reporting-cutoff-date "$REPORTING_CUTOFF_DATE"
     --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV"
@@ -6510,16 +6876,6 @@ fi
 
 CURRENT_STEP="lofty_guarded_apply"
 GUARDED_APPLY_SCRIPT="$ROOT/scripts/lofty_monthly_guarded_apply.py"
-MONTHLY_INDEX_CSV="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-portfolio-update-index.csv"
-GUARDED_APPLY_EXCLUSION_ARGS=()
-IFS=',' read -ra TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES <<< "$LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES"
-for unavailable_property in "${TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES[@]}"; do
-  unavailable_property="${unavailable_property#"${unavailable_property%%[![:space:]]*}"}"
-  unavailable_property="${unavailable_property%"${unavailable_property##*[![:space:]]}"}"
-  if [ -n "$unavailable_property" ]; then
-    GUARDED_APPLY_EXCLUSION_ARGS+=(--manual-excluded-property "$unavailable_property")
-  fi
-done
 if [ "$DRY_RUN" = "1" ] && [ "$RUN_LOFTY_GUARDED_APPLY" != "1" ]; then
   if [ "$REQUIRE_GUARDED_MONTHLY_APPLY" = "1" ]; then
     LOFTY_GUARDED_APPLY_STATUS="failed_required_dry_run_disabled"
@@ -6541,8 +6897,7 @@ elif [ "$DRY_RUN" = "1" ]; then
 	    --transfer-reconciliation-report "$TRANSFER_RECONCILIATION_FILE" \
 	    --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST" \
 	    --update-approval-manifest "$UPDATE_APPROVAL_MANIFEST" \
-	    --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json" \
-	    "${GUARDED_APPLY_EXCLUSION_ARGS[@]}"
+	    --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json"
   guarded_apply_rc="$?"
   set -e
   if [ "$guarded_apply_rc" -eq 0 ]; then
@@ -6568,8 +6923,7 @@ elif [ "$APPLY_LOFTY_GUARDED_UPDATES" != "1" ]; then
 	    --transfer-reconciliation-report "$TRANSFER_RECONCILIATION_FILE" \
 	    --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST" \
 	    --update-approval-manifest "$UPDATE_APPROVAL_MANIFEST" \
-	    --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json" \
-	    "${GUARDED_APPLY_EXCLUSION_ARGS[@]}"
+	    --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json"
   guarded_apply_rc="$?"
   set -e
   if [ "$guarded_apply_rc" -eq 0 ]; then
@@ -6612,7 +6966,6 @@ else
 	    --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST" \
 	    --update-approval-manifest "$UPDATE_APPROVAL_MANIFEST" \
 	    --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json" \
-	    "${GUARDED_APPLY_EXCLUSION_ARGS[@]}" \
 	    --apply
   guarded_apply_rc="$?"
   set -e
@@ -6643,6 +6996,7 @@ if [ -f "$REVIEW_MANIFEST_SCRIPT" ]; then
   timeout --kill-after=30s "$MONTHLY_REVIEW_STEP_TIMEOUT_SECONDS" "$PY" "$REVIEW_MANIFEST_SCRIPT" \
     --index-csv "$MONTHLY_INDEX_CSV" \
     --run-month "$RUN_MONTH" \
+    --active-property-roster "$ACTIVE_PROPERTY_ROSTER_FILE" \
     --guarded-apply-report "$GUARDED_APPLY_FILE" \
     --report "$REVIEW_MANIFEST_FILE" \
     --markdown "$REVIEW_MANIFEST_MARKDOWN_FILE"
@@ -6665,18 +7019,83 @@ fi
 CURRENT_STEP="live_dao_cash_reconciliation"
 LIVE_DAO_CASH_SCRIPT="$ROOT/scripts/baselane_live_dao_cash_reconciliation.py"
 if [ ! -f "$LIVE_DAO_CASH_SCRIPT" ]; then
-  echo "[baselane-monthly] live DAO cash reconciliation script is unavailable; continuing GL-based outputs and holding bank-dependent transfers" >&2
+  echo "[baselane-monthly] live DAO cash reconciliation script is unavailable; refusing downstream financial summaries" >&2
+  exit 2
 else
   set +e
   timeout --kill-after=30s "$LIVE_DAO_CASH_TIMEOUT_SECONDS" "$PY" "$LIVE_DAO_CASH_SCRIPT" \
     --as-of "$REPORTING_CUTOFF_DATE" \
-    --ledger "$SOURCE_TRANSACTION_INDEX_FILE" \
+    --ledger "$REVIEW_CANDIDATE_SOURCE_LEDGER" \
+    --custody-ledger "$SOURCE_TRANSACTION_INDEX_FILE" \
     --report "$LIVE_DAO_CASH_REPORT_FILE" \
     --csv "$LIVE_DAO_CASH_CSV_FILE"
   live_dao_cash_rc="$?"
   set -e
   if [ "$live_dao_cash_rc" -ne 0 ]; then
-    echo "[baselane-monthly] live DAO bank cash reconciliation failed (rc=$live_dao_cash_rc); continuing GL-based outputs and holding bank-dependent transfers" >&2
+    echo "[baselane-monthly] live DAO bank cash reconciliation failed (rc=$live_dao_cash_rc); refusing stale downstream financial summaries" >&2
+    exit "$live_dao_cash_rc"
+  fi
+fi
+
+CURRENT_STEP="monthly_dao_interest_sweep"
+if [ "$SWEEP_MONTHLY_DAO_INTEREST_TO_ECO" != "1" ]; then
+  MONTHLY_INTEREST_SWEEP_STATUS="skipped_disabled"
+elif [ ! -f "$MONTHLY_INTEREST_SWEEP_SCRIPT" ]; then
+  MONTHLY_INTEREST_SWEEP_STATUS="skipped_missing_script"
+elif [ ! -f "$LIVE_DAO_CASH_REPORT_FILE" ]; then
+  MONTHLY_INTEREST_SWEEP_STATUS="skipped_missing_reconciliation"
+else
+  set +e
+  "$PY" "$MONTHLY_INTEREST_SWEEP_SCRIPT" \
+    --report "$LIVE_DAO_CASH_REPORT_FILE" \
+    --source-index "$SOURCE_TRANSACTION_INDEX_FILE" \
+    --state "$MONTHLY_INTEREST_SWEEP_STATE_FILE" \
+    --dry-run-report "$MONTHLY_INTEREST_SWEEP_PLAN_FILE" \
+    --applied-report "$MONTHLY_INTEREST_SWEEP_APPLIED_FILE" >/dev/null
+  monthly_interest_plan_rc="$?"
+  set -e
+  if [ "$monthly_interest_plan_rc" -ne 0 ]; then
+    MONTHLY_INTEREST_SWEEP_STATUS="plan_failed"
+    echo "[baselane-monthly] DAO interest sweep plan failed; refusing downstream close" >&2
+    exit "$monthly_interest_plan_rc"
+  elif [ "$OPERATOR_REQUESTED_DRY_RUN" = "1" ] || [ "$APPLY_MONTHLY_DAO_INTEREST_SWEEP_LIVE" != "1" ]; then
+    MONTHLY_INTEREST_SWEEP_STATUS="planned"
+  else
+    monthly_interest_digest="$("$PY" - "$MONTHLY_INTEREST_SWEEP_PLAN_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("digest") or "")
+PY
+)"
+    if [ -z "$monthly_interest_digest" ]; then
+      echo "[baselane-monthly] DAO interest sweep digest missing; refusing downstream close" >&2
+      exit 2
+    fi
+    set +e
+    "$PY" "$MONTHLY_INTEREST_SWEEP_SCRIPT" \
+      --report "$LIVE_DAO_CASH_REPORT_FILE" \
+      --source-index "$SOURCE_TRANSACTION_INDEX_FILE" \
+      --state "$MONTHLY_INTEREST_SWEEP_STATE_FILE" \
+      --dry-run-report "$MONTHLY_INTEREST_SWEEP_PLAN_FILE" \
+      --applied-report "$MONTHLY_INTEREST_SWEEP_APPLIED_FILE" \
+      --apply --auto-mfa --digest "$monthly_interest_digest" >/dev/null
+    monthly_interest_apply_rc="$?"
+    set -e
+    if [ "$monthly_interest_apply_rc" -ne 0 ]; then
+      MONTHLY_INTEREST_SWEEP_STATUS="apply_failed"
+      echo "[baselane-monthly] DAO interest sweep apply failed; refusing downstream close" >&2
+      exit "$monthly_interest_apply_rc"
+    fi
+    MONTHLY_INTEREST_SWEEP_STATUS="applied"
+    # The transfer changes both DAO and ECO live balances. Rebuild the report
+    # before any downstream summary consumes it.
+    timeout --kill-after=30s "$LIVE_DAO_CASH_TIMEOUT_SECONDS" "$PY" "$LIVE_DAO_CASH_SCRIPT" \
+      --as-of "$REPORTING_CUTOFF_DATE" \
+      --ledger "$REVIEW_CANDIDATE_SOURCE_LEDGER" \
+      --custody-ledger "$SOURCE_TRANSACTION_INDEX_FILE" \
+      --report "$LIVE_DAO_CASH_REPORT_FILE" \
+      --csv "$LIVE_DAO_CASH_CSV_FILE"
   fi
 fi
 
@@ -6704,7 +7123,6 @@ if [ -f "$REVIEW_CANDIDATE_PACKET_SCRIPT" ] && [ -f "$REVIEW_MANIFEST_FILE" ]; t
   if [ -f "$REVIEW_CANDIDATE_SOURCE_LEDGER" ]; then
     REVIEW_CANDIDATE_PACKET_ARGS+=(--source-ledger "$REVIEW_CANDIDATE_SOURCE_LEDGER")
   fi
-  REVIEW_CANDIDATE_PACKET_ARGS+=("${GUARDED_APPLY_EXCLUSION_ARGS[@]}")
   timeout --kill-after=30s "$MONTHLY_REVIEW_STEP_TIMEOUT_SECONDS" "$PY" "$REVIEW_CANDIDATE_PACKET_SCRIPT" \
     "${REVIEW_CANDIDATE_PACKET_ARGS[@]}"
   review_candidate_packet_rc="$?"
@@ -6823,7 +7241,6 @@ if [ "$LOFTY_SAFE_CANDIDATE_APPROVAL_STATUS" = "ok" ] \
     --financial-approval-manifest "$FINANCIAL_APPROVAL_MANIFEST" \
     --update-approval-manifest "$ROOT/reports/lofty_update_approval_manifest.json" \
     --listing-update-policy "$ROOT/config/lofty_listing_update_policy.json" \
-    "${GUARDED_APPLY_EXCLUSION_ARGS[@]}" \
     --apply
   guarded_apply_rerun_rc="$?"
   set -e
@@ -6953,6 +7370,7 @@ else
   set +e
   BASELANE_MONTHLY_ACCRUALS_MONTH="$RUN_MONTH" \
     BASELANE_MONTHLY_ACCRUALS_DRY_RUN="$DRY_RUN" \
+    BASELANE_MONTHLY_ACCRUALS_REPORTING_CUTOFF_DATE="$REPORTING_CUTOFF_DATE" \
     BASELANE_MONTHLY_ACCRUALS_REVIEW_MARKDOWN="$MONTHLY_ACCRUALS_REVIEW_MARKDOWN_FILE" \
     "$MONTHLY_ACCRUALS_SCRIPT" >/dev/null
   monthly_accruals_rc="$?"
@@ -7177,9 +7595,10 @@ PY
   fi
   set +e
   timeout --kill-after=30s "${MONTHLY_SOURCE_CASH_AUDIT_TIMEOUT_SECONDS}s" \
-    "$PY" "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" \
-      --month "$RUN_MONTH" \
-      --source-cash-mode "$MONTHLY_SOURCE_CASH_MODE" \
+	    "$PY" "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" \
+	      --month "$RUN_MONTH" \
+	      --gl-csv "$SOURCE_CASH_REPORTING_LEDGER" \
+	      --source-cash-mode "$MONTHLY_SOURCE_CASH_MODE" \
       --reporting-cutoff-date "$REPORTING_CUTOFF_DATE" \
       --yhome-transition-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
       "${source_cash_manifest_args[@]}" \
@@ -7550,9 +7969,10 @@ fi
 if [ -f "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" ]; then
   set +e
   timeout --kill-after=30s "${MONTHLY_SOURCE_CASH_AUDIT_TIMEOUT_SECONDS}s" \
-    "$PY" "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" \
-      --month "$RUN_MONTH" \
-      --source-cash-mode "$MONTHLY_SOURCE_CASH_MODE" \
+	    "$PY" "$DAILY_SOURCE_CASH_BALANCE_SCRIPT" \
+	      --month "$RUN_MONTH" \
+	      --gl-csv "$SOURCE_CASH_REPORTING_LEDGER" \
+	      --source-cash-mode "$MONTHLY_SOURCE_CASH_MODE" \
       --reporting-cutoff-date "$REPORTING_CUTOFF_DATE" \
       "${source_cash_manifest_args[@]}" \
       --report "$DAILY_SOURCE_CASH_BALANCE_REPORT_FILE" >/dev/null
@@ -7604,6 +8024,7 @@ else
   timeout --kill-after=30s "${CF_BALANCE_SHEET_WORKBOOK_AUDIT_TOTAL_TIMEOUT_SECONDS}s" \
     "$PY" "$CF_BALANCE_SHEET_CONSISTENCY_SCRIPT" \
       --month "$RUN_MONTH" \
+      --source-cash-mode "$MONTHLY_SOURCE_CASH_MODE" \
       --candidate-packet "$REVIEW_CANDIDATE_PACKET_FILE" \
       --yhome-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
       --report "$CF_BALANCE_SHEET_CONSISTENCY_FILE" \
@@ -8052,8 +8473,8 @@ if [ "$SEND_OWNER_EMAILS" = "1" ] && [ -z "$OWNER_EMAIL_SEND_BLOCKED_REASON" ]; 
 fi
 
 CURRENT_STEP="discord_all_send_plan"
-DISCORD_ALL_SEND_PLAN_SCRIPT="$ROOT/scripts/build_monthly_discord_all_send_plan.py"
-DISCORD_ALL_SEND_PLAN_VALIDATION_SCRIPT="$ROOT/scripts/validate_monthly_discord_all_send_plan.py"
+DISCORD_ALL_SEND_PLAN_SCRIPT="$MONTHLY_DISCORD_CODE_ROOT/scripts/build_monthly_discord_all_send_plan.py"
+DISCORD_ALL_SEND_PLAN_VALIDATION_SCRIPT="$MONTHLY_DISCORD_CODE_ROOT/scripts/validate_monthly_discord_all_send_plan.py"
 if [ ! -f "$DISCORD_ALL_SEND_PLAN_SCRIPT" ]; then
   DISCORD_ALL_SEND_PLAN_STATUS="skipped_missing_script"
 elif [ ! -f "$DISCORD_ALL_SEND_PLAN_VALIDATION_SCRIPT" ]; then
@@ -8091,8 +8512,8 @@ if [ "$SEND_OWNER_EMAILS" = "1" ] && [ -n "$DISCORD_ALL_SEND_PLAN_BLOCKED_REASON
 fi
 
 CURRENT_STEP="discord_review_drafts"
-MONTHLY_DISCORD_REVIEW_AGENT_SCRIPT="$ROOT/scripts/run_monthly_discord_review_via_agent.py"
-MONTHLY_DISCORD_REVIEW_SENDER_SCRIPT="$ROOT/scripts/send_monthly_discord_review_drafts.py"
+MONTHLY_DISCORD_REVIEW_AGENT_SCRIPT="$MONTHLY_DISCORD_CODE_ROOT/scripts/run_monthly_discord_review_via_agent.py"
+MONTHLY_DISCORD_REVIEW_SENDER_SCRIPT="$MONTHLY_DISCORD_CODE_ROOT/scripts/send_monthly_discord_review_drafts.py"
 if [ "$SEND_MONTHLY_DISCORD_REVIEW_DRAFTS" != "1" ]; then
   MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="skipped_disabled"
 elif [ ! -f "$MONTHLY_DISCORD_REVIEW_AGENT_SCRIPT" ] || [ ! -f "$MONTHLY_DISCORD_REVIEW_SENDER_SCRIPT" ]; then
@@ -8121,16 +8542,22 @@ else
   discord_review_rc="$?"
   set -e
   if [ "$discord_review_rc" -eq 0 ]; then
-    if [ "$DRY_RUN" = "1" ]; then
-      MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="ok_dry_run"
-    else
-      MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="ok"
-    fi
+    MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="$($PY - "$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+print(payload.get("status") or "review")
+PY
+)"
   elif [ "$discord_review_rc" -eq 2 ]; then
     MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="review"
   else
     MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="failed"
-    exit "$discord_review_rc"
   fi
 fi
 
@@ -8188,7 +8615,7 @@ if [ "$DAILY_SOURCE_CASH_BALANCE_POST_CF_VERIFY_STATUS" != "ok" ] \
 fi
 if { [ "$ECO_CASH_SOURCE_ONLY_STANDARDIZE_STATUS" != "ok" ] && [ "$ECO_CASH_SOURCE_ONLY_STANDARDIZE_STATUS" != "ok_dry_run" ]; } \
   || [ "$ECO_CASH_SOURCE_ONLY_STANDARDIZE_MISSING_SOURCE_COUNT" -ne 0 ]; then
-  monthly_financial_data_block "ECO Operating Cash source-only CF repair is not verified (status=$ECO_CASH_SOURCE_ONLY_STANDARDIZE_STATUS, changed_properties=$ECO_CASH_SOURCE_ONLY_STANDARDIZE_CHANGED_PROPERTY_COUNT, missing_source=$ECO_CASH_SOURCE_ONLY_STANDARDIZE_MISSING_SOURCE_COUNT)"
+  monthly_financial_data_block "ECO General Ledger source-only CF repair is not verified (status=$ECO_CASH_SOURCE_ONLY_STANDARDIZE_STATUS, changed_properties=$ECO_CASH_SOURCE_ONLY_STANDARDIZE_CHANGED_PROPERTY_COUNT, missing_source=$ECO_CASH_SOURCE_ONLY_STANDARDIZE_MISSING_SOURCE_COUNT)"
 fi
 if [ "$CF_MORTGAGE_BALANCE_INTEGRITY_GUARD_STATUS" != "ok" ] \
   && [ "$CF_MORTGAGE_BALANCE_INTEGRITY_GUARD_STATUS" != "ok_dry_run" ] \
@@ -8296,6 +8723,7 @@ else
   else
   PUBLISH_ARGS=(
     --index-csv "$MONTHLY_INDEX_CSV"
+    --active-property-roster-report "$ACTIVE_PROPERTY_ROSTER_FILE"
     --guarded-apply-report "$GUARDED_APPLY_FILE"
     --report "$LOFTY_PM_PUBLISH_FILE"
     --runtime-map "$LOFTY_PM_RUNTIME_MAP"
@@ -8311,14 +8739,6 @@ else
   if [ -f "$ROOT/config/lofty_listing_update_policy.json" ]; then
     PUBLISH_ARGS+=(--listing-update-policy "$ROOT/config/lofty_listing_update_policy.json")
   fi
-  IFS=',' read -ra TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES <<< "${LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES:-Ohio 3-Property Package}"
-  for unavailable_property in "${TEMPORARILY_UNAVAILABLE_LOFTY_PROPERTIES[@]}"; do
-    unavailable_property="${unavailable_property#"${unavailable_property%%[![:space:]]*}"}"
-    unavailable_property="${unavailable_property%"${unavailable_property##*[![:space:]]}"}"
-    if [ -n "$unavailable_property" ]; then
-      PUBLISH_ARGS+=(--exclude-property "$unavailable_property")
-    fi
-  done
   if [ "$REQUIRE_GUILD_TEST_POST_BEFORE_OWNER_EMAIL" = "1" ]; then
     PUBLISH_ARGS+=(--require-guild-test-post-before-email)
   fi
@@ -8697,75 +9117,27 @@ fi
 
 
 CURRENT_STEP="discord_property_update"
-MONTHLY_DISCORD_PROPERTY_UPDATE_SCRIPT="$ROOT/scripts/send_monthly_discord_property_update.py"
-if [ "$SEND_MONTHLY_DISCORD_PROPERTY_UPDATE" != "1" ]; then
-  MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="skipped_disabled"
-elif [ ! -f "$MONTHLY_DISCORD_PROPERTY_UPDATE_SCRIPT" ]; then
-  MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="skipped_missing_script"
-elif [ "$LOFTY_PM_PUBLISH_STATUS" != "ok" ] \
-  && [ "$LOFTY_PM_PUBLISH_STATUS" != "ok_dry_run" ] \
-  && { [ "$DRY_RUN" != "1" ] || { [ "$LOFTY_PM_PUBLISH_STATUS" != "review_dry_run" ] && [ "$LOFTY_PM_PUBLISH_STATUS" != "ok_not_applied" ] && [ "$LOFTY_PM_PUBLISH_STATUS" != "ok_not_published" ]; }; }; then
-  MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="skipped_lofty_pm_publish_${LOFTY_PM_PUBLISH_STATUS//[^A-Za-z0-9]/_}"
-elif [ -s "$MONTHLY_DISCORD_ALL_SEND_PLAN_FILE" ]; then
-  DISCORD_PROPERTY_UPDATE_ARGS=(
-    --plan "$MONTHLY_DISCORD_ALL_SEND_PLAN_FILE"
-    --report "$MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE"
-  )
-  if [ -n "$MONTHLY_DISCORD_PROPERTY_UPDATE_ACCOUNT" ]; then
-    DISCORD_PROPERTY_UPDATE_ARGS+=(--account "$MONTHLY_DISCORD_PROPERTY_UPDATE_ACCOUNT")
-  fi
-  if [ "$DRY_RUN" = "1" ]; then
-    DISCORD_PROPERTY_UPDATE_ARGS+=(--dry-run)
-  else
-    DISCORD_PROPERTY_UPDATE_ARGS+=(--send)
-  fi
-  set +e
-  $PY "$MONTHLY_DISCORD_PROPERTY_UPDATE_SCRIPT" "${DISCORD_PROPERTY_UPDATE_ARGS[@]}" >/dev/null
-  discord_property_update_rc="$?"
-  set -e
-  if [ "$discord_property_update_rc" -eq 0 ]; then
-    if [ "$DRY_RUN" = "1" ]; then
-      MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="ok_dry_run"
-    else
-      MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="ok"
-    fi
-  elif [ "$discord_property_update_rc" -eq 2 ]; then
-    MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="review"
-  else
-    MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="failed"
-    exit "$discord_property_update_rc"
-fi
-elif [ ! -s "$GUILD_TEST_POST_REPORT_FILE" ]; then
-  MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="skipped_missing_discord_all_send_plan_or_guild_report"
+if [ ! -s "$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE" ]; then
+  MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="skipped_missing_earlcoin_review_report"
 else
-  DISCORD_PROPERTY_UPDATE_ARGS=(
-    --guild-report "$GUILD_TEST_POST_REPORT_FILE"
-    --report "$MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE"
-  )
-  if [ -n "$MONTHLY_DISCORD_PROPERTY_UPDATE_ACCOUNT" ]; then
-    DISCORD_PROPERTY_UPDATE_ARGS+=(--account "$MONTHLY_DISCORD_PROPERTY_UPDATE_ACCOUNT")
+  # Compatibility artifact only. The EARLCoin agent-owned review stage above is
+  # the sole unattended Discord writer; this stage never posts or falls back to Lofty.
+  if [ "$MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE" != "$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE" ]; then
+    mkdir -p "$(dirname "$MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE")"
+    cp -- "$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE" "$MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE"
   fi
-  if [ "$DRY_RUN" = "1" ]; then
-    DISCORD_PROPERTY_UPDATE_ARGS+=(--dry-run)
-  else
-    DISCORD_PROPERTY_UPDATE_ARGS+=(--send)
-  fi
-  set +e
-  $PY "$MONTHLY_DISCORD_PROPERTY_UPDATE_SCRIPT" "${DISCORD_PROPERTY_UPDATE_ARGS[@]}" >/dev/null
-  discord_property_update_rc="$?"
-  set -e
-  if [ "$discord_property_update_rc" -eq 0 ]; then
-    if [ "$DRY_RUN" = "1" ]; then
-      MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="ok_dry_run"
-    else
-      MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="ok"
-    fi
-  elif [ "$discord_property_update_rc" -eq 2 ]; then
-    MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="review"
-  else
-    MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="failed"
-    exit "$discord_property_update_rc"
-  fi
+  MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="$($PY - "$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+print(payload.get("status") or "review")
+PY
+)"
 fi
 
 CURRENT_STEP="non_native_owner_email_packet"

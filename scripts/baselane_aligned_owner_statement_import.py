@@ -157,12 +157,23 @@ def normalized_text(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
+SEMANTIC_COUNTERPARTY_SUFFIXES = {"echeck", "payment", "receipt"}
+
+
+def normalized_counterparty(value: Any) -> str:
+    """Normalize statement role labels that can move across wrapped PDF lines."""
+    tokens = normalized_text(value).split()
+    while tokens and tokens[-1] in SEMANTIC_COUNTERPARTY_SUFFIXES:
+        tokens.pop()
+    return " ".join(tokens)
+
+
 def planned_live_fingerprint(row: PlannedRow) -> tuple[str, str, Decimal, str, str]:
     return (
         row.property_id,
         row.date,
         row.amount,
-        normalized_text(row.merchant_name),
+        normalized_counterparty(row.merchant_name),
         row.tag_id,
     )
 
@@ -172,7 +183,7 @@ def planned_manifest_fingerprint(row: PlannedRow) -> tuple[str, str, Decimal, st
         row.property_id,
         row.date,
         row.amount,
-        normalized_text(row.merchant_name),
+        normalized_counterparty(row.merchant_name),
     )
 
 
@@ -186,7 +197,7 @@ def manifest_row_fingerprint(row: dict[str, Any]) -> tuple[str, str, Decimal, st
         str(row.get("propertyId") or ""),
         transaction_date,
         amount,
-        normalized_text(row.get("merchantName")),
+        normalized_counterparty(row.get("merchantName")),
     )
 
 
@@ -200,7 +211,7 @@ def live_transaction_fingerprint(row: dict[str, Any]) -> tuple[str, str, Decimal
         str(row.get("propertyId") or ""),
         transaction_date,
         amount,
-        normalized_text(row.get("merchantName")),
+        normalized_counterparty(row.get("merchantName")),
         str(row.get("tagId") or ""),
     )
 
@@ -210,7 +221,7 @@ def planned_ledger_fingerprint(row: PlannedRow) -> tuple[str, str, Decimal, str,
         normalized_text(row.property_short),
         row.date,
         row.amount,
-        normalized_text(row.merchant_name),
+        normalized_counterparty(row.merchant_name),
         normalized_text(row.rich_category),
     )
 
@@ -233,7 +244,7 @@ def existing_ledger_fingerprints(path: Path | None) -> set[tuple[str, str, Decim
                     normalized_text(row.get("Property")),
                     transaction_date,
                     amount,
-                    normalized_text(row.get("Merchant")),
+                    normalized_counterparty(row.get("Merchant")),
                     normalized_text(row.get("Category")),
                 )
             )

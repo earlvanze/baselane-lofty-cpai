@@ -22,6 +22,11 @@ from lofty_monthly_exclusions import (
     sold_policy_exclusion_records,
 )
 from lofty_monthly_publish_to_pm import DEFAULT_MANUAL_EXCLUDED_PROPERTIES
+from lofty_monthly_balance_sheet_snapshot import (
+    has_verified_intercompany_position,
+    reconciled_obligation_breakdown,
+    render_balance_sheet_snapshot,
+)
 
 
 def default_root() -> Path:
@@ -76,7 +81,8 @@ PROPERTY_UPDATES_HEADER_RE = re.compile(r"(?mi)^\s*#\s+Property Updates\s*$")
 DATED_UPDATE_HEADING_RE = re.compile(r"(?mi)^\s*##\s+\d{4}-\d{2}-\d{2}\s*$")
 DATED_UPDATE_HEADING_DATE_RE = re.compile(r"(?mi)^\s*##\s+(\d{4}-\d{2}-\d{2})\s*$")
 LOFTY_RESERVE_SUMMARY_RE = re.compile(
-    r"(?mi)^\s*(?:-\s*Lofty maintenance reserve balance:|\|\s*Lofty maintenance reserve balance\s*\|)\s*-?\$[\d,]+\.\d{2}"
+    r"(?mi)^\s*(?:-\s*Lofty Operating Reserve:|-\s*Lofty maintenance reserve balance:"
+    r"|\|\s*Lofty maintenance reserve balance\s*\|)\s*-?\$[\d,]+\.\d{2}"
 )
 ECO_GL_SUMMARY_RE = re.compile(
     r"(?mi)^\s*(?:-\s*ECO GL Column E sum:|\|\s*ECO Operating Cash\s*\||ECO Operating Cash:)\s*-?\$[\d,]+\.\d{2}(?:\s+\(\d+\s+rows\)|\s+\([^)\n]*rows[^)\n]*\))?"
@@ -132,6 +138,88 @@ def read_json(path: Path) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"status": "unreadable", "path": str(path), "error": str(exc)}
     return data if isinstance(data, dict) else {"status": "unreadable", "path": str(path), "error": "not object"}
+
+
+def positive_int(value: object) -> int | None:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def owner_email_scope_snapshot(runtime_map: Path, candidate_packet_report: Path | None) -> dict[str, Any]:
+    runtime = read_json(runtime_map)
+    candidate = read_json(candidate_packet_report) if candidate_packet_report else {}
+    runtime_properties = runtime.get("properties") if isinstance(runtime.get("properties"), list) else []
+    runtime_records = runtime.get("records") if isinstance(runtime.get("records"), list) else []
+    active_runtime_records = [
+        record
+        for record in runtime_records
+        if isinstance(record, dict) and record.get("status") != "excluded_no_live_update_or_email"
+    ]
+    unavailable_runtime_records = [
+        record
+        for record in active_runtime_records
+        if record.get("status") == "unavailable_no_live_property_id"
+    ]
+    authoritative_physical_count = positive_int(
+        candidate.get("authoritative_active_property_count")
+        or runtime.get("portfolio_physical_property_count")
+    )
+    authoritative_reporting_target_count = positive_int(
+        candidate.get("authoritative_reporting_target_count")
+        or candidate.get("property_count")
+    )
+    runtime_reporting_target_count = positive_int(runtime.get("portfolio_reporting_target_count"))
+    if runtime_reporting_target_count is None and active_runtime_records:
+        runtime_reporting_target_count = len(active_runtime_records)
+    runtime_native_target_count = positive_int(runtime.get("native_live_target_count"))
+    if runtime_native_target_count is None and runtime_properties:
+        runtime_native_target_count = len(runtime_properties)
+    runtime_non_native_target_count = positive_int(runtime.get("native_unavailable_count"))
+    if runtime_non_native_target_count is None:
+        runtime_non_native_target_count = len(unavailable_runtime_records)
+    runtime_native_target_count = runtime_native_target_count or 0
+    runtime_non_native_target_count = runtime_non_native_target_count or 0
+    runtime_reporting_target_count = runtime_reporting_target_count or 0
+    active_runtime_record_count = len(active_runtime_records)
+    issues: list[str] = []
+    if authoritative_reporting_target_count:
+        coverage_ok = (
+            runtime_reporting_target_count == authoritative_reporting_target_count
+            and active_runtime_record_count == authoritative_reporting_target_count
+            and runtime_native_target_count + runtime_non_native_target_count
+            == authoritative_reporting_target_count
+        )
+        if not coverage_ok:
+            issues.append(
+                "runtime_scope_coverage_mismatch: "
+                f"authoritative_physical_properties={authoritative_physical_count or 'unknown'}, "
+                f"authoritative_reporting_targets={authoritative_reporting_target_count}, "
+                f"runtime_reporting_targets={runtime_reporting_target_count}, "
+                f"runtime_active_records={active_runtime_record_count}, "
+                f"runtime_native_targets={runtime_native_target_count}, "
+                f"runtime_non_native_targets={runtime_non_native_target_count}"
+            )
+    else:
+        coverage_ok = False
+        if candidate_packet_report:
+            issues.append("runtime_scope_authority_missing: review candidate packet has no authoritative reporting-target count")
+    return {
+        "authoritative_active_physical_property_count": authoritative_physical_count,
+        "authoritative_reporting_target_count": authoritative_reporting_target_count,
+        "runtime_reporting_target_count": runtime_reporting_target_count,
+        "runtime_active_record_count": active_runtime_record_count,
+        "runtime_native_target_count": runtime_native_target_count,
+        "runtime_non_native_target_count": runtime_non_native_target_count,
+        "coverage_ok": coverage_ok,
+        "issues": issues,
+    }
+
+
+def runtime_scope_is_authoritative(runtime_map: Path, candidate_packet_report: Path | None) -> bool:
+    return owner_email_scope_snapshot(runtime_map, candidate_packet_report).get("coverage_ok") is True
 
 
 def normalize_property_name(value: object) -> str:
@@ -529,6 +617,9 @@ def owner_packet_actionable_summary(
     run_month: str,
     eligible_financial_summary_missing_count: int | None = None,
     financially_held_property_count: int = 0,
+    native_only: bool = False,
+    native_preview_count: int = 0,
+    native_approval_pending_property_count: int = 0,
 ) -> dict[str, Any]:
     counts = reason_counts(property_unavailable)
     primary: dict[str, Any]
@@ -604,7 +695,7 @@ def owner_packet_actionable_summary(
     elif empty_count:
         primary = normalize_blocker({
             "class": "updates_md_empty",
-            "blocker": f"{empty_count} active properties have empty UPDATES.md",
+            "blocker": f"{empty_count} reporting targets have empty UPDATES.md",
             "count": empty_count,
             "artifact": str(property_gap_csv),
             "next_action": (
@@ -659,7 +750,7 @@ def owner_packet_actionable_summary(
         primary = normalize_blocker({
             "class": "monthly_financial_summary_missing",
             "blocker": (
-                f"{financial_summary_missing_count} active properties lack verified Lofty reserve and ECO GL cash summaries"
+                f"{financial_summary_missing_count} reporting targets lack verified Lofty reserve and ECO GL cash summaries"
             ),
             "count": financial_summary_missing_count,
             "artifact": str(property_gap_csv),
@@ -672,7 +763,7 @@ def owner_packet_actionable_summary(
     elif financially_held_property_count:
         primary = normalize_blocker({
             "class": "financial_review_hold",
-            "blocker": f"{financially_held_property_count} active properties are held for financial review",
+            "blocker": f"{financially_held_property_count} reporting targets are held for financial review",
             "count": financially_held_property_count,
             "artifact": str(property_gap_csv),
             "next_action": (
@@ -684,7 +775,7 @@ def owner_packet_actionable_summary(
     elif body_guard_count:
         primary = normalize_blocker({
             "class": "latest_update_body_guard",
-            "blocker": f"{body_guard_count} active properties need approved latest owner update copy",
+            "blocker": f"{body_guard_count} reporting targets need approved latest owner update copy",
             "count": body_guard_count,
             "artifact": str(property_gap_csv),
             "next_action": (
@@ -692,6 +783,22 @@ def owner_packet_actionable_summary(
                 "rent-roll/readiness approval, then rerun owner email packet dry-run."
             ),
             "hold": "Lofty PM publish and investor email",
+        })
+    elif native_only and native_approval_pending_property_count:
+        primary = normalize_blocker({
+            "class": "exact_current_owner_update_approval_missing",
+            "blocker": (
+                f"{native_approval_pending_property_count} native Lofty reporting targets are preview-ready "
+                "but lack exact current owner-update approval artifacts"
+            ),
+            "count": native_approval_pending_property_count,
+            "preview_count": native_preview_count,
+            "artifact": str(property_gap_csv),
+            "next_action": (
+                "Review the current per-property previews and create the exact approval artifacts only for "
+                "properties approved for send; the 7-day per-property cooldown remains mandatory."
+            ),
+            "hold": "investor email",
         })
     elif not packets:
         primary = normalize_blocker({
@@ -733,6 +840,7 @@ def owner_packet_actionable_summary(
         "listing_cleanup_ready_other_blocker_count": ready_cleanup_other_blocker_count,
         "listing_cleanup_ready_other_blocker_reason_counts": ready_cleanup_other_blocker_reason_counts,
         "packet_count": len(packets),
+        "native_preview_count": native_preview_count,
         "noise_policy": "Use primary_blocker for action; full per-property evidence remains in property_gap_csv and property_unavailable_bounded.",
         "external_mutation_policy": "This packet report is non-mutating and cannot send email or update Lofty listings by itself.",
     }
@@ -952,8 +1060,12 @@ def verified_candidate_summary(summary: dict[str, Any]) -> bool:
         isinstance(summary, dict)
         and summary.get("eco_gl_column_e_status") == "ok"
         and summary.get("eco_gl_column_e_sum") is not None
+        and summary.get("total_dao_spendable_cash_status") == "ok"
+        and summary.get("total_dao_spendable_cash") is not None
         and summary.get("eco_held_unrestricted_cash_status") == "ok"
-        and summary.get("eco_held_unrestricted_cash") is not None
+        and summary.get("open_accrued_obligations_status") == "ok"
+        and reconciled_obligation_breakdown(summary) is not None
+        and has_verified_intercompany_position(summary)
     )
 
 
@@ -994,6 +1106,7 @@ def plain_text_financials_section(section: str) -> str:
     lines: list[str] = []
     skip_table_rule = False
     for raw_line in str(section or "").splitlines():
+        leading_whitespace = raw_line[: len(raw_line) - len(raw_line.lstrip())]
         line = raw_line.strip()
         if not line:
             if lines and lines[-1]:
@@ -1016,7 +1129,10 @@ def plain_text_financials_section(section: str) -> str:
             continue
         if skip_table_rule and line.startswith("|"):
             continue
-        lines.append(line.replace("`", ""))
+        rendered = line.replace("`", "")
+        if leading_whitespace and rendered.startswith(("-", "*")):
+            rendered = "  " + rendered
+        lines.append(rendered)
     return "\n".join(lines).strip()
 
 
@@ -1048,25 +1164,7 @@ def financials_md_text_matches_run_month(text: str, run_month: str | None) -> bo
 
 
 def render_monthly_financial_summary(summary: dict[str, Any], run_month: str | None = None) -> str:
-    as_of_month = summary.get("as_of_month") or run_month
-    as_of = f" as of {as_of_month}" if as_of_month else ""
-    lines = [
-        f"Financial summary{as_of}:",
-    ]
-    if summary.get("lofty_curr_maintenance_reserve") is not None:
-        lines.append(
-            f"- Lofty maintenance reserve balance: {format_money(summary.get('lofty_curr_maintenance_reserve'))}"
-        )
-    lines.append(
-        "- ECO Net DAO Funds (spendable cash held by ECO): "
-        f"{format_money(summary.get('eco_held_unrestricted_cash'))}"
-    )
-    if summary.get("open_accrued_obligations_status") == "ok":
-        lines.append(
-            "- Recorded unpaid obligations (not spendable cash): "
-            f"{format_money(summary.get('open_accrued_obligations'))}"
-        )
-    return "\n".join(lines)
+    return render_balance_sheet_snapshot(summary, summary.get("as_of_month") or run_month)
 
 
 SYNTHETIC_FINANCIAL_SUMMARY_BLOCK_RE = re.compile(
@@ -1164,7 +1262,9 @@ def load_candidate_financial_summaries(
         keys = [
             str(record.get("lofty_property_id") or "").strip(),
             str(record.get("property_name") or "").strip(),
+            str(record.get("update_candidate") or "").strip(),
             str(record.get("update_approval_target") or "").strip(),
+            monthly_artifact_property_folder(record.get("update_candidate")),
             monthly_artifact_property_folder(record.get("update_approval_target")),
             monthly_artifact_property_folder(record.get("financial_approval_target")),
         ]
@@ -1201,16 +1301,34 @@ def candidate_summary_for(
     )
 
 
-def approved_update_text(candidate_summary: dict[str, Any] | None) -> tuple[str | None, str | None]:
+def candidate_update_text(
+    candidate_summary: dict[str, Any] | None,
+    *,
+    allow_review_candidate: bool = True,
+) -> tuple[str | None, str | None, str | None, bool]:
     if not candidate_summary:
-        return None, None
-    approval_target = str(candidate_summary.get("candidate_update_approval_target") or "").strip()
-    if not approval_target:
-        return None, None
-    path = Path(approval_target)
-    if not path.is_file():
-        return None, None
-    return path.read_text(encoding="utf-8", errors="replace"), str(path)
+        return None, None, None, False
+    sources = [
+        ("candidate_update_approval_target", "approved_update_artifact", True),
+    ]
+    if allow_review_candidate:
+        sources.append(("candidate_update_source", "review_candidate_artifact", False))
+    for field, source_type, approved in sources:
+        path_text = str(candidate_summary.get(field) or "").strip()
+        if not path_text:
+            continue
+        path = Path(path_text)
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if text.strip():
+            return text, str(path), source_type, approved
+    return None, None, None, False
+
+
+def approved_update_text(candidate_summary: dict[str, Any] | None) -> tuple[str | None, str | None]:
+    text, path, _, _ = candidate_update_text(candidate_summary, allow_review_candidate=False)
+    return text, path
 
 
 def load_live_update_guard_statuses(live_update_capture_report: Path | None) -> tuple[dict[str, dict[str, Any]], list[str], bool]:
@@ -1237,9 +1355,15 @@ def load_live_update_guard_statuses(live_update_capture_report: Path | None) -> 
             else {}
         )
         record_status = str(record.get("status") or "").strip()
+        guard_applicable = record.get("live_capture_guard_applicable") is not False
         guard_ok = (
-            (record_status == "guard_ok" and check.get("ok") is True)
+            not guard_applicable
+            or (record_status == "guard_ok" and check.get("ok") is True)
             or record_status in {"guard_ok_live_distribution", "guard_ok_no_distribution_target"}
+            or record_status in {
+                "not_applicable_no_lofty_property_id",
+                "not_applicable_not_current_manager_property",
+            }
             or (
                 record_status == "guard_ok_current_only"
                 and (
@@ -1253,6 +1377,7 @@ def load_live_update_guard_statuses(live_update_capture_report: Path | None) -> 
         )
         status = {
             "guard_ok": guard_ok,
+            "guard_applicable": guard_applicable,
             "status": record.get("status"),
             "check_return_code": check.get("return_code"),
         }
@@ -1330,13 +1455,18 @@ def load_properties(
     data = read_json(runtime_map)
     if data.get("status") in {"missing", "unreadable"}:
         return [], [f"runtime map {data.get('status')}: {runtime_map}"], [], 0
+    authoritative_runtime_scope = runtime_scope_is_authoritative(runtime_map, candidate_packet_report)
     live_update_statuses, live_update_issues, require_live_update_guard = load_live_update_guard_statuses(live_update_capture_report)
     listing_cleanup_statuses, listing_cleanup_issues = load_listing_cleanup_statuses(listing_cleanup_queue_report)
     candidate_summaries, candidate_issues, candidate_summary_report = load_candidate_financial_summaries(
         candidate_packet_report,
         run_month,
     )
-    live_capture_excluded_names = live_capture_excluded_property_names(live_update_capture_report)
+    live_capture_excluded_names = (
+        set()
+        if authoritative_runtime_scope
+        else live_capture_excluded_property_names(live_update_capture_report)
+    )
     props = data.get("properties") if isinstance(data.get("properties"), list) else []
     issues: list[str] = [*live_update_issues, *listing_cleanup_issues, *candidate_issues]
     unavailable: list[dict[str, Any]] = []
@@ -1346,20 +1476,37 @@ def load_properties(
         if not isinstance(prop, dict):
             continue
         property_name = str(prop.get("property_name") or prop.get("full_address") or "").strip()
-        if excluded_by_manual_policy(property_name, prop.get("property_path") or prop.get("updates_md")):
+        if not authoritative_runtime_scope and excluded_by_manual_policy(
+            property_name,
+            prop.get("property_path") or prop.get("updates_md"),
+        ):
             continue
         if normalize_property_name(property_name) in live_capture_excluded_names:
             continue
         source_property_count += 1
         lofty_property_id = str(prop.get("lofty_property_id") or "").strip()
         updates_md = Path(str(prop.get("updates_md") or ""))
+        candidate_summary = candidate_summary_for(
+            candidate_summaries,
+            lofty_property_id=lofty_property_id,
+            property_name=property_name,
+            updates_md=updates_md,
+        )
+        candidate_text, candidate_path, candidate_source_type, candidate_approved = candidate_update_text(
+            candidate_summary
+        )
         cleanup_status = listing_cleanup_status(
             listing_cleanup_statuses,
             lofty_property_id=lofty_property_id,
             property_name=property_name,
             updates_md=updates_md,
         )
-        if not updates_md.is_file():
+        updates_text = (
+            updates_md.read_text(encoding="utf-8", errors="replace")
+            if updates_md.is_file()
+            else ""
+        )
+        if not updates_md.is_file() and not candidate_text:
             issue = f"updates_md missing for {property_name or lofty_property_id}: {updates_md}"
             issues.append(issue)
             reason = "updates_md_missing"
@@ -1370,18 +1517,11 @@ def load_properties(
                 "reason": reason,
                 "issue": issue,
             }
+            unavailable_record.update(candidate_gap_fields(candidate_summary, candidate_summary_report))
             unavailable_record.update(listing_cleanup_gap_fields(cleanup_status, reason))
             unavailable.append(unavailable_record)
             continue
-        updates_text = updates_md.read_text(encoding="utf-8", errors="replace")
-        candidate_summary = candidate_summary_for(
-            candidate_summaries,
-            lofty_property_id=lofty_property_id,
-            property_name=property_name,
-            updates_md=updates_md,
-        )
-        approved_text, approved_path = approved_update_text(candidate_summary)
-        if not updates_text.strip():
+        if not candidate_text and not updates_text.strip():
             issue = f"updates_md empty for {property_name or lofty_property_id}: {updates_md}"
             issues.append(issue)
             reason = "updates_md_empty"
@@ -1396,9 +1536,10 @@ def load_properties(
             unavailable_record.update(listing_cleanup_gap_fields(cleanup_status, reason))
             unavailable.append(unavailable_record)
             continue
-        latest_source_text = approved_text if approved_text and approved_text.strip() else updates_text
-        latest_source_path = approved_path or str(updates_md)
-        latest_source_type = "approved_update_artifact" if approved_path else "updates_md"
+        latest_source_text = candidate_text or updates_text
+        latest_source_path = candidate_path or str(updates_md)
+        latest_source_type = candidate_source_type or "updates_md"
+        latest_update_approved = candidate_approved is True
         entry = parse_latest_entry(latest_source_text)
         if not entry:
             issue = f"no latest update entry in {latest_source_path}"
@@ -1410,6 +1551,7 @@ def load_properties(
                 "updates_md": str(updates_md),
                 "latest_update_source": latest_source_path,
                 "latest_update_source_type": latest_source_type,
+                "latest_update_approved": latest_update_approved,
                 "reason": reason,
                 "issue": issue,
             }
@@ -1434,6 +1576,7 @@ def load_properties(
                 "updates_md": str(updates_md),
                 "latest_update_source": latest_source_path,
                 "latest_update_source_type": latest_source_type,
+                "latest_update_approved": latest_update_approved,
                 "reason": reason,
                 "issue": issue,
                 "candidate_summary_available": bool(candidate_summary),
@@ -1455,6 +1598,7 @@ def load_properties(
                 "updates_md": str(updates_md),
                 "latest_update_source": latest_source_path,
                 "latest_update_source_type": latest_source_type,
+                "latest_update_approved": latest_update_approved,
                 "reason": reason,
                 "issue": issue,
             }
@@ -1477,6 +1621,7 @@ def load_properties(
                 "updates_md": str(updates_md),
                 "latest_update_source": latest_source_path,
                 "latest_update_source_type": latest_source_type,
+                "latest_update_approved": latest_update_approved,
                 "reason": reason,
                 "issue": issue,
             }
@@ -1515,6 +1660,7 @@ def load_properties(
                 "updates_md": str(updates_md),
                 "latest_update_source": latest_source_path,
                 "latest_update_source_type": latest_source_type,
+                "latest_update_approved": latest_update_approved,
                 "latest_update_date": entry["date"],
                 "latest_update_body": latest_update_body.strip(),
                 "latest_update_body_sha256": hashlib.sha256(latest_update_body.strip().encode("utf-8")).hexdigest(),
@@ -1596,7 +1742,7 @@ def body_text(recipient: dict[str, Any], run_month: str) -> str:
         )
     blocks.extend(
         [
-            "Scope: latest approved property signal plus current financial summary only.",
+            "Scope: current property signal plus current financial summary only.",
             "Supporting documents remain in the public property folder under 00 - README & Property Snapshot and 07 - P&L & Owner Statements.",
         ]
     )
@@ -1610,7 +1756,7 @@ def native_body_text(prop: dict[str, Any], run_month: str) -> str:
         f"Property: {prop['property_name']}",
         prop["latest_update_body"],
         "",
-        "Scope: latest approved property signal plus current financial summary only.",
+        "Scope: current property signal plus current financial summary only.",
         "Supporting documents remain in the public property folder under 00 - README & Property Snapshot and 07 - P&L & Owner Statements.",
     ]
     return "\n".join(blocks).strip() + "\n"
@@ -1759,6 +1905,15 @@ def collect_native_packets(properties: list[dict[str, Any]], run_month: str) -> 
     return packets
 
 
+def packet_approval_pending_properties(packet: dict[str, Any]) -> list[str]:
+    properties = packet.get("source_properties") if isinstance(packet.get("source_properties"), list) else []
+    return [
+        str(prop.get("property_name") or prop.get("lofty_property_id") or "unknown")
+        for prop in properties
+        if isinstance(prop, dict) and prop.get("latest_update_approved") is not True
+    ]
+
+
 def write_native_previews(out_dir: Path, packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     previews: list[dict[str, Any]] = []
@@ -1782,6 +1937,7 @@ def write_native_previews(out_dir: Path, packets: list[dict[str, Any]]) -> list[
                 "path": str(path),
                 "body_digest": packet["body_digest"],
                 "body_guard_issue_count": len(packet.get("body_guard_issues") or []),
+                "approval_pending_properties": packet_approval_pending_properties(packet),
             }
         )
     return previews
@@ -1843,6 +1999,7 @@ def collect_packets(
                         "latest_update_scope": prop.get("latest_update_scope"),
                         "latest_update_source": prop.get("latest_update_source"),
                         "latest_update_source_type": prop.get("latest_update_source_type"),
+                        "latest_update_approved": prop.get("latest_update_approved") is True,
                         "latest_update_body_sha256": prop.get("latest_update_body_sha256"),
                         "source_updates_md_has_history": prop.get("source_updates_md_has_history") is True,
                         "source_updates_md_history_date_count": len(prop.get("source_updates_md_history_dates") or []),
@@ -1906,9 +2063,15 @@ def build_report(
     prepared_property_financial_summary_present_count: int | None = None,
     native_only: bool = False,
 ) -> dict[str, Any]:
+    scope_snapshot = owner_email_scope_snapshot(runtime_map, candidate_packet_report)
+    authoritative_runtime_scope = scope_snapshot["coverage_ok"] is True
     discord_validation = read_json(discord_plan_validation_report) if discord_plan_validation_report else {}
     held_property_names = financially_held_property_names(discord_validation)
-    live_capture_excluded_names = live_capture_excluded_property_names(live_update_capture_report)
+    live_capture_excluded_names = (
+        set()
+        if authoritative_runtime_scope
+        else live_capture_excluded_property_names(live_update_capture_report)
+    )
     native_properties, native_property_issues, native_property_unavailable, native_source_property_count = load_properties(
         runtime_map=runtime_map,
         candidate_packet_report=candidate_packet_report,
@@ -1930,9 +2093,12 @@ def build_report(
         1
         for prop in read_json(runtime_map).get("properties") or []
         if isinstance(prop, dict)
-        and not excluded_by_manual_policy(
-            prop.get("property_name") or prop.get("full_address"),
-            prop.get("property_path") or prop.get("updates_md"),
+        and (
+            authoritative_runtime_scope
+            or not excluded_by_manual_policy(
+                prop.get("property_name") or prop.get("full_address"),
+                prop.get("property_path") or prop.get("updates_md"),
+            )
         )
         and normalize_property_name(prop.get("property_name") or prop.get("full_address")) not in live_capture_excluded_names
     )
@@ -1947,7 +2113,7 @@ def build_report(
         property_unavailable_count = len(native_property_unavailable)
         property_unavailable = list(native_property_unavailable)
         property_financial_summary_enriched_count = sum(
-            1 for prop in native_properties if prop.get("monthly_financial_summary_enriched") is True
+            1 for prop in native_properties if prop.get("financial_summary_enriched") is True
         )
         property_financial_summary_present_count = sum(
             1 for prop in native_properties if prop.get("monthly_financial_summary_present") is True
@@ -2025,6 +2191,22 @@ def build_report(
         for packet in native_packets_all
         if not any(key in native_email_idempotency_hold_keys for key in packet_property_send_keys(packet))
     ]
+    native_email_approval_pending_properties = sorted(
+        {
+            property_name
+            for packet in native_packets
+            for property_name in packet_approval_pending_properties(packet)
+        }
+    )
+    native_email_approval_pending_property_count = sum(
+        int(packet.get("property_count") or 0)
+        for packet in native_packets
+        if packet_approval_pending_properties(packet)
+    )
+    non_native_email_approval_pending_property_count = sum(
+        len(packet_approval_pending_properties(packet))
+        for packet in packets
+    )
     resolved_gws = gws_binary if gws_binary is not None else (shutil.which("gws") or "")
     guild_guard = guild_test_post_guard(
         guild_test_post_report,
@@ -2040,6 +2222,19 @@ def build_report(
     issues = [
         issue for issue in input_issues if str(issue) != missing_recipient_csv_issue
     ]
+    for scope_issue in scope_snapshot["issues"]:
+        if scope_issue not in issues:
+            issues.append(scope_issue)
+    approval_pending_property_count = (
+        native_email_approval_pending_property_count
+        if native_only
+        else non_native_email_approval_pending_property_count
+    )
+    if approval_pending_property_count:
+        issues.append(
+            "exact current owner-update approval artifact missing for "
+            f"{approval_pending_property_count} property packets"
+        )
     if not dry_run and not send:
         issues.append("select --dry-run or --send")
     if send and already_sent:
@@ -2088,9 +2283,12 @@ def build_report(
         for packet in native_packets_all
         if any(key in native_sent_hold_keys for key in packet_property_send_keys(packet))
     )
-    native_email_eligible_property_count = native_packet_property_count
+    native_email_eligible_property_count = max(
+        0,
+        native_packet_property_count - native_email_approval_pending_property_count,
+    )
     native_owner_email_property_coverage_ok = (
-        native_email_eligible_property_count > 0
+        native_total_property_count > 0
         and native_packet_property_count + native_email_idempotency_held_property_count == native_total_property_count
         and native_body_guard_issue_count == 0
         and not native_property_issues
@@ -2135,17 +2333,19 @@ def build_report(
         record_count = int(candidate_summary_report.get("record_count") or 0)
         issues.append(
             "monthly financial summary missing for "
-            f"{missing_financial_summary_present_count}/{property_count} active properties; "
+            f"{missing_financial_summary_present_count}/{property_count} reporting targets; "
             f"candidate_packet_status={candidate_status}; "
             f"verified_candidate_summaries={verified_count}/{record_count}"
         )
     if native_only and held_property_names and not native_packets:
-        issues.append(f"native Lofty owner email held by financial review for {len(held_property_names)} active properties")
+        issues.append(
+            f"native Lofty owner email held by financial review for {len(held_property_names)} reporting targets"
+        )
     unavailable_reason_counts = reason_counts(property_unavailable)
     if unavailable_reason_counts.get("live_update_guard_not_reconciled") and not issues:
         issues.append(
             "live update guard capture required for "
-            f"{unavailable_reason_counts['live_update_guard_not_reconciled']}/{property_count} active properties"
+            f"{unavailable_reason_counts['live_update_guard_not_reconciled']}/{property_count} reporting targets"
         )
     unavailable_candidate_update_source_count = sum(
         1 for record in property_unavailable if str(record.get("candidate_update_source") or "").strip()
@@ -2178,6 +2378,7 @@ def build_report(
         not issues
         and native_email_eligible_property_count > 0
         and bool(native_packets)
+        and native_email_approval_pending_property_count == 0
         and full_history_leak_count == 0
         and full_history_guard_issue_count == 0
         and body_guard_issue_count == 0
@@ -2190,12 +2391,19 @@ def build_report(
         and not issues
         and not already_sent
         and not property_cooldown_issue_list
+        and non_native_email_approval_pending_property_count == 0
         and full_history_leak_count == 0
         and full_history_guard_issue_count == 0
         and body_guard_issue_count == 0
         and not stale_preview_cleanup_errors
     )
-    safe_to_send = send and not issues and not already_sent and bool(packets)
+    safe_to_send = (
+        send
+        and not issues
+        and not already_sent
+        and bool(packets)
+        and non_native_email_approval_pending_property_count == 0
+    )
     actionable_summary = owner_packet_actionable_summary(
         issues=issues,
         packets=packets,
@@ -2208,6 +2416,9 @@ def build_report(
         run_month=run_month,
         eligible_financial_summary_missing_count=missing_financial_summary_present_count,
         financially_held_property_count=len(held_property_names),
+        native_only=native_only,
+        native_preview_count=len(native_previews),
+        native_approval_pending_property_count=native_email_approval_pending_property_count,
     )
     return {
         "generated_at": iso_z(),
@@ -2225,6 +2436,16 @@ def build_report(
         "runtime_map_exists": runtime_map.is_file(),
         "runtime_map_canonical_name_ok": runtime_map.name == CANONICAL_RUNTIME_MAP_NAME,
         "runtime_map_expected_name": CANONICAL_RUNTIME_MAP_NAME,
+        "authoritative_active_physical_property_count": scope_snapshot[
+            "authoritative_active_physical_property_count"
+        ],
+        "authoritative_reporting_target_count": scope_snapshot["authoritative_reporting_target_count"],
+        "runtime_map_reporting_target_count": scope_snapshot["runtime_reporting_target_count"],
+        "runtime_map_active_record_count": scope_snapshot["runtime_active_record_count"],
+        "runtime_map_native_target_count": scope_snapshot["runtime_native_target_count"],
+        "runtime_map_non_native_target_count": scope_snapshot["runtime_non_native_target_count"],
+        "runtime_map_scope_coverage_ok": scope_snapshot["coverage_ok"],
+        "runtime_map_scope_issues": scope_snapshot["issues"],
         "live_update_capture_report": str(live_update_capture_report) if live_update_capture_report else None,
         "listing_cleanup_queue_report": str(listing_cleanup_queue_report) if listing_cleanup_queue_report else None,
         "review_candidate_packet_report": str(candidate_packet_report) if candidate_packet_report else None,
@@ -2257,18 +2478,21 @@ def build_report(
         "recipient_csv_policy": (
             "legacy non-native email only; native Lofty owner email recipients are resolved by lofty-pm-mcp/send_emails"
             if native_only
-            else "one row per recipient-property; portfolio-wide recipients require --allow-portfolio-recipients and all active properties must have a latest approved update"
+            else "one row per recipient-property; portfolio-wide recipients require --allow-portfolio-recipients and all active reporting targets must have a latest approved update"
         ),
         "owner_email_send_policy": SIGNAL_ONLY_OWNER_EMAIL_POLICY,
         "native_lofty_owner_email_allowed": native_lofty_owner_email_allowed,
         "native_lofty_owner_email_recipient_source": "lofty_pm_mcp",
-        "native_lofty_owner_email_content_source": "per-property latest approved update plus verified financial summary",
+        "native_lofty_owner_email_content_source": "current per-property review candidate for preview; exact approved artifact for send; verified financial summary in both",
         "native_lofty_owner_email_preview_count": len(native_previews),
         "native_lofty_owner_email_preview_file_write_allowed": native_preview_file_write_allowed,
         "native_lofty_owner_email_body_guard_issue_count": native_body_guard_issue_count,
         "native_lofty_owner_email_property_count": native_packet_property_count,
         "native_lofty_owner_email_total_property_count": native_total_property_count,
         "native_lofty_owner_email_eligible_property_count": native_email_eligible_property_count,
+        "native_lofty_owner_email_approval_pending_property_count": native_email_approval_pending_property_count,
+        "native_lofty_owner_email_approval_pending_properties": native_email_approval_pending_properties[:100],
+        "native_lofty_owner_email_approval_ready_property_count": native_email_eligible_property_count,
         "native_lofty_owner_email_cooldown_held_property_count": native_email_cooldown_held_property_count,
         "native_lofty_owner_email_cooldown_held_property_keys": sorted(property_cooldown_hold_keys_set)[:100],
         "native_lofty_owner_email_current_month_held_property_count": native_email_current_month_held_property_count,
@@ -2286,6 +2510,7 @@ def build_report(
         "native_lofty_owner_email_property_coverage_policy": "Every available active runtime-map property not under an explicit property-scoped financial hold or per-property cooldown hold must either produce exactly one signal-only native Lofty owner email packet or be reported as held; held properties remain unsent.",
         "native_lofty_owner_email_previews": native_previews[:50],
         "non_native_signal_only_owner_email_allowed": non_native_signal_only_owner_email_allowed,
+        "non_native_owner_email_approval_pending_property_count": non_native_email_approval_pending_property_count,
         "non_native_recipient_csv_required": not native_only,
         "non_native_recipient_csv_exists": recipients_csv.is_file(),
         "non_native_recipient_issue_count": len(non_native_input_issues),
@@ -2311,6 +2536,15 @@ def build_report(
         "gws_available": bool(resolved_gws),
         "gws_binary": resolved_gws or None,
         "property_count": property_count,
+        "property_count_scope": (
+            "native_lofty_reporting_targets_only"
+            if native_only
+            else "legacy_non_native_packet_source_targets"
+        ),
+        "portfolio_active_physical_property_count": scope_snapshot[
+            "authoritative_active_physical_property_count"
+        ],
+        "portfolio_reporting_target_count": scope_snapshot["authoritative_reporting_target_count"],
         "available_property_count": available_property_count,
         "property_unavailable_count": property_unavailable_count,
         "property_unavailable_bounded": property_unavailable[:25],

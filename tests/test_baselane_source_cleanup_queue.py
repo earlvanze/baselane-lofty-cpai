@@ -53,7 +53,7 @@ def test_source_index_iso_date_matches_human_formatted_ledger_date():
     assert module.row_key(ledger_row) == module.row_key(source_row)
 
 
-def test_no_dao_cleanup_matches_unique_source_row_when_account_is_transformed():
+def test_approved_principal_curtailment_is_not_a_no_dao_cleanup_candidate():
     module = load_module()
     ledger_row = {
         "Account": "90 Madison Ave",
@@ -79,9 +79,9 @@ def test_no_dao_cleanup_matches_unique_source_row_when_account_is_transformed():
 
     actions = module.no_dao_mortgage_actions([ledger_row], [source_row], set())
 
-    assert len(actions) == 1
-    assert actions[0]["baselane_id"] == "323033782"
-    assert actions[0]["status"] == "ready_id_backed"
+    # Approved 90 Madison principal curtailments from June 2024 through June
+    # 2025 are canonical DAO mortgage principal, not orphan rows to remove.
+    assert actions == []
 
 
 def test_source_identity_match_refuses_ambiguous_source_ids():

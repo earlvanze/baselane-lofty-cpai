@@ -448,7 +448,7 @@ def telegram_config() -> tuple[str, str]:
         or first_telegram_config_allow_from(telegram)
         or default_telegram_allow_from()
     )
-    return token.strip(), chat_id.strip()
+    return str(token or "").strip(), str(chat_id or "").strip()
 
 
 def status_line(label: str, data: dict, extra: list[str] | None = None) -> str:

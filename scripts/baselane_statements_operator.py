@@ -14,8 +14,30 @@ from typing import Any, TextIO
 OPENCLAW_ROOT = Path(os.environ.get('OPENCLAW_ROOT', str(Path.home() / '.openclaw')))
 REPO = Path(os.environ.get('WORKSPACE_ROOT', str(OPENCLAW_ROOT / 'workspace')))
 DEFAULT_DOWNLOADS = Path(os.environ.get('DOWNLOADS_DIR', str(Path.home() / 'Downloads')))
-DEFAULT_PERSONAL = Path(os.environ.get('PERSONAL_ROOT', str(REPO / 'pdf-extracts/personal/07 - P&L & Owner Statements/Bank Statements')))
-DEFAULT_HOLDINGS = Path(os.environ.get('HOLDINGS_ROOT', str(REPO / 'pdf-extracts/business-holdings/07 - P&L & Owner Statements/Bank Statements')))
+
+
+def default_dropbox_root() -> Path:
+    candidates = [
+        Path("/mnt/c/Users/digit/Dropbox"),
+        Path("/mnt/c/users/digit/Dropbox"),
+        Path("/data/Dropbox"),
+        Path.home() / "Dropbox",
+        Path("/home/digit/Dropbox"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return Path("/mnt/c/Users/digit/Dropbox")
+
+
+DEFAULT_DROPBOX = default_dropbox_root()
+DEFAULT_PERSONAL = Path(
+    os.environ.get(
+        'PERSONAL_ROOT',
+        str(DEFAULT_DROPBOX / 'Finances/Bank Statements/Baselane'),
+    )
+)
+DEFAULT_HOLDINGS = Path(os.environ.get('HOLDINGS_ROOT', str(DEFAULT_DROPBOX / 'Entities')))
 SCRIPT_PATH = Path(__file__).resolve()
 ISSUE_CLASS = "baselane-statements-operator"
 LFTY_PREFIX_RE = re.compile(r"^LFTY\d+\s+", re.IGNORECASE)
@@ -38,6 +60,7 @@ def default_real_estate_root() -> Path:
     if env_root:
         return Path(env_root)
     candidates = [
+        DEFAULT_DROPBOX / "Real Estate",
         Path("/mnt/c/Users/digit/Dropbox/Real Estate"),
         Path("/mnt/c/users/digit/Dropbox/Real Estate"),
         Path("/data/Dropbox/Real Estate"),
@@ -77,6 +100,7 @@ DEST_RULES = [
     ('25 CIRCLE DR', 'IL/25 Circle Dr, Dixmoor, IL 60426/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('27 PILLAR LN', 'FL/27 Pillar Ln, Palm Coast, FL 32164/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('49 BANNBURY LN', 'FL/49 Bannbury Ln, Palm Coast, FL 32137/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
+    ('402 N WILD OLIVE', 'FL/402 N Wild Olive Ave Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('428 CROSS ST', 'OH/428 Cross St, Akron, OH 44311/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('428 SECURITY DEPOSITS', 'OH/428 Cross St, Akron, OH 44311/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('5401 ODOM AVE', 'TX/5401 Odom Ave Fort Worth, TX 76114/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
@@ -87,6 +111,12 @@ DEST_RULES = [
     ('918 SECURITY DEPOSITS', 'OH/918 Frederick Blvd, Akron, OH 44320/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('9634 S GREEN ST', 'IL/9634 S Green St, Chicago, IL 60643/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('9902 GARFIELD AVE', 'OH/9902 Garfield Ave, Cleveland, OH, 44108/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
+    ('10724 GOODING AVE', 'OH/10724 Gooding Ave, Cleveland, OH 44108/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
+    ('16713 LOTUS DR', 'OH/16713 Lotus Dr, Cleveland, OH 44128/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
+    ('3493 WEST 119TH ST', 'OH/3493 W 119th St, Cleveland, Ohio 44111/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
+    ('3905 EAST 189TH ST', 'OH/3905 E 189th St Cleveland, OH 44122/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
+    ('4318 CLYBOURNE AVE', 'OH/4318 Clybourne Ave, Cleveland, OH 44109/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
+    ('8708 WILLARD AVE', 'OH/8708 Willard Ave, Cleveland, OH 44102/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('9919 S OGLESBY AVE', 'IL/9919 S Oglesby Ave, Chicago, IL 60617/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('326-332 S ALCOTT', 'CO/326-332 S Alcott St Denver, CO 80219/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('85-104 ALAWA PL', 'HI/85-104 Alawa Pl Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
@@ -95,6 +125,7 @@ DEST_RULES = [
     ('804 S QUITMAN ST', 'CO/804 S Quitman St, Denver, CO 80219/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('3560 SAINT ALBANS', 'MO/3560 Saint Albans Rd. Saint Albans, MO 63073/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
     ('1935 S GLEN RD', 'MI/1935 S Glen Rd, Shelby, MI 49455/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
+    ('917 PAWNEE AVE', 'TN/917 Pawnee Ave, Memphis, TN 38109/Public/07 - P&L & Owner Statements/Bank Statements/{year}'),
 ]
 
 
@@ -987,10 +1018,11 @@ def move_misplaced_property_statements(
 def move_downloads(downloads: Path, re_base: Path, month_tok: str, year: int):
     moved = []
     unmapped = []
-    for p in downloads.glob(f'BASELANE_*DAO LLC*_{month_tok}_{year}_STATEMENT*.pdf'):
+    for p in downloads.glob(f'BASELANE_*_{month_tok}_{year}_STATEMENT*.pdf'):
         dest_dir = resolve_dest(re_base, p.name, year)
         if not dest_dir:
-            unmapped.append(p)
+            if 'DAO LLC' in p.name.upper():
+                unmapped.append(p)
             continue
         dest_dir.mkdir(parents=True, exist_ok=True)
         target = dest_dir / p.name
@@ -1006,50 +1038,66 @@ def move_downloads(downloads: Path, re_base: Path, month_tok: str, year: int):
     return moved, unmapped
 
 
-def move_non_property(downloads: Path, month_tok: str, year: int, personal_base: Path, holdings_base: Path):
+def non_property_destination(
+    filename: str,
+    year: int,
+    personal_base: Path,
+    holdings_base: Path,
+) -> tuple[str, Path] | None:
+    up = filename.upper()
+    entity_dir = None
+    if 'ECO SYSTEMS, LLC' in up:
+        entity_dir = 'ECO Systems LLC'
+    elif 'EVCO HOLDINGS, LLC' in up:
+        entity_dir = 'EVCO Holdings LLC'
+    elif 'EVCO INDUSTRIES, LLC' in up:
+        entity_dir = 'EVCO Industries LLC'
+    elif 'NARWALL HOLDINGS' in up:
+        entity_dir = 'NARWALL Holdings, LLC'
+    if entity_dir:
+        return (
+            'holdings',
+            holdings_base / entity_dir / 'Financials' / 'Bank Statements' / str(year),
+        )
+    if any(value in up for value in ('EARL VANZE CO', 'EARLDAO')):
+        return 'personal', personal_base / str(year)
+    return None
+
+
+def move_non_property(downloads: Path, re_base: Path, month_tok: str, year: int, personal_base: Path, holdings_base: Path):
     personal = []
     holdings = []
     for p in downloads.glob(f'BASELANE_*_{month_tok}_{year}_STATEMENT*.pdf'):
         up = p.name.upper()
-        if 'DAO LLC' in up:
+        if 'DAO LLC' in up or resolve_dest(re_base, p.name, year):
             continue
-        if any(x in up for x in ['EVCO ', 'NARWALL ']):
-            dest_dir = holdings_base / str(year)
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            target = dest_dir / p.name
-            if target.exists():
-                if target.stat().st_size == p.stat().st_size:
-                    p.unlink()
-                    holdings.append(target)
-                    continue
-                ts = dt.datetime.now().strftime('%Y%m%d-%H%M%S')
-                target = dest_dir / f'{p.stem}.{ts}.pdf'
-            shutil.move(str(p), str(target))
-            holdings.append(target)
+        destination = non_property_destination(p.name, year, personal_base, holdings_base)
+        if destination is None:
             continue
-        if any(x in up for x in ['EARL VANZE CO', 'EARLDAO', 'ECO SYSTEMS, LLC']):
-            dest_dir = personal_base / str(year)
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            target = dest_dir / p.name
-            if target.exists():
-                if target.stat().st_size == p.stat().st_size:
-                    p.unlink()
-                    personal.append(target)
-                    continue
-                ts = dt.datetime.now().strftime('%Y%m%d-%H%M%S')
-                target = dest_dir / f'{p.stem}.{ts}.pdf'
-            shutil.move(str(p), str(target))
-            personal.append(target)
+        bucket, dest_dir = destination
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        target = dest_dir / p.name
+        output = holdings if bucket == 'holdings' else personal
+        if target.exists():
+            if target.stat().st_size == p.stat().st_size:
+                p.unlink()
+                output.append(target)
+                continue
+            ts = dt.datetime.now().strftime('%Y%m%d-%H%M%S')
+            target = dest_dir / f'{p.stem}.{ts}.pdf'
+        shutil.move(str(p), str(target))
+        output.append(target)
     return personal, holdings
 
 
 def planned_property_downloads(downloads: Path, re_base: Path, month_tok: str, year: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     planned = []
     unmapped = []
-    for p in downloads.glob(f'BASELANE_*DAO LLC*_{month_tok}_{year}_STATEMENT*.pdf'):
+    for p in downloads.glob(f'BASELANE_*_{month_tok}_{year}_STATEMENT*.pdf'):
         dest_dir = resolve_dest(re_base, p.name, year)
         if not dest_dir:
-            unmapped.append({"source": str(p), "name": p.name, "reason": "no-destination-rule"})
+            if 'DAO LLC' in p.name.upper():
+                unmapped.append({"source": str(p), "name": p.name, "reason": "no-destination-rule"})
             continue
         target = dest_dir / p.name
         action = "move"
@@ -1227,6 +1275,7 @@ def planned_misplaced_property_statement_moves(
 
 def planned_non_property_downloads(
     downloads: Path,
+    re_base: Path,
     month_tok: str,
     year: int,
     personal_base: Path,
@@ -1236,20 +1285,13 @@ def planned_non_property_downloads(
     holdings = []
     for p in downloads.glob(f'BASELANE_*_{month_tok}_{year}_STATEMENT*.pdf'):
         up = p.name.upper()
-        if 'DAO LLC' in up:
+        if 'DAO LLC' in up or resolve_dest(re_base, p.name, year):
             continue
-        bucket = None
-        dest_base = None
-        if any(x in up for x in ['EVCO ', 'NARWALL ']):
-            bucket = "holdings"
-            dest_base = holdings_base
-        elif any(x in up for x in ['EARL VANZE CO', 'EARLDAO', 'ECO SYSTEMS, LLC']):
-            bucket = "personal"
-            dest_base = personal_base
-        if bucket is None or dest_base is None:
+        destination = non_property_destination(p.name, year, personal_base, holdings_base)
+        if destination is None:
             continue
 
-        dest_dir = dest_base / str(year)
+        bucket, dest_dir = destination
         target = dest_dir / p.name
         target_exists = target.exists()
         same_size = target_exists and target.stat().st_size == p.stat().st_size
@@ -1587,7 +1629,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     )
     empty_legacy_dirs = planned_empty_legacy_statement_dirs(args.real_estate)
     empty_old_financials_bank_dirs = planned_empty_old_financials_bank_statement_dirs(args.real_estate, statement_dirs)
-    personal, holdings = planned_non_property_downloads(args.downloads, month_tok, args.year, args.personal, args.holdings)
+    personal, holdings = planned_non_property_downloads(
+        args.downloads,
+        args.real_estate,
+        month_tok,
+        args.year,
+        args.personal,
+        args.holdings,
+    )
     canon = {normalize_name(p.name) for p in existing}
     manifest = read_manifest(args.manifest) if args.manifest else None
     missing = sorted(manifest - canon) if manifest is not None else []
@@ -1761,7 +1810,14 @@ def main(argv: list[str] | None = None, stdout: TextIO | None = None) -> int:
     )
     empty_legacy_removed_dirs = remove_empty_legacy_statement_dirs(args.real_estate)
     empty_old_financials_bank_removed_dirs = remove_empty_old_financials_bank_statement_dirs(args.real_estate)
-    personal, holdings = move_non_property(args.downloads, month_tok, args.year, args.personal, args.holdings)
+    personal, holdings = move_non_property(
+        args.downloads,
+        args.real_estate,
+        month_tok,
+        args.year,
+        args.personal,
+        args.holdings,
+    )
     existing = list_matching_files(args.real_estate, month_tok, args.year)
     canon = {normalize_name(p.name) for p in existing}
 

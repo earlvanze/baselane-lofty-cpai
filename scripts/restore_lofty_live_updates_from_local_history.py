@@ -186,9 +186,13 @@ def build_payloads(args: argparse.Namespace) -> list[dict[str, Any]]:
             baseline_row = baseline_by_id.get(property_id)
             snapshot = Path(str((baseline_row or {}).get("live_snapshot_path") or ""))
             approved_entry = approved_by_updates_md.get(str(updates_md))
+            # Recovery is limited to candidates explicitly approved by the
+            # guarded-apply manifest. Other baseline properties need no write.
+            if approved_entry is None:
+                continue
             if not snapshot.is_file():
                 raise SystemExit(f"{property_name}: verified baseline live snapshot is missing: {snapshot}")
-            if approved_entry is None or not approved_entry.is_file():
+            if not approved_entry.is_file():
                 raise SystemExit(f"{property_name}: approved update candidate is missing: {approved_entry}")
             baseline_text = snapshot.read_text(encoding="utf-8").strip()
             approved_entries = publish.parse_entries(approved_entry.read_text(encoding="utf-8"))

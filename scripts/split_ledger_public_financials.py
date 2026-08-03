@@ -33,6 +33,11 @@ try:
 except ImportError:
     from scripts.coownership_mortgage_policy import P_AND_I_DAO_PROPERTIES, is_p_and_i_dao_property
 
+try:
+    from coownership_reserve_policy import manual_accrual_kind
+except ImportError:
+    from scripts.coownership_reserve_policy import manual_accrual_kind
+
 SCRIPT_WORKSPACE_ROOT = Path(__file__).absolute().parents[1]
 WORKSPACE_ROOT = Path(os.environ.get("WORKSPACE_ROOT") or SCRIPT_WORKSPACE_ROOT)
 DEFAULT_REPORT_PATH = Path(
@@ -66,10 +71,8 @@ EXCLUDED_CHECKLIST_STATUSES = {"skipped_closed", "excluded_external"}
 CITADEL_TEXT_RE = re.compile(r"\b(CITADEL|ACRA|LOANSPHERE|LOANDEPOT|FREEDOM|NEWREZ|SHELLPOIN(?:T)?|MORTGAGE\s+SERV)\b", re.I)
 CONFLICT_THRESHOLD = 0.005
 RATE_ZERO_THRESHOLD = 1e-12
-DAO_ECO_ACCRUAL_NOTE = re.compile(
-    r"^AOPS-(?:MONTHLY|OHIL|PAU|PNL)-ACCRUAL\|dao_eco\|([^|]+)\|(\d{4}-\d{2})\|62\.50(?:\s|\||$)"
-)
 DAO_ECO_REVENUE_PREFIX = "ECO Systems LLC DAO Registration Fee Revenue | "
+PM_ECO_REVENUE_PREFIX = "ECO Systems LLC PM Fee Revenue | "
 
 
 def first_existing_dir(candidates, fallback):
@@ -102,7 +105,7 @@ TODAY = datetime.now().strftime("%Y-%m-%d")
 # Manual overrides for known mismatches between ledger names and folder names.
 OVERRIDES = {
     "122 Florida Park Dr": "FL/122 Florida Park Dr, Palm Coast, FL 32137",
-    "326 South Alcott Street": "CO/326-332 S Alcott St Denver, CO 80219",
+    "326 South Alcott Street": "CO/326-332 S Alcott St Public",
     "804 S Quitman St": "CO/804 S Quitman St, Denver, CO 80219",
     "724 3rd Ave": "NY/724 3rd Ave, Watervliet, NY 12189",
     "85-104 Alawa Pl": "HI/85-104 Alawa Pl Public",
@@ -505,10 +508,12 @@ def consolidate_property_alias_groups(grouped, roots, real_estate_base):
     return consolidated
 
 
-def read_ledger_groups(source) -> Tuple[List[str], Dict[str, List[Dict[str, str]]], int, int]:
+def read_ledger_groups(source) -> Tuple[List[str], Dict[str, List[Dict[str, str]]], int, int, int]:
     grouped = defaultdict(list)
     total_rows = 0
     missing_property_rows = 0
+    exact_duplicate_extra_row_count = 0
+    seen_rows: set[Tuple[str, ...]] = set()
     with open(source, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         fieldnames = reader.fieldnames or []
@@ -516,18 +521,23 @@ def read_ledger_groups(source) -> Tuple[List[str], Dict[str, List[Dict[str, str]
             total_rows += 1
             if None in row:
                 del row[None]
+            row_key = tuple(str(row.get(field) or "") for field in fieldnames)
+            if row_key in seen_rows:
+                exact_duplicate_extra_row_count += 1
+                continue
+            seen_rows.add(row_key)
             prop = (row.get("Property") or "").strip()
             if not prop:
                 missing_property_rows += 1
                 continue
             grouped[prop].append(row)
-    return fieldnames, grouped, total_rows, missing_property_rows
+    return fieldnames, grouped, total_rows, missing_property_rows, exact_duplicate_extra_row_count
 
 
 def is_eco_company_dao_fee_revenue(row: Dict[str, str]) -> bool:
-    """Identify ECO-owned fee revenue mapped into the consolidated property audit ledger."""
-    notes = str(row.get("Notes") or "")
-    if not DAO_ECO_ACCRUAL_NOTE.match(notes):
+    """Identify ECO-owned intercompany revenue mapped to a DAO property."""
+    kind = manual_accrual_kind(row)
+    if kind not in {"dao_eco", "pm_eco"}:
         return False
     row_type = str(row.get("Type") or "").strip()
     category = str(row.get("Category") or "").strip()
@@ -538,11 +548,12 @@ def is_eco_company_dao_fee_revenue(row: Dict[str, str]) -> bool:
         and category == "Revenue"
         and sub_category == "Fees & Other Revenue"
     )
+    expected_prefix = DAO_ECO_REVENUE_PREFIX if kind == "dao_eco" else PM_ECO_REVENUE_PREFIX
     return (
-        abs(safe_float(row.get("Amount")) - 62.5) <= 0.001
+        safe_float(row.get("Amount")) > 0
         and (generated_classification or baselane_export_classification)
-        and str(row.get("Merchant") or "").strip().startswith(DAO_ECO_REVENUE_PREFIX)
-        and str(row.get("Description") or "").strip().startswith(DAO_ECO_REVENUE_PREFIX)
+        and str(row.get("Merchant") or "").strip().startswith(expected_prefix)
+        and str(row.get("Description") or "").strip().startswith(expected_prefix)
     )
 
 
@@ -1462,6 +1473,34 @@ def rows_digest(fieldnames: List[str], rows: List[Dict[str, str]]) -> str:
     return hashlib.sha256(canonical_csv_text(fieldnames, rows).encode("utf-8")).hexdigest()
 
 
+def output_plan_digest(records: List[Dict[str, Any]]) -> str:
+    canonical = json.dumps(
+        [
+            {
+                "property": record.get("property"),
+                "target": record.get("target"),
+                "row_count": record.get("row_count"),
+                "amount_total": record.get("amount_total"),
+                "source_digest": record.get("source_digest"),
+            }
+            for record in records
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def file_digest(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def public_ledger_rows(fieldnames: List[str], rows: List[Dict[str, str]]) -> tuple[List[str], List[Dict[str, str]]]:
     filtered_fieldnames = [fieldname for fieldname in fieldnames if fieldname != "Account"]
     filtered_rows = [{key: value for key, value in row.items() if key != "Account"} for row in rows]
@@ -1690,6 +1729,7 @@ def build_report(
     grouped: Dict[str, List[Dict[str, str]]] = {}
     total_rows = 0
     missing_property_rows = 0
+    exact_duplicate_extra_row_count = 0
     roots = []
     planned_write_count = 0
     planned_row_count = 0
@@ -1709,7 +1749,13 @@ def build_report(
         records.append(issue_record(f"Source ledger missing: {source_path}", source_path, real_estate_path, helper_path))
     else:
         try:
-            fieldnames, grouped, total_rows, missing_property_rows = read_ledger_groups(source_path)
+            (
+                fieldnames,
+                grouped,
+                total_rows,
+                missing_property_rows,
+                exact_duplicate_extra_row_count,
+            ) = read_ledger_groups(source_path)
             grouped, eco_company_revenue_excluded_rows = exclude_eco_company_revenue_from_dao_groups(grouped)
         except Exception as exc:
             records.append(issue_record(f"Source ledger unreadable: {exc}", source_path, real_estate_path, helper_path))
@@ -1859,15 +1905,23 @@ def build_report(
         "invalid_review_command_count": summary["invalid_review_command_count"],
         "review_command_validation_issues": summary["review_command_validation_issues"],
         "source": str(source_path),
+        "source_sha256": file_digest(source_path),
         "real_estate_base": str(real_estate_path),
         "source_exists": source_path.is_file(),
         "real_estate_base_exists": real_estate_path.is_dir(),
         "field_count": len(fieldnames),
         "total_row_count": total_rows,
+        "deduped_row_count": total_rows - exact_duplicate_extra_row_count,
+        "exact_duplicate_extra_row_count": exact_duplicate_extra_row_count,
+        "exact_duplicate_policy": (
+            "Exact duplicate source rows are deterministically collapsed before property grouping; "
+            "the first occurrence is retained and the source ledger is not mutated."
+        ),
         "missing_property_row_count": missing_property_rows,
         "eco_company_revenue_exclusion_policy": (
-            "ECO-owned dao_eco registration-fee revenue remains in the consolidated master ledger "
-            "but is excluded from DAO property ledgers so it cannot cancel the DAO-side liability."
+            "ECO-owned dao_eco registration-fee and pm_eco management-fee revenue remains in the "
+            "consolidated master ledger but is excluded from DAO property ledgers so it cannot "
+            "cancel the DAO-side liability."
         ),
         "eco_company_revenue_excluded_row_count": len(eco_company_revenue_excluded_rows),
         "eco_company_revenue_excluded_amount_total": amount_total(eco_company_revenue_excluded_rows),
@@ -1882,6 +1936,7 @@ def build_report(
         "property_root_count": len(roots),
         "planned_write_count": planned_write_count,
         "planned_row_count": planned_row_count,
+        "output_plan_digest": output_plan_digest(planned_outputs),
         "planned_outputs_bounded": planned_outputs[:25],
         "output_mismatches_bounded": [
             record for record in planned_outputs if record["output_status"] != "current"
@@ -1961,18 +2016,14 @@ def main(argv=None):
     skip_excluded_properties = not args.include_excluded
 
     if args.json:
-        print(
-            json.dumps(
-                build_report(
-                    source,
-                    real_estate_base,
-                    require_current_outputs=args.verify_existing,
-                    skip_excluded_properties=skip_excluded_properties,
-                ),
-                indent=2,
-                sort_keys=True,
-            )
+        report = build_report(
+            source,
+            real_estate_base,
+            require_current_outputs=args.verify_existing,
+            skip_excluded_properties=skip_excluded_properties,
         )
+        write_json(args.report, report)
+        print(json.dumps(report, indent=2, sort_keys=True))
         return 0
 
     if not os.path.isfile(source):
@@ -1980,7 +2031,7 @@ def main(argv=None):
 
     roots = build_property_roots(real_estate_base)
 
-    fieldnames, grouped, _total_rows, _missing_property_rows = read_ledger_groups(source)
+    fieldnames, grouped, _total_rows, _missing_property_rows, _exact_duplicate_extra_row_count = read_ledger_groups(source)
     grouped, eco_company_revenue_excluded_rows = exclude_eco_company_revenue_from_dao_groups(grouped)
     grouped = consolidate_property_alias_groups(grouped, roots, real_estate_base)
 

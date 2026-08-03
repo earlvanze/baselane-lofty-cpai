@@ -4,22 +4,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
-import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-OPENCLAW_SCRIPTS = Path(
-    os.environ.get("OPENCLAW_WORKSPACE", Path(__file__).resolve().parents[3])
-) / "scripts"
-if OPENCLAW_SCRIPTS.is_dir():
-    # Keep this repository's monthly modules authoritative; shared OpenClaw
-    # scripts are fallback helpers (for example, the Discord route resolver).
-    sys.path.append(str(OPENCLAW_SCRIPTS))
-
-import post_property_update_discord as discord_route
+from discord_summary_routing_policy import (
+    ACTIVE_PORTFOLIO_SUMMARY_POLICY,
+    ACTIVE_PORTFOLIO_SUMMARY_POLICY_VERSION,
+    DRAFT_REVIEW_PREFIX,
+    EXPECTED_ACTIVE_PHYSICAL_PROPERTY_COUNT,
+    EXPECTED_ACTIVE_REPORTING_TARGET_COUNT,
+    active_portfolio_summary_population_issues,
+    review_destination,
+    review_route,
+)
 from lofty_index_status import is_active_index_status
 from lofty_monthly_publish_to_pm import DEFAULT_MANUAL_EXCLUDED_PROPERTIES
 
@@ -30,13 +29,16 @@ DEFAULT_TRANSFER_RECONCILIATION = Path("reports/baselane_lofty_transfer_requirem
 DEFAULT_MONTHLY_RUN_REPORT = Path("reports/baselane_financials_monthly_run_report.json")
 DEFAULT_FINANCIAL_PATCH_READINESS = Path("reports/lofty_financial_patch_readiness.json")
 DEFAULT_PLAN = Path("reports/baselane_financials_monthly_discord_all_send_plan.json")
-DISCORD_LIMIT_BYTES = 2000
+DISCORD_LIMIT_BYTES = 2000 - len(DRAFT_REVIEW_PREFIX.encode("utf-8"))
 FINANCIAL_SUMMARY_MARKERS = ("Financial detail:", "Financial summary from FINANCIALS.md:")
 SPENDABLE_CASH_MARKER = "ECO Net DAO Funds (spendable cash held by ECO)"
 OBSOLETE_LEDGER_CASH_SNIPPETS = (
     "ECO Operating Cash is the full DAO-attributed Column E sum",
     "ECO General Ledger is the complete DAO-attributed Column E total",
     "ECO GL Column E sum",
+    "Reserve-adjusted operating position:",
+    "The reserve-adjusted operating position combines",
+    "ECO A/R - Due from DAO:",
 )
 UPSTREAM_FINANCIAL_BLOCKER_PREFIXES = (
     "data_quality.",
@@ -57,6 +59,15 @@ EMBEDDED_PROPERTY_UPDATE_RE = re.compile(r"(?m)^Property Update:\s+.+$")
 
 def iso_z() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def month_end_for(run_month: object) -> str:
+    value = str(run_month or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}", value):
+        return ""
+    year, month = (int(part) for part in value.split("-"))
+    next_month = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    return (next_month - timedelta(days=1)).isoformat()
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -217,8 +228,18 @@ def financial_review_issue_records(
         add(f"monthly_readiness_upstream_blocker:{primary.get('blocker') or primary_class}")
     patch_status = str(financial_patch_readiness.get("status") or "").strip()
     patch_blocked_count = int(financial_patch_readiness.get("blocked_count") or 0)
-    if patch_status and (patch_status != "ok" or patch_blocked_count):
-        # Financial listing approval is portfolio-wide: do not publish a mixed month.
+    approval_only_hold = bool(
+        patch_blocked_count
+        and int(financial_patch_readiness.get("approval_target_stale_count") or 0) == patch_blocked_count
+        and int(financial_patch_readiness.get("candidate_packet_monthly_summary_issue_count") or 0) == 0
+        and int(financial_patch_readiness.get("runtime_monthly_summary_issue_count") or 0) == 0
+        and int(financial_patch_readiness.get("candidate_source_freshness_issue_count") or 0) == 0
+        and int(financial_patch_readiness.get("guard_reconcile_required_count") or 0) == 0
+    )
+    if patch_status and (patch_status != "ok" or patch_blocked_count) and not approval_only_hold:
+        # Content/source readiness is portfolio-wide. Hash-bound approval for a
+        # later Lofty listing mutation does not block the clearly labelled
+        # EARLCoin operator-review draft that exists to obtain that approval.
         add(
             "lofty_financial_patch_readiness_not_ready:"
             f"status={patch_status}:blocked_count={patch_blocked_count}"
@@ -341,7 +362,7 @@ def build_plan(
             issues.append(f"{read_issue}:{property_name}")
             continue
         message, compacted = compact_message(f"Property Update: {display_property_name(property_name)}\n\n{message_body}\n")
-        channel_id, route_matched = discord_route.channel_for_property(property_name)
+        route = review_route(property_name)
         plan_records.append(
             {
                 "property_name": property_name,
@@ -353,15 +374,33 @@ def build_plan(
                 "financials_md_summary_sha256": record.get("financials_md_summary_sha256"),
                 "financials_md_summary_char_count": record.get("financials_md_summary_char_count"),
                 "financial_summary_source_mode": record.get("financial_summary_source_mode"),
+                "financial_summary_only": record.get("financial_summary_only") is True,
+                "financial_summary_scope": record.get("financial_summary_scope"),
+                "financial_summary_scope_reason": record.get("financial_summary_scope_reason"),
                 "message_compacted": compacted,
                 "has_financial_summary": has_financial_summary(message),
-                "route_matched": route_matched,
-                "target": f"channel:{channel_id}",
                 "status": "current_candidate",
                 "financial_review_blocked": bool(record_financial_issues),
                 "financial_review_blockers": record_financial_issues[:25],
+                **route,
             }
         )
+    authoritative_property_count_value = candidate_packet.get("authoritative_active_property_count")
+    authoritative_reporting_target_count_value = candidate_packet.get("authoritative_reporting_target_count")
+    try:
+        authoritative_active_property_count = int(authoritative_property_count_value)
+    except (TypeError, ValueError):
+        authoritative_active_property_count = None
+    try:
+        authoritative_reporting_target_count = int(authoritative_reporting_target_count_value)
+    except (TypeError, ValueError):
+        authoritative_reporting_target_count = None
+    population_issues = active_portfolio_summary_population_issues(
+        authoritative_active_property_count,
+        authoritative_reporting_target_count,
+        len(plan_records),
+    )
+    issues.extend(population_issues)
     blocked_record_count = sum(1 for record in plan_records if record.get("financial_review_blocked") is True)
     ready_record_count = sum(1 for record in plan_records if record.get("financial_review_blocked") is not True)
     global_financial_issue_count = sum(1 for item in financial_issue_records if item.get("property_name") is None)
@@ -375,10 +414,22 @@ def build_plan(
             else "review"
         )
     )
+    destination = review_destination()
+    run_month = candidate_packet.get("run_month")
+    reporting_cutoff_date = str(candidate_packet.get("reporting_cutoff_date") or "").strip()
+    expected_cutoff_date = month_end_for(run_month)
+    if reporting_cutoff_date != expected_cutoff_date:
+        issues.append(
+            "candidate_packet_reporting_cutoff_not_month_end:"
+            f"actual={reporting_cutoff_date or 'missing'}:expected={expected_cutoff_date or 'unknown'}"
+        )
+        plan_status = "review"
     return {
         "generated_at": iso_z(),
         "status": plan_status,
-        "run_month": candidate_packet.get("run_month"),
+        "run_month": run_month,
+        "reporting_cutoff_date": reporting_cutoff_date or None,
+        "expected_reporting_cutoff_date": expected_cutoff_date or None,
         "candidate_packet_status": candidate_packet.get("status"),
         "candidate_packet": str(DEFAULT_CANDIDATE_PACKET),
         "monthly_readiness_status": readiness.get("status"),
@@ -389,6 +440,15 @@ def build_plan(
         "lofty_financial_patch_blocked_count": int(financial_patch_readiness.get("blocked_count") or 0),
         "source_cash_reconciliation_active_monthly_candidate_action_count": transfer_reconciliation.get("source_cash_reconciliation_active_monthly_candidate_action_count"),
         "candidate_packet_record_count": len(records),
+        "authoritative_active_property_count": authoritative_active_property_count,
+        "authoritative_reporting_target_count": authoritative_reporting_target_count,
+        "active_reporting_summary_count": len(plan_records),
+        "active_portfolio_summary_population_ok": not population_issues,
+        "active_portfolio_summary_population_issues": population_issues,
+        "active_portfolio_summary_policy_version": ACTIVE_PORTFOLIO_SUMMARY_POLICY_VERSION,
+        "active_portfolio_summary_policy": ACTIVE_PORTFOLIO_SUMMARY_POLICY,
+        "expected_active_physical_property_count": EXPECTED_ACTIVE_PHYSICAL_PROPERTY_COUNT,
+        "expected_active_reporting_target_count": EXPECTED_ACTIVE_REPORTING_TARGET_COUNT,
         "record_count": len(plan_records),
         "plan_count": len(plan_records),
         "issue_count": len(issues),
@@ -402,6 +462,8 @@ def build_plan(
         "financial_review_blocked_record_count": blocked_record_count,
         "financial_review_ready_record_count": ready_record_count,
         "financials_md_summary_digest_required": True,
+        "review_destination": destination,
+        **destination,
         "records": plan_records,
     }
 

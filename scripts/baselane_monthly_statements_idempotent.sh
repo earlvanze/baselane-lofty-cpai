@@ -37,6 +37,8 @@ STATEMENTS_OPERATOR_SCRIPT="${BASELANE_STATEMENTS_OPERATOR_SCRIPT:-$ROOT/scripts
 OBIE_MATCH_SCRIPT="${BASELANE_OBIE_MATCH_SCRIPT:-$ROOT/scripts/baselane_obie_property_match.py}"
 MORTGAGE_WORKFLOW_SCRIPT="${BASELANE_MORTGAGE_WORKFLOW_SCRIPT:-$ROOT/scripts/baselane_monthly_mortgage_workflow_idempotent.sh}"
 MORTGAGE_WORKFLOW_REPORT="${MORTGAGE_WORKFLOW_GATE_REPORT:-$REPORT_DIR/baselane_monthly_mortgage_workflow_gate_report.json}"
+NO_DAO_MORTGAGE_LIABILITY_SCRIPT="${BASELANE_NO_DAO_MORTGAGE_LIABILITY_SCRIPT:-$ROOT/scripts/baselane_reconcile_no_dao_mortgage_liability.py}"
+NO_DAO_MORTGAGE_LIABILITY_REPORT="${BASELANE_NO_DAO_MORTGAGE_LIABILITY_REPORT:-$REPORT_DIR/no_dao_mortgage_liability_reconciliation.json}"
 MORTGAGE_WORKFLOW_TIMEOUT_SECONDS="${BASELANE_MONTHLY_MORTGAGE_WORKFLOW_TIMEOUT_SECONDS:-900}"
 MORTGAGE_WORKFLOW_KILL_AFTER_SECONDS="${BASELANE_MONTHLY_MORTGAGE_WORKFLOW_KILL_AFTER_SECONDS:-30}"
 MORTGAGE_WORKFLOW_TIMEOUT_ARGS=()
@@ -332,11 +334,14 @@ if [ -z "${BASELANE_STATEMENTS_DOWNLOAD_DIR:-}" ] && curl -fsS "${BASELANE_CDP_V
   fi
 fi
 export BASELANE_STATEMENTS_DOWNLOAD_DIR="$STATEMENTS_DOWNLOAD_DIR"
-PERSONAL_STATEMENTS_ROOT="${BASELANE_PERSONAL_STATEMENTS_ROOT:-$ROOT/pdf-extracts/personal/07 - P&L & Owner Statements/Bank Statements}"
-HOLDINGS_STATEMENTS_ROOT="${BASELANE_HOLDINGS_STATEMENTS_ROOT:-$ROOT/pdf-extracts/business-holdings/07 - P&L & Owner Statements/Bank Statements}"
+DROPBOX_ROOT="${BASELANE_DROPBOX_ROOT:-$(dirname "$REAL_ESTATE_ROOT")}"
+PERSONAL_STATEMENTS_ROOT="${BASELANE_PERSONAL_STATEMENTS_ROOT:-$DROPBOX_ROOT/Finances/Bank Statements/Baselane}"
+HOLDINGS_STATEMENTS_ROOT="${BASELANE_HOLDINGS_STATEMENTS_ROOT:-$DROPBOX_ROOT/Entities}"
 MORTGAGE_WORKFLOW_RC=0
 MORTGAGE_WORKFLOW_STATUS="not_started"
 MORTGAGE_WORKFLOW_SKIPPED_REASON=""
+NO_DAO_MORTGAGE_LIABILITY_RC=0
+NO_DAO_MORTGAGE_LIABILITY_STATUS="not_started"
 STATEMENT_GATE_REPORTED_STATUS=""
 STATEMENT_GATE_REPORTED_REASON=""
 STATEMENT_GATE_REPORTED_ACTION=""
@@ -400,6 +405,9 @@ write_statement_gate_report() {
   BASELANE_STATEMENT_GATE_MORTGAGE_WORKFLOW_SKIPPED_REASON="$MORTGAGE_WORKFLOW_SKIPPED_REASON" \
   BASELANE_STATEMENT_GATE_MORTGAGE_WORKFLOW_TIMEOUT_SECONDS="$MORTGAGE_WORKFLOW_TIMEOUT_SECONDS" \
   BASELANE_STATEMENT_GATE_MORTGAGE_WORKFLOW_KILL_AFTER_SECONDS="$MORTGAGE_WORKFLOW_KILL_AFTER_SECONDS" \
+  BASELANE_STATEMENT_GATE_NO_DAO_MORTGAGE_LIABILITY_REPORT="$NO_DAO_MORTGAGE_LIABILITY_REPORT" \
+  BASELANE_STATEMENT_GATE_NO_DAO_MORTGAGE_LIABILITY_STATUS="$NO_DAO_MORTGAGE_LIABILITY_STATUS" \
+  BASELANE_STATEMENT_GATE_NO_DAO_MORTGAGE_LIABILITY_RC="$NO_DAO_MORTGAGE_LIABILITY_RC" \
   BASELANE_STATEMENT_GATE_ALIGNED_OWNER_IMPORT_REPORT="$ALIGNED_OWNER_IMPORT_REPORT" \
   BASELANE_STATEMENT_GATE_ALIGNED_OWNER_IMPORT_STATUS="$ALIGNED_OWNER_IMPORT_STATUS" \
   BASELANE_STATEMENT_GATE_ALIGNED_OWNER_IMPORT_RC="$ALIGNED_OWNER_IMPORT_RC" \
@@ -453,6 +461,7 @@ def read_json(path: str) -> dict:
 operator_report_path = os.environ["BASELANE_STATEMENT_GATE_OPERATOR_REPORT"]
 download_report_path = os.environ["BASELANE_STATEMENT_GATE_DOWNLOAD_REPORT"]
 mortgage_report_path = os.environ["BASELANE_STATEMENT_GATE_MORTGAGE_WORKFLOW_REPORT"]
+no_dao_mortgage_liability_report_path = os.environ.get("BASELANE_STATEMENT_GATE_NO_DAO_MORTGAGE_LIABILITY_REPORT") or ""
 auth_recovery_report_path = os.environ["BASELANE_STATEMENT_GATE_AUTH_RECOVERY_REPORT"]
 aligned_owner_import_report_path = os.environ.get("BASELANE_STATEMENT_GATE_ALIGNED_OWNER_IMPORT_REPORT") or ""
 aligned_owner_downstream_validation_report_path = os.environ.get("BASELANE_STATEMENT_GATE_ALIGNED_OWNER_DOWNSTREAM_VALIDATION_REPORT") or ""
@@ -463,6 +472,7 @@ aligned_owner_cf_sync_report_path = os.environ.get("BASELANE_STATEMENT_GATE_ALIG
 operator_report = read_json(operator_report_path)
 download_report = read_json(download_report_path)
 mortgage_report = read_json(mortgage_report_path)
+no_dao_mortgage_liability_report = read_json(no_dao_mortgage_liability_report_path)
 auth_recovery_report = read_json(auth_recovery_report_path)
 auth_recovery_enabled = os.environ.get("BASELANE_STATEMENT_GATE_AUTH_RECOVERY_ENABLED") == "1"
 current_auth_recovery_report = auth_recovery_report if auth_recovery_enabled else {}
@@ -632,6 +642,10 @@ report = {
     "mortgage_workflow_skipped_reason": os.environ.get("BASELANE_STATEMENT_GATE_MORTGAGE_WORKFLOW_SKIPPED_REASON") or None,
     "mortgage_workflow_status": mortgage_report.get("status"),
     "mortgage_workflow_reason": mortgage_report.get("reason"),
+    "no_dao_mortgage_liability_report": no_dao_mortgage_liability_report_path or None,
+    "no_dao_mortgage_liability_status": os.environ.get("BASELANE_STATEMENT_GATE_NO_DAO_MORTGAGE_LIABILITY_STATUS") or no_dao_mortgage_liability_report.get("status"),
+    "no_dao_mortgage_liability_rc": int(os.environ.get("BASELANE_STATEMENT_GATE_NO_DAO_MORTGAGE_LIABILITY_RC") or 0),
+    "no_dao_mortgage_liability_source_digest": no_dao_mortgage_liability_report.get("source_digest"),
     "aligned_owner_import_report": aligned_owner_import_report_path or None,
     "aligned_owner_import_status": os.environ.get("BASELANE_STATEMENT_GATE_ALIGNED_OWNER_IMPORT_STATUS") or aligned_owner_import_report.get("status"),
     "aligned_owner_import_rc": int(os.environ.get("BASELANE_STATEMENT_GATE_ALIGNED_OWNER_IMPORT_RC") or 0),
@@ -778,6 +792,20 @@ if aligned_owner_blocks_statement_gate and report.get("status") == "ok":
 else:
     report["aligned_owner_import_blocks_statement_gate"] = False
     report["aligned_owner_import_blocker"] = None
+no_dao_liability_status = str(report.get("no_dao_mortgage_liability_status") or "")
+if no_dao_liability_status not in {"", "not_started", "skipped", "ok"}:
+    report["reported_status_before_no_dao_mortgage_liability_gate"] = report.get("status")
+    report["reported_reason_before_no_dao_mortgage_liability_gate"] = report.get("reason")
+    report["status"] = "review"
+    report["reason"] = "no-dao-mortgage-liability-review"
+    report["action"] = "review-no-dao-mortgage-liability"
+    report["no_dao_mortgage_liability_blocks_statement_gate"] = True
+    report["next_action"] = (
+        "Resolve or explicitly disclose the exact-ID no-DAO mortgage liability "
+        f"review before downstream financial publication. Open: {no_dao_mortgage_liability_report_path}"
+    )
+else:
+    report["no_dao_mortgage_liability_blocks_statement_gate"] = False
 Path(os.environ["BASELANE_STATEMENT_GATE_REPORT"]).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 print(json.dumps(report, indent=2, sort_keys=True))
 PY
@@ -820,6 +848,7 @@ audit_statement_capture() {
     --real-estate "$REAL_ESTATE_ROOT" \
     --personal "$PERSONAL_STATEMENTS_ROOT" \
     --holdings "$HOLDINGS_STATEMENTS_ROOT" \
+    --target-month-cleanup-only \
     --json > "$STATEMENTS_OPERATOR_REPORT"
   operator_rc="$?"
   set -e
@@ -1178,6 +1207,47 @@ if [ -n "$STATEMENT_GATE_REPORTED_STATUS" ]; then
     "$STATEMENT_GATE_REPORTED_REASON" \
     "$STATEMENT_GATE_REPORTED_ACTION" \
     "$STATEMENT_GATE_REPORTED_RC"
+fi
+
+# Read-only exact-ID liability waterfall for properties whose mortgage P&I and
+# lender fees are ECO responsibility even though the cash debit is in a DAO
+# bank account. This never allocates candidate transfers or mutates Baselane.
+if [ "${BASELANE_MONTHLY_SKIP_NO_DAO_MORTGAGE_LIABILITY:-0}" = "1" ]; then
+  echo "[baselane-monthly] No-DAO mortgage liability reconciliation skipped by configuration"
+  NO_DAO_MORTGAGE_LIABILITY_STATUS="skipped"
+elif [ -f "$NO_DAO_MORTGAGE_LIABILITY_SCRIPT" ]; then
+  echo "[baselane-monthly] Reconciling all configured no-DAO mortgage liabilities..."
+  set +e
+  "$PY" "$NO_DAO_MORTGAGE_LIABILITY_SCRIPT" \
+    --all-configured \
+    --report "$NO_DAO_MORTGAGE_LIABILITY_REPORT"
+  NO_DAO_MORTGAGE_LIABILITY_RC=$?
+  set -e
+  if [ "$NO_DAO_MORTGAGE_LIABILITY_RC" -ne 0 ]; then
+    NO_DAO_MORTGAGE_LIABILITY_STATUS="blocked"
+    echo "[baselane-monthly] No-DAO mortgage liability is blocked; downstream summaries must remain held: $NO_DAO_MORTGAGE_LIABILITY_REPORT" >&2
+    write_statement_gate_report "review" "no-dao-mortgage-liability-blocked" "review-no-dao-mortgage-liability" "$NO_DAO_MORTGAGE_LIABILITY_RC"
+    exit "$NO_DAO_MORTGAGE_LIABILITY_RC"
+  else
+    NO_DAO_MORTGAGE_LIABILITY_STATUS="$($PY - "$NO_DAO_MORTGAGE_LIABILITY_REPORT" <<'PY'
+import json
+import sys
+
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("status") or "unknown")
+except Exception:
+    print("unreadable")
+PY
+)"
+    if [ "$NO_DAO_MORTGAGE_LIABILITY_STATUS" != "ok" ]; then
+      echo "[baselane-monthly] No-DAO mortgage liability requires review (${NO_DAO_MORTGAGE_LIABILITY_STATUS}): $NO_DAO_MORTGAGE_LIABILITY_REPORT" >&2
+      write_statement_gate_report "review" "no-dao-mortgage-liability-review" "review-no-dao-mortgage-liability" 0
+    fi
+  fi
+else
+  NO_DAO_MORTGAGE_LIABILITY_STATUS="missing"
+  echo "[baselane-monthly] No-DAO mortgage liability reconciler missing, skipping" >&2
+  write_statement_gate_report "review" "no-dao-mortgage-liability-missing" "restore-no-dao-mortgage-liability" 1
 fi
 
 # Idempotent former Aligned/AppFolio owner-statement detail import. The importer

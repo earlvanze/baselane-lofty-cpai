@@ -14,11 +14,12 @@ const runtimeFailureLimit = Number(process.env.BASELANE_GQL_RUNTIME_FAILURE_LIMI
 const directTabEnabled = process.env.BASELANE_GQL_DIRECT_TAB !== '0';
 const playwrightFallbackEnabled = process.env.BASELANE_GQL_PLAYWRIGHT_FALLBACK === '1';
 const targetLimit = Math.max(1, Number(process.env.BASELANE_GQL_TARGET_LIMIT || 2));
+const requestedTargetId = String(process.env.BASELANE_GQL_TARGET_ID || '').trim();
 const createTargetEnabled = process.env.BASELANE_GQL_CREATE_TARGET === '1';
 const initialReloadMs = Math.max(250, Number(process.env.BASELANE_GQL_INITIAL_RELOAD_MS || 1000));
 const sessionCacheTtlMs = Math.max(1000, Number(process.env.BASELANE_GQL_SESSION_CACHE_TTL_MS || 600000));
 const sessionCachePath = process.env.BASELANE_GQL_SESSION_CACHE_PATH
-  || `/tmp/baselane-graphql-session-${typeof process.getuid === 'function' ? process.getuid() : 'user'}.json`;
+  || `/tmp/baselane-graphql-session-${typeof process.getuid === 'function' ? process.getuid() : 'user'}-${requestedTargetId || 'shared'}.json`;
 const inputPath = process.argv[2];
 if (!inputPath) {
   console.error('usage: baselane_graphql_via_cdp.js <input.json>');
@@ -487,9 +488,12 @@ async function tryDirectPageGraphql() {
   const tabs = await fetchCdpTabs();
   const candidates = (Array.isArray(tabs) ? tabs : [])
     .filter(t => t.type === 'page' && isBaselaneUrl(t.url) && !isBaselaneLoginUrl(t.url) && t.webSocketDebuggerUrl)
+    .filter(t => !requestedTargetId || t.id === requestedTargetId)
     .sort((a, b) => tabSortKey(a) - tabSortKey(b))
     .slice(0, targetLimit);
-  if (!candidates.length) throw new Error('no direct authenticated-looking Baselane page targets');
+  if (!candidates.length) throw new Error(requestedTargetId
+    ? `requested Baselane page target is unavailable: ${requestedTargetId}`
+    : 'no direct authenticated-looking Baselane page targets');
   const errors = [];
   for (const tab of candidates) {
     try {
@@ -510,7 +514,10 @@ async function playwrightPageGraphqlAttempt() {
   // commands after a browser restart. Playwright's existing visible-browser
   // connection remains healthy in that state, so use it as a non-headless,
   // same-tab fallback. No new browser or tab is created.
-  const { chromium } = require('./node_modules/playwright');
+  // The canonical OpenClaw workspace provides playwright-core at the
+  // workspace root; Node's normal parent-directory resolution finds it from
+  // this repo without bundling a second browser runtime here.
+  const { chromium } = require('playwright-core');
   const browser = await chromium.connectOverCDP(cdpBaseUrl());
   const pages = browser.contexts().flatMap(context => context.pages());
   const page = pages
@@ -770,7 +777,9 @@ async function main() {
   // but do not let one stale CDP target block the read-only duplicate check.
   const targets = await send('Target.getTargets', {});
   const baselanePages = (targets.targetInfos || []).filter(t => t.type === 'page' && isBaselaneUrl(t.url));
-  const reusableBaselanePages = baselanePages.filter(isUsableBaselanePage);
+  const reusableBaselanePages = baselanePages
+    .filter(isUsableBaselanePage)
+    .filter(t => !requestedTargetId || t.targetId === requestedTargetId);
   const existingCandidates = reusableBaselanePages.sort((a, b) => {
     const aTx = String(a.url || '').includes('/transactions') ? 0 : 1;
     const bTx = String(b.url || '').includes('/transactions') ? 0 : 1;

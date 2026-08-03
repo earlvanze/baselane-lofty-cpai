@@ -11,9 +11,11 @@ const TARGET_YEAR = String(process.env.BASELANE_STATEMENT_YEAR || '').trim();
 const TARGET_MONTH = String(process.env.BASELANE_STATEMENT_MONTH || '').trim();
 const MAX_LOAD_MORE = Number(process.env.BASELANE_MAX_LOAD_MORE || 10);
 const MAX_DOWNLOADS = Number(process.env.BASELANE_MAX_DOWNLOADS || 300);
+const DOWNLOAD_OFFSET = Math.max(0, Number(process.env.BASELANE_DOWNLOAD_OFFSET || 0));
 const CLICK_DELAY_MS = Number(process.env.BASELANE_CLICK_DELAY_MS || 1500);
 const FINAL_WAIT_MS = Number(process.env.BASELANE_FINAL_WAIT_MS || 15000);
 const CDP_COMMAND_TIMEOUT_MS = Number(process.env.BASELANE_CDP_COMMAND_TIMEOUT_MS || 30000);
+const RESET_EXISTING_TAB = process.env.BASELANE_RESET_EXISTING_TAB !== '0';
 const reportPath = path.join(REPORTS, 'baselane_statements_download_report.json');
 const htmlDumpPath = path.join(REPORTS, 'baselane_statements_failure.html');
 const screenshotPath = path.join(REPORTS, 'baselane_statements_failure.png');
@@ -194,16 +196,25 @@ async function main() {
   let targetId = null;
   let sessionId = null;
   const usingExistingAuthedTab = Boolean(existingAuthed);
-  const created = await send('Target.createTarget', { url: 'about:blank' });
-  targetId = created.targetId;
-  for (let i = 0; i < 120; i++) {
-    sessionId = sessions.get(targetId);
-    if (sessionId) break;
-    await new Promise(r => setTimeout(r, 100));
-  }
-  if (!sessionId) {
+  const existingTabAlreadyOnStatements = Boolean(
+    existingAuthed && String(existingAuthed.url || '').includes('/banking/statements')
+  );
+  if (existingAuthed) {
+    targetId = existingAuthed.targetId;
     const attached = await send('Target.attachToTarget', { targetId, flatten: true });
     sessionId = attached.sessionId;
+  } else {
+    const created = await send('Target.createTarget', { url: 'about:blank' });
+    targetId = created.targetId;
+    for (let i = 0; i < 120; i++) {
+      sessionId = sessions.get(targetId);
+      if (sessionId) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    if (!sessionId) {
+      const attached = await send('Target.attachToTarget', { targetId, flatten: true });
+      sessionId = attached.sessionId;
+    }
   }
   if (!sessionId) throw new Error('no session attached');
 
@@ -262,9 +273,17 @@ async function main() {
     }
   }
 
-  currentStage = 'navigate-statements';
-  await send('Page.navigate', { url: 'https://app.baselane.com/banking/statements' }, sessionId);
-  await new Promise(r => setTimeout(r, 5000));
+  if (usingExistingAuthedTab && RESET_EXISTING_TAB) {
+    currentStage = 'reset-existing-tab';
+    await send('Page.navigate', { url: 'about:blank' }, sessionId);
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  if (!existingTabAlreadyOnStatements || RESET_EXISTING_TAB) {
+    currentStage = 'navigate-statements';
+    await send('Page.navigate', { url: 'https://app.baselane.com/banking/statements' }, sessionId);
+    await new Promise(r => setTimeout(r, 5000));
+  }
   currentStage = 'wait-statements';
   for (let i = 0; i < 120; i++) {
     const s = await evalExpr(`({href:location.href,body:(document.body?.innerText||'').slice(0,1000)})`);
@@ -273,17 +292,40 @@ async function main() {
     await new Promise(r => setTimeout(r, 1000));
   }
 
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Escape',
+    code: 'Escape',
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  }, sessionId);
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Escape',
+    code: 'Escape',
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  }, sessionId);
+
   if (TARGET_YEAR) {
     currentStage = 'filter-year';
     await evalExpr(`(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
-      const open = Array.from(document.querySelectorAll('button')).find(b => (b.innerText||b.textContent||'').trim() === 'All' && b.className.includes('chakra-menu__menu-button'));
-      if (open) open.click();
+      const target = ${JSON.stringify(TARGET_YEAR)};
+      const open = Array.from(document.querySelectorAll('button.chakra-menu__menu-button')).find(button => {
+        const menu = document.getElementById(button.getAttribute('aria-controls') || '');
+        return menu && Array.from(menu.querySelectorAll('button[value]')).some(item => item.value === target);
+      });
+      if (!open) return { ok: false, reason: 'year-filter-not-found' };
+      if ((open.innerText || open.textContent || '').trim() === target) return { ok: true, changed: false };
+      open.click();
       await sleep(400);
-      const item = Array.from(document.querySelectorAll('button[value]')).find(b => b.value === ${JSON.stringify(TARGET_YEAR)});
-      if (item) item.click();
+      const menu = document.getElementById(open.getAttribute('aria-controls') || '');
+      const item = menu && Array.from(menu.querySelectorAll('button[value]')).find(button => button.value === target);
+      if (!item) return { ok: false, reason: 'year-option-not-found' };
+      item.click();
       await sleep(800);
-      return true;
+      return { ok: true, changed: true };
     })()`);
   }
 
@@ -291,14 +333,21 @@ async function main() {
     currentStage = 'filter-month';
     await evalExpr(`(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
-      const dropdowns = Array.from(document.querySelectorAll('button')).filter(b => (b.innerText||b.textContent||'').trim() === 'All' && b.className.includes('chakra-menu__menu-button'));
-      const open = dropdowns[1];
-      if (open) open.click();
+      const target = ${JSON.stringify(TARGET_MONTH)};
+      const open = Array.from(document.querySelectorAll('button.chakra-menu__menu-button')).find(button => {
+        const menu = document.getElementById(button.getAttribute('aria-controls') || '');
+        return menu && Array.from(menu.querySelectorAll('button[value]')).some(item => item.value === target);
+      });
+      if (!open) return { ok: false, reason: 'month-filter-not-found' };
+      if ((open.innerText || open.textContent || '').trim() === target) return { ok: true, changed: false };
+      open.click();
       await sleep(400);
-      const item = Array.from(document.querySelectorAll('button[value]')).find(b => b.value === ${JSON.stringify(TARGET_MONTH)});
-      if (item) item.click();
+      const menu = document.getElementById(open.getAttribute('aria-controls') || '');
+      const item = menu && Array.from(menu.querySelectorAll('button[value]')).find(button => button.value === target);
+      if (!item) return { ok: false, reason: 'month-option-not-found' };
+      item.click();
       await sleep(800);
-      return true;
+      return { ok: true, changed: true };
     })()`);
   }
 
@@ -326,7 +375,7 @@ async function main() {
     };
   })()`);
   const discoveredValues = Array.isArray(discovery.values) ? discovery.values : [];
-  const values = discoveredValues.slice(0, MAX_DOWNLOADS);
+  const values = discoveredValues.slice(DOWNLOAD_OFFSET, DOWNLOAD_OFFSET + MAX_DOWNLOADS);
   let clickedButtons = 0;
   const clickResults = [];
   for (const value of values) {
@@ -418,6 +467,8 @@ async function main() {
     discovery_body_sample: discovery.body_sample || null,
     discovery_button_texts: Array.isArray(discovery.button_texts) ? discovery.button_texts.slice(0, 80) : [],
     max_downloads: MAX_DOWNLOADS,
+    download_offset: DOWNLOAD_OFFSET,
+    selected_button_count: values.length,
     clicked_buttons: clickedButtons,
     before_count: before.size,
     after_count: after.length,
@@ -442,7 +493,17 @@ async function main() {
 main().catch(async err => {
   fs.mkdirSync(REPORTS, { recursive: true });
   try { await _captureFailureArtifacts(); } catch {}
-  const report = { ok: false, error: String(err && err.stack || err), checked_at: new Date().toISOString(), failure_html: htmlDumpPath, failure_screenshot: screenshotPath };
+  const report = {
+    ok: false,
+    error: String(err && err.stack || err),
+    checked_at: new Date().toISOString(),
+    target_year: TARGET_YEAR || null,
+    target_month: TARGET_MONTH || null,
+    download_offset: DOWNLOAD_OFFSET,
+    max_downloads: MAX_DOWNLOADS,
+    failure_html: htmlDumpPath,
+    failure_screenshot: screenshotPath,
+  };
   fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
   console.error(report.error);
   process.exit(1);

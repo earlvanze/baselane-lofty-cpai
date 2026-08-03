@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-YHOME_EXCLUDE_MARKERS = ("sold", "selling", "closed", "delisted")
+YHOME_EXCLUDE_MARKERS = ("sold", "closed", "delisted")
 DEFAULT_MANUAL_EXCLUDED_PROPERTIES = (
     "3560 Saint Albans Rd",
     "1935 S Glen Rd",
@@ -81,7 +81,7 @@ def load_yhome_transition_exclusions(yhome_csv: Path | None) -> tuple[list[dict[
                 "excluded_count": 0,
                 "column_b_index": 1,
                 "column_b_header": column_b_header,
-                "column_b_rule": "Yhome Transition Reconciliation column B marks sold/selling/closed/delisted properties",
+                "column_b_rule": "Yhome Transition Reconciliation column B marks sold/closed/delisted properties",
                 "column_b_rule_ok": False,
             }
         for values in reader:
@@ -97,7 +97,7 @@ def load_yhome_transition_exclusions(yhome_csv: Path | None) -> tuple[list[dict[
                     "property_name": property_name,
                     "normalized_property": normalize(property_name),
                     "yhome_column_b": new_pm,
-                    "exclude_reason": "Yhome Transition Reconciliation column B marks property as sold/selling/closed/delisted",
+                    "exclude_reason": "Yhome Transition Reconciliation column B marks property as sold/closed/delisted",
                 }
             )
     return excluded, {
@@ -107,7 +107,7 @@ def load_yhome_transition_exclusions(yhome_csv: Path | None) -> tuple[list[dict[
         "excluded_count": len(excluded),
         "column_b_index": 1,
         "column_b_header": column_b_header,
-        "column_b_rule": "Yhome Transition Reconciliation column B marks sold/selling/closed/delisted properties",
+        "column_b_rule": "Yhome Transition Reconciliation column B marks sold/closed/delisted properties",
         "column_b_marker_count": len(excluded),
         "column_b_rule_ok": len(excluded) > 0,
         "excluded_property_names": [row["property_name"] for row in excluded],

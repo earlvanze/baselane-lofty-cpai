@@ -4,27 +4,32 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-OPENCLAW_SCRIPTS = Path(
-    os.environ.get("OPENCLAW_WORKSPACE", Path(__file__).resolve().parents[3])
-) / "scripts"
-if OPENCLAW_SCRIPTS.is_dir():
-    # Keep this repository's monthly modules authoritative; shared OpenClaw
-    # scripts are fallback helpers (for example, the Discord route resolver).
-    sys.path.append(str(OPENCLAW_SCRIPTS))
-
-import post_property_update_discord as discord_route
+from discord_summary_routing_policy import (
+    ACTIVE_PORTFOLIO_SUMMARY_POLICY,
+    ACTIVE_PORTFOLIO_SUMMARY_POLICY_VERSION,
+    DRAFT_REVIEW_PREFIX,
+    EARLCOIN_GUILD_ID,
+    EARLCOIN_REVIEW_FORUM_ID,
+    EARLCOIN_REVIEW_TARGET,
+    REVIEW_DESTINATION_CLASS,
+    REVIEW_DESTINATION_PURPOSE,
+    EXPECTED_ACTIVE_PHYSICAL_PROPERTY_COUNT,
+    EXPECTED_ACTIVE_REPORTING_TARGET_COUNT,
+    active_portfolio_summary_population_issues,
+    normalize_thread_name,
+    review_route_issues,
+)
 
 
 DEFAULT_PLAN = Path("reports/baselane_financials_monthly_discord_all_send_plan.json")
 DEFAULT_REPORT = Path("reports/baselane_financials_monthly_discord_all_send_plan_validation.json")
 CHANNEL_TARGET_RE = re.compile(r"^channel:\d{17,25}$")
+DISCORD_REVIEW_BODY_LIMIT_BYTES = 2000 - len(DRAFT_REVIEW_PREFIX.encode("utf-8"))
 REVIEW_PACKET_ARTIFACTS = {
     "monthly_accruals": [
         "reports/baselane_monthly_accrual_gap_approvals_review.csv",
@@ -62,6 +67,9 @@ OBSOLETE_LEDGER_CASH_SNIPPETS = (
     "ECO Operating Cash is the full DAO-attributed Column E sum",
     "ECO General Ledger is the complete DAO-attributed Column E total",
     "ECO GL Column E sum",
+    "Reserve-adjusted operating position:",
+    "The reserve-adjusted operating position combines",
+    "ECO A/R - Due from DAO:",
 )
 DISALLOWED_SUMMARY_SNIPPETS = (
     "This month's update is limited to verified cash-position data from Lofty and ECO records.",
@@ -109,6 +117,17 @@ def run_month_from_plan(plan: dict[str, Any], plan_path: Path) -> str:
             return value
     match = re.search(r"(20\d{2}-\d{2})", plan_path.name)
     return match.group(1) if match else ""
+
+
+def month_end_for(run_month: str) -> str:
+    if not re.fullmatch(r"\d{4}-\d{2}", run_month):
+        return ""
+    year, month = (int(part) for part in run_month.split("-"))
+    if month == 12:
+        next_month_start = datetime(year + 1, 1, 1, tzinfo=timezone.utc).date()
+    else:
+        next_month_start = datetime(year, month + 1, 1, tzinfo=timezone.utc).date()
+    return (next_month_start - timedelta(days=1)).isoformat()
 
 
 def has_as_of_or_month_heading(text: str, run_month: str) -> bool:
@@ -238,6 +257,13 @@ def financial_review_artifacts(plan: dict[str, Any], financial_review_issues: li
 
 def validate_plan(plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
     records = plan.get("records") if isinstance(plan.get("records"), list) else []
+    authoritative_active_property_count = plan.get("authoritative_active_property_count")
+    authoritative_reporting_target_count = plan.get("authoritative_reporting_target_count")
+    population_issues = active_portfolio_summary_population_issues(
+        authoritative_active_property_count,
+        authoritative_reporting_target_count,
+        len(records),
+    )
     blocked_records = [
         record for record in records if isinstance(record, dict) and record.get("financial_review_blocked") is True
     ]
@@ -262,6 +288,8 @@ def validate_plan(plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
         issue for issue in source_issues if str(issue) not in financial_review_issue_set
     ]
     run_month = run_month_from_plan(plan, plan_path)
+    expected_cutoff_date = month_end_for(run_month)
+    reporting_cutoff_date = str(plan.get("reporting_cutoff_date") or "").strip()
     unmapped = []
     stale_route = []
     missing_summary = []
@@ -270,24 +298,28 @@ def validate_plan(plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
     text_source_counts: dict[str, int] = {}
     invalid_target = []
     oversize = []
-    target_properties: dict[str, list[str]] = {}
+    thread_properties: dict[str, list[str]] = {}
+    destination_issues = review_route_issues(plan)
+    for issue in destination_issues:
+        issue_name = str(issue.get("issue") or "")
+        if issue_name == "record.thread_name_missing":
+            unmapped.append(issue)
+        elif issue_name != "record.duplicate_thread_route":
+            stale_route.append(issue)
     for record in records:
         if not isinstance(record, dict):
             continue
         property_name = str(record.get("property_name") or "")
         target = str(record.get("target") or "")
-        if target:
-            target_properties.setdefault(target, []).append(property_name)
-        current_channel, current_matched = discord_route.channel_for_property(property_name)
-        current_target = f"channel:{current_channel}"
-        if not current_matched:
-            unmapped.append({"property_name": property_name, "target": target, "draft_path": record.get("draft_path")})
-        elif target != current_target:
-            stale_route.append(
+        normalized_thread = normalize_thread_name(record.get("thread_name"))
+        if normalized_thread:
+            thread_properties.setdefault(normalized_thread, []).append(property_name)
+        if not property_name.strip() or record.get("route_matched") is not True:
+            unmapped.append(
                 {
                     "property_name": property_name,
-                    "plan_target": target,
-                    "current_target": current_target,
+                    "target": target,
+                    "thread_name": record.get("thread_name"),
                     "draft_path": record.get("draft_path"),
                 }
             )
@@ -323,20 +355,32 @@ def validate_plan(plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
             )
         if not CHANNEL_TARGET_RE.fullmatch(target):
             invalid_target.append({"property_name": property_name, "target": target})
-        if int(record.get("message_bytes") or 0) > 2000:
+        if int(record.get("message_bytes") or 0) > DISCORD_REVIEW_BODY_LIMIT_BYTES:
             oversize.append({"property_name": property_name, "message_bytes": record.get("message_bytes")})
     duplicate_targets = [
-        {"target": target, "property_names": property_names}
-        for target, property_names in sorted(target_properties.items())
-        if len(property_names) > 1 and not discord_route.shared_target_allowed(target, property_names)
+        {
+            "target": EARLCOIN_REVIEW_TARGET,
+            "thread_name_normalized": thread_name,
+            "property_names": property_names,
+        }
+        for thread_name, property_names in sorted(thread_properties.items())
+        if len(property_names) > 1
     ]
     blocking_issues = []
+    blocking_issues.extend(population_issues)
+    if reporting_cutoff_date != expected_cutoff_date:
+        blocking_issues.append(
+            "reporting cutoff is not the exact month end: "
+            f"actual={reporting_cutoff_date or 'missing'} expected={expected_cutoff_date or 'unknown'}"
+        )
     if not records:
         blocking_issues.append("all-send plan has no records")
     if unmapped:
         blocking_issues.append(f"{len(unmapped)} Discord property route(s) unresolved")
     if stale_route:
-        blocking_issues.append(f"{len(stale_route)} Discord route target(s) stale; regenerate all-send plan")
+        blocking_issues.append(
+            f"{len(stale_route)} EARLCoin review destination field(s) stale; regenerate all-send plan"
+        )
     if missing_summary:
         blocking_issues.append(f"{len(missing_summary)} Discord draft(s) missing FINANCIALS.md summary")
     if digest_issues:
@@ -346,9 +390,11 @@ def validate_plan(plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
     if invalid_target:
         blocking_issues.append(f"{len(invalid_target)} Discord target(s) invalid")
     if oversize:
-        blocking_issues.append(f"{len(oversize)} Discord message(s) exceed 2000 bytes")
+        blocking_issues.append(
+            f"{len(oversize)} Discord draft body message(s) exceed {DISCORD_REVIEW_BODY_LIMIT_BYTES} bytes"
+        )
     if duplicate_targets:
-        blocking_issues.append(f"{len(duplicate_targets)} Discord target(s) mapped to multiple properties")
+        blocking_issues.append(f"{len(duplicate_targets)} EARLCoin property thread route(s) are duplicated")
     if source_issues_without_financial:
         blocking_issues.append(f"{len(source_issues_without_financial)} source plan issue(s) present")
     non_financial_issue_count = len(blocking_issues)
@@ -371,16 +417,37 @@ def validate_plan(plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
         and not duplicate_targets
         and not source_issues_without_financial
     ):
-        next_action = "Resolve financial review blockers that apply globally, then rerun all-send plan validation before Discord review posts and email gate."
+        next_action = (
+            "Post the blocked drafts to the EARLCoin review forum with their financial-review hold labels. "
+            "Resolve those blockers and obtain separate human approvals before Lofty guild publication or email."
+        )
     elif partial_ready:
-        next_action = "Send only financially ready property records; keep explicitly blocked properties held."
+        next_action = (
+            "Post only financially ready records to the EARLCoin review forum; keep explicitly blocked "
+            "properties, Lofty guild publication, and email held."
+        )
     else:
-        next_action = "Fix route mappings, regenerate non-stale FINANCIALS-backed Discord drafts, rerun all-send plan validation, then send Discord before email gate."
+        next_action = (
+            "Regenerate FINANCIALS-backed drafts with the canonical EARLCoin review route, rerun validation, "
+            "then post for review. Do not publish financial summaries to Lofty or send email from this stage."
+        )
     return {
         "generated_at": iso_z(),
         "status": "ok_partial" if partial_ready else ("ok" if not blocking_issues else "review"),
         "plan": str(plan_path),
+        "run_month": run_month or None,
+        "reporting_cutoff_date": reporting_cutoff_date or None,
+        "expected_reporting_cutoff_date": expected_cutoff_date or None,
         "record_count": len(records),
+        "authoritative_active_property_count": authoritative_active_property_count,
+        "authoritative_reporting_target_count": authoritative_reporting_target_count,
+        "active_reporting_summary_count": len(records),
+        "active_portfolio_summary_population_ok": not population_issues,
+        "active_portfolio_summary_population_issues": population_issues,
+        "active_portfolio_summary_policy_version": ACTIVE_PORTFOLIO_SUMMARY_POLICY_VERSION,
+        "active_portfolio_summary_policy": ACTIVE_PORTFOLIO_SUMMARY_POLICY,
+        "expected_active_physical_property_count": EXPECTED_ACTIVE_PHYSICAL_PROPERTY_COUNT,
+        "expected_active_reporting_target_count": EXPECTED_ACTIVE_REPORTING_TARGET_COUNT,
         "issue_count": len(blocking_issues),
         "issues": blocking_issues,
         "non_financial_issue_count": non_financial_issue_count,
@@ -390,9 +457,17 @@ def validate_plan(plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
             discord_review_ready and financial_review_issues
         ),
         "discord_review_policy": (
-            "Discord review posts may be prepared when route, digest, size, and FINANCIALS.md summary checks pass; "
-            "owner email remains blocked until financial review blockers clear."
+            "Monthly financial draft summaries route only to the EARLCoin eco-systems-pm review forum. "
+            "Lofty Investors publication and owner email each require subsequent human approval."
         ),
+        "earlcoin_review_route_ok": not destination_issues,
+        "destination_issue_count": len(destination_issues),
+        "destination_issues": destination_issues,
+        "destination_class": REVIEW_DESTINATION_CLASS,
+        "destination_purpose": REVIEW_DESTINATION_PURPOSE,
+        "destination_guild_id": EARLCOIN_GUILD_ID,
+        "destination_forum_id": EARLCOIN_REVIEW_FORUM_ID,
+        "destination_target": EARLCOIN_REVIEW_TARGET,
         "source_issue_count": len(source_issues_without_financial),
         "source_issues": source_issues_without_financial,
         "financial_review_issue_count": len(financial_review_issues),

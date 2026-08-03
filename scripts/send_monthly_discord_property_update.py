@@ -21,6 +21,7 @@ if OPENCLAW_SCRIPTS.is_dir():
     sys.path.append(str(OPENCLAW_SCRIPTS))
 
 import post_property_update_discord as discord_route
+from discord_summary_routing_policy import LOFTY_PUBLICATION_APPROVAL_SCOPE
 
 
 DISCORD_MISSING_TOKEN_RE = re.compile(r'Discord bot token missing for account "([^"]+)"')
@@ -45,6 +46,71 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def stable_digest(payload: Any) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def message_sha256(message: str) -> str:
+    return hashlib.sha256(message.encode("utf-8")).hexdigest()
+
+
+def selected_property_name(guild_report: dict[str, Any]) -> str:
+    selected = guild_report.get("selected") if isinstance(guild_report.get("selected"), dict) else {}
+    return str(
+        selected.get("property_name")
+        or selected.get("route_property_name")
+        or guild_report.get("property_name")
+        or ""
+    ).strip()
+
+
+def lofty_approval_template(
+    guild_report: dict[str, Any],
+    *,
+    property_name: str,
+    target: str,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "approved": True,
+        "approval_scope": LOFTY_PUBLICATION_APPROVAL_SCOPE,
+        "guild_id": discord_route.LOFTY_GUILD_ID,
+        "run_month": str(guild_report.get("run_month") or "").strip(),
+        "property_name": property_name,
+        "target": target,
+        "message_sha256": message_sha256(message),
+        "approved_by": "",
+        "approved_at": "",
+    }
+
+
+def valid_iso_timestamp(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def lofty_approval_issues(approval: dict[str, Any], expected: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    for field in (
+        "approved",
+        "approval_scope",
+        "guild_id",
+        "run_month",
+        "property_name",
+        "target",
+        "message_sha256",
+    ):
+        if approval.get(field) != expected.get(field):
+            issues.append(f"approval_{field}_mismatch")
+    if not str(approval.get("approved_by") or "").strip():
+        issues.append("approval_approved_by_missing")
+    if not valid_iso_timestamp(approval.get("approved_at")):
+        issues.append("approval_approved_at_missing_or_invalid")
+    return issues
 
 
 def discord_review_plan_digest(plan: dict[str, Any]) -> str:
@@ -395,6 +461,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--openclaw-bin", default="openclaw")
     parser.add_argument("--account", help="OpenClaw Discord account id/name to use for sends")
     parser.add_argument("--resume-report", type=Path, help="Reuse successful sends from this prior all-plan report")
+    parser.add_argument(
+        "--approval-file",
+        type=Path,
+        help="Hash-bound human approval required for a live Lofty Investors guild publication",
+    )
     parser.add_argument("--send", action="store_true", help="Post live messages after all validation gates pass")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -412,6 +483,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.plan:
         plan = read_json(args.plan)
+        if not dry_run:
+            result = {
+                "generated_at": iso_z(),
+                "status": "review",
+                "mode": "all_plan",
+                "issue": "live_all_plan_send_forbidden_use_earlcoin_review_agent",
+                "plan": str(args.plan),
+                "next_action": (
+                    "Use run_monthly_discord_review_via_agent.py for EARLCoin review drafts. "
+                    "Lofty Investors guild financial publications require a separate approved guild report."
+                ),
+                "owner_email_sent": False,
+            }
+            write_json(args.report, result)
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 2
         return send_plan(
             plan,
             plan_path=args.plan,
@@ -450,6 +537,79 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     message = message_file.read_text(encoding="utf-8")
+    property_name = selected_property_name(guild_report)
+    expected_channel, route_matched = discord_route.channel_for_property(property_name)
+    expected_target = f"channel:{expected_channel}"
+    guild_id = str(guild_report.get("guild_id") or "")
+    route_issues: list[str] = []
+    if not property_name:
+        route_issues.append("lofty_publication_property_name_missing")
+    if not route_matched:
+        route_issues.append("lofty_publication_property_route_unmatched")
+    if target != expected_target:
+        route_issues.append(f"lofty_publication_target_mismatch:{target}:{expected_target}")
+    if guild_id != discord_route.LOFTY_GUILD_ID:
+        route_issues.append(
+            f"lofty_publication_guild_mismatch:{guild_id or 'missing'}:{discord_route.LOFTY_GUILD_ID}"
+        )
+    if route_issues:
+        result = {
+            "generated_at": iso_z(),
+            "status": "review",
+            "mode": "guild_report",
+            "issue": "lofty_publication_route_invalid",
+            "issues": route_issues,
+            "guild_report": str(args.guild_report),
+            "property_name": property_name,
+            "target": target,
+            "expected_target": expected_target,
+            "guild_id": guild_id or None,
+            "expected_guild_id": discord_route.LOFTY_GUILD_ID,
+            "human_approval_required": True,
+        }
+        write_json(args.report, result)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 2
+
+    approval_expected = lofty_approval_template(
+        guild_report,
+        property_name=property_name,
+        target=target,
+        message=message,
+    )
+    approval: dict[str, Any] = {}
+    approval_issues: list[str] = []
+    if not dry_run:
+        if not args.approval_file or not args.approval_file.is_file():
+            approval_issues.append("lofty_publication_approval_file_missing")
+        else:
+            try:
+                approval = read_json(args.approval_file)
+            except Exception as exc:  # noqa: BLE001
+                approval_issues.append(f"lofty_publication_approval_file_unreadable:{exc}")
+            else:
+                approval_issues.extend(lofty_approval_issues(approval, approval_expected))
+    if approval_issues:
+        result = {
+            "generated_at": iso_z(),
+            "status": "review",
+            "mode": "guild_report",
+            "issue": "lofty_publication_human_approval_required",
+            "issues": approval_issues,
+            "guild_report": str(args.guild_report),
+            "approval_file": str(args.approval_file) if args.approval_file else None,
+            "required_approval": approval_expected,
+            "property_name": property_name,
+            "target": target,
+            "guild_id": discord_route.LOFTY_GUILD_ID,
+            "guild_name": discord_route.LOFTY_GUILD_NAME,
+            "destination_purpose": discord_route.DESTINATION_PURPOSE,
+            "human_approval_required": True,
+        }
+        write_json(args.report, result)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 2
+
     returncode, stdout, stderr, send_payload = send_message(
         openclaw_bin=args.openclaw_bin,
         account=args.account,
@@ -472,7 +632,16 @@ def main(argv: list[str] | None = None) -> int:
         "dry_run": dry_run,
         "mode": "guild_report",
         "account": args.account,
+        "property_name": property_name,
         "target": target,
+        "guild_id": discord_route.LOFTY_GUILD_ID,
+        "guild_name": discord_route.LOFTY_GUILD_NAME,
+        "destination_purpose": discord_route.DESTINATION_PURPOSE,
+        "human_approval_required": True,
+        "approval_scope": LOFTY_PUBLICATION_APPROVAL_SCOPE,
+        "approval_file": str(args.approval_file) if args.approval_file else None,
+        "approval_verified": bool(not dry_run and not approval_issues),
+        "message_sha256": message_sha256(message),
         "message_file": str(message_file),
         "message_bytes": len(message.encode("utf-8")),
         "guild_report": str(args.guild_report),

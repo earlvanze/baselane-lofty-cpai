@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from lofty_index_status import is_active_index_status, is_excluded_index_status, normalize_index_status
+from lofty_live_native_scope import (
+    enrich_targets_from_active_roster,
+    live_manager_mutation_ready,
+    load_active_roster_scope,
+    partition_current_manager_targets,
+    validate_full_reporting_scope,
+)
 from lofty_monthly_exclusions import (
     DEFAULT_MANUAL_EXCLUDED_PROPERTIES,
     append_unmapped_exclusion_records,
@@ -436,10 +443,18 @@ def capture_rerun_command(args: argparse.Namespace, *, apply: bool) -> str:
         parts.extend(["--portfolio-map", args.portfolio_map])
     if args.skill_map:
         parts.extend(["--skill-map", args.skill_map])
+    if args.active_roster_report:
+        parts.extend(["--active-roster-report", args.active_roster_report])
     if args.max_properties:
         parts.extend(["--max-properties", args.max_properties])
+    for property_name in args.property or []:
+        parts.extend(["--property", property_name])
     if args.yhome_transition_csv:
         parts.extend(["--yhome-transition-csv", args.yhome_transition_csv])
+    if args.transfer_reconciliation_report:
+        parts.extend(["--transfer-reconciliation-report", args.transfer_reconciliation_report])
+    if args.guarded_apply_report:
+        parts.extend(["--guarded-apply-report", args.guarded_apply_report])
     for property_name in args.manual_excluded_property or []:
         parts.extend(["--manual-excluded-property", property_name])
     if apply:
@@ -503,7 +518,7 @@ def report_next_action(status: str, args: argparse.Namespace, issues: list[str],
     if capture_ready:
         return {
             "status": "ready",
-            "summary": "Live Lofty UPDATES.md guard capture is current for all active targets.",
+            "summary": "Live Lofty UPDATES.md guard capture is current for all manager-actionable reporting targets.",
             "rerun_command": rerun_command,
             "requires_authenticated_cdp": False,
             "holds_live_publish_and_owner_email": False,
@@ -640,6 +655,7 @@ def add_next_action(record: dict[str, Any], updates_guard: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Capture live Lofty PM updates field text and register UPDATES.md live-fetch guard artifacts.")
     parser.add_argument("--index-csv", required=True, type=Path)
+    parser.add_argument("--active-roster-report", type=Path)
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--portfolio-map", type=Path)
     parser.add_argument("--skill-map", type=Path)
@@ -670,6 +686,13 @@ def main() -> int:
     rows = filter_rows_by_property(rows, args.property)
     if args.index_csv.is_file() and not rows:
         issues.append(f"monthly index has no property rows: {args.index_csv}")
+    targeted_run = bool(args.property) or args.max_properties > 0
+    active_roster_scope = load_active_roster_scope(args.active_roster_report)
+    authoritative_roster_scope = (
+        not targeted_run
+        and active_roster_scope.get("status") == "ok"
+        and bool(active_roster_scope.get("records"))
+    )
     skipped_records = skipped_index_records(rows)
     manual_names = [*DEFAULT_MANUAL_EXCLUDED_PROPERTIES, *args.manual_excluded_property]
     exclusion_guards, yhome_guard, manual_exclusions = monthly_exclusion_guards(
@@ -681,17 +704,41 @@ def main() -> int:
     guarded_apply_exclusions = guarded_apply_exclusion_records(args.guarded_apply_report)
     exclusion_guards.extend(financial_hold_exclusions)
     target_exclusion_guards.extend([*financial_hold_exclusions, *guarded_apply_exclusions])
-    external_excluded_records = externally_excluded_records(rows, exclusion_guards)
-    append_unmapped_exclusion_records(
-        external_excluded_records,
-        guarded_apply_exclusions,
-        represented_records=skipped_records,
-    )
+    external_exclusion_candidates = externally_excluded_records(rows, exclusion_guards)
+    if not authoritative_roster_scope:
+        append_unmapped_exclusion_records(
+            external_exclusion_candidates,
+            guarded_apply_exclusions,
+            represented_records=skipped_records,
+        )
+    external_excluded_records = [] if authoritative_roster_scope else external_exclusion_candidates
     candidates = property_id_candidates(args.portfolio_map, args.skill_map)
-    targets = index_targets(rows, candidates, target_exclusion_guards)
+    reporting_targets = index_targets(
+        rows,
+        candidates,
+        [] if authoritative_roster_scope else target_exclusion_guards,
+    )
     if args.max_properties > 0:
-        targets = targets[: args.max_properties]
-    current_only_verified = load_current_only_verify(Path.cwd(), len(targets))
+        reporting_targets = reporting_targets[: args.max_properties]
+    reporting_targets, roster_unmatched_records = enrich_targets_from_active_roster(
+        reporting_targets,
+        active_roster_scope,
+    )
+    if authoritative_roster_scope and roster_unmatched_records:
+        issues.append(
+            "active roster failed to match reporting targets: "
+            + ", ".join(str(record.get("property_name") or record.get("property_path") or "unknown") for record in roster_unmatched_records)
+        )
+    issues.extend(
+        validate_full_reporting_scope(
+            active_roster_scope,
+            len(reporting_targets),
+            targeted=targeted_run,
+        )
+    )
+    portfolio_reporting_target_count = (
+        active_roster_scope.get("portfolio_reporting_target_count") or len(reporting_targets)
+    )
     run_month = f"{args.year:04d}-{args.month:02d}"
 
     api_payload: dict[str, Any] | None = None
@@ -706,6 +753,27 @@ def main() -> int:
                 property_id = property_id_for_api_row(api_row)
                 if property_id:
                     live_by_id[property_id] = api_row
+    partition = partition_current_manager_targets(
+        reporting_targets,
+        live_property_ids=set(live_by_id) if args.apply and not api_error and not issues else None,
+        mutation_ready_property_ids=(
+            {property_id for property_id, row in live_by_id.items() if live_manager_mutation_ready(row)}
+            if args.apply and not api_error and not issues
+            else None
+        ),
+    )
+    targets = partition["captureable"]
+    mutation_ready_targets = partition["actionable"]
+    known_id_targets = partition["known_id"]
+    manager_unavailable_records = partition["manager_unavailable"]
+    mutation_unavailable_targets = partition["mutation_unavailable"]
+    native_unavailable_records = partition["no_id"]
+    live_scope_source = (
+        "authenticated_get_manager_properties"
+        if args.apply and not api_error and not issues
+        else "active_property_roster"
+    )
+    current_only_verified = load_current_only_verify(Path.cwd(), len(targets))
 
     records: list[dict[str, Any]] = []
     register_count = 0
@@ -715,11 +783,6 @@ def main() -> int:
         record = dict(target)
         property_id = target.get("lofty_property_id")
         updates_md = Path(target["updates_md"])
-        if not property_id:
-            record["status"] = "blocked_no_property_id"
-            add_next_action(record, args.updates_guard)
-            records.append(record)
-            continue
         if not updates_md.is_file():
             record["status"] = "blocked_missing_updates_md"
             add_next_action(record, args.updates_guard)
@@ -764,9 +827,21 @@ def main() -> int:
             record["live_snapshot_listing_issues"] = listing_issues
         full_history = full_history_containment(updates_md, live_text, args.skill_scripts_dir)
         record["full_history_containment"] = full_history
+        guard_applicable = record.get("live_capture_guard_applicable") is not False
         if check["ok"] and full_history.get("ok") is True:
-            check_ok_count += 1
-            record["status"] = "guard_ok"
+            if guard_applicable:
+                check_ok_count += 1
+                record["status"] = "guard_ok"
+            else:
+                record["status"] = "guard_not_applicable_mutation_unavailable"
+                record["guard_observation_status"] = "guard_ok"
+                record["nonblocking_scope"] = "native_lofty_listing_actions_only"
+                record["accounting_and_investor_reporting_included"] = True
+        elif not guard_applicable:
+            record["status"] = "guard_not_applicable_mutation_unavailable"
+            record["guard_observation_status"] = "needs_reconcile"
+            record["nonblocking_scope"] = "native_lofty_listing_actions_only"
+            record["accounting_and_investor_reporting_included"] = True
         else:
             mismatch_count += 1
             record["status"] = "needs_reconcile"
@@ -781,7 +856,15 @@ def main() -> int:
 
     planned_count = sum(1 for record in records if record.get("status") == "planned")
     blocked_count = sum(1 for record in records if str(record.get("status", "")).startswith("blocked_"))
-    unverified_count = max(0, len(targets) - check_ok_count)
+    capture_ready_count = sum(
+        1
+        for record in records
+        if isinstance(record.get("register"), dict)
+        and record["register"].get("ok") is True
+        and record.get("status") in {"guard_ok", "guard_not_applicable_mutation_unavailable"}
+    )
+    unverified_count = max(0, len(targets) - capture_ready_count)
+    all_records = [*records, *manager_unavailable_records, *native_unavailable_records]
     target_digest = stable_digest(
         {
             "records": [
@@ -796,11 +879,20 @@ def main() -> int:
                     "next_action_file": record.get("next_action_file"),
                     "next_action_command": record.get("next_action_command"),
                 }
-                for record in records
+                for record in all_records
             ]
         }
     )
-    capture_ready = bool(args.apply) and not issues and not planned_count and not blocked_count and not mismatch_count and check_ok_count == len(targets)
+    capture_ready = (
+        bool(args.apply)
+        and not issues
+        and not planned_count
+        and not blocked_count
+        and not mismatch_count
+        and register_count == len(targets)
+        and check_ok_count == len(mutation_ready_targets)
+        and capture_ready_count == len(targets)
+    )
     status = "failed" if issues and args.apply else "ok" if capture_ready else "review"
     next_action = report_next_action(status, args, issues, capture_ready)
     review_blocker_list = (
@@ -814,7 +906,7 @@ def main() -> int:
             unverified_count=unverified_count,
         )
     )
-    record_status_counts = status_counts(records)
+    record_status_counts = status_counts(all_records)
     listing_issue_counts = live_snapshot_listing_issue_counts(records)
     listing_issue_property_count = sum(1 for record in records if record.get("live_snapshot_listing_issues"))
     full_history_missing_property_count = sum(
@@ -849,7 +941,34 @@ def main() -> int:
         "rerun_command": next_action["rerun_command"],
         "requires_authenticated_cdp": next_action["requires_authenticated_cdp"],
         "holds_live_publish_and_owner_email": next_action["holds_live_publish_and_owner_email"],
-        "target_count": len(targets),
+        "physical_property_count": active_roster_scope.get("physical_property_count"),
+        "portfolio_reporting_target_count": portfolio_reporting_target_count,
+        "selected_reporting_target_count": len(reporting_targets),
+        "target_count": len(reporting_targets),
+        "target_count_semantics": "monthly_reporting_targets",
+        "capture_target_count": len(targets),
+        "native_live_target_count": len(targets),
+        "known_lofty_property_id_count": len(known_id_targets),
+        "current_manager_live_target_count": len(targets),
+        "current_manager_mutation_ready_count": len(mutation_ready_targets),
+        "current_manager_mutation_unavailable_count": len(mutation_unavailable_targets),
+        "current_manager_unavailable_count": len(manager_unavailable_records),
+        "native_unavailable_count": len(native_unavailable_records),
+        "live_action_unavailable_count": (
+            len(mutation_unavailable_targets) + len(manager_unavailable_records) + len(native_unavailable_records)
+        ),
+        "current_manager_scope_source": live_scope_source,
+        "current_manager_mutation_unavailable_records": mutation_unavailable_targets,
+        "current_manager_unavailable_records": manager_unavailable_records,
+        "native_unavailable_records": native_unavailable_records,
+        "active_roster_scope": {key: value for key, value in active_roster_scope.items() if key != "records"},
+        "active_roster_record_count": len(active_roster_scope.get("records") or []),
+        "authoritative_roster_scope_applied": authoritative_roster_scope,
+        "legacy_exclusion_scope_reduction_applied": not authoritative_roster_scope,
+        "external_exclusion_candidate_count": len(external_exclusion_candidates),
+        "external_exclusion_candidates": external_exclusion_candidates,
+        "active_roster_unmatched_count": len(roster_unmatched_records),
+        "active_roster_unmatched_records": roster_unmatched_records,
         "skipped_index_count": len(skipped_records),
         "skipped_index_status_counts": {
             status: sum(1 for record in skipped_records if record.get("status") == status)
@@ -870,7 +989,9 @@ def main() -> int:
         "blocked_count": blocked_count,
         "register_count": register_count,
         "check_ok_count": check_ok_count,
-        "required_check_ok_count": len(targets),
+        "required_check_ok_count": len(mutation_ready_targets),
+        "capture_ready_count": capture_ready_count,
+        "capture_missing_count": unverified_count,
         "unverified_count": unverified_count,
         "mismatch_count": mismatch_count,
         "live_snapshot_listing_issue_property_count": listing_issue_property_count,
@@ -891,10 +1012,28 @@ def main() -> int:
             "external_mutation_count": 0,
             "capture_semantics": "authenticated_read_and_guard_registration_only",
             "sends_owner_email": False,
-            "target_count": len(targets),
+            "physical_property_count": active_roster_scope.get("physical_property_count"),
+            "portfolio_reporting_target_count": portfolio_reporting_target_count,
+            "selected_reporting_target_count": len(reporting_targets),
+            "target_count": len(reporting_targets),
+            "target_count_semantics": "monthly_reporting_targets",
+            "capture_target_count": len(targets),
+            "native_live_target_count": len(targets),
+            "known_lofty_property_id_count": len(known_id_targets),
+            "current_manager_live_target_count": len(targets),
+            "current_manager_mutation_ready_count": len(mutation_ready_targets),
+            "current_manager_mutation_unavailable_count": len(mutation_unavailable_targets),
+            "current_manager_unavailable_count": len(manager_unavailable_records),
+            "native_unavailable_count": len(native_unavailable_records),
+            "live_action_unavailable_count": (
+                len(mutation_unavailable_targets) + len(manager_unavailable_records) + len(native_unavailable_records)
+            ),
+            "current_manager_scope_source": live_scope_source,
             "register_count": register_count,
             "check_ok_count": check_ok_count,
-            "required_check_ok_count": len(targets),
+            "required_check_ok_count": len(mutation_ready_targets),
+            "capture_ready_count": capture_ready_count,
+            "capture_missing_count": unverified_count,
             "planned_count": planned_count,
             "blocked_count": blocked_count,
             "mismatch_count": mismatch_count,
@@ -908,7 +1047,7 @@ def main() -> int:
             "record_status_counts": record_status_counts,
             "target_digest": target_digest,
         },
-        "records": records,
+        "records": all_records,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -928,7 +1067,7 @@ def main() -> int:
                         **{key: proof.get(key) for key in ("expected_char_count", "live_char_count", "expected_line_count", "live_line_count", "expected_sha256", "live_sha256")},
                     }
                 )
-    print(json.dumps({key: report[key] for key in ("status", "issue_count", "review_blocker_count", "target_count", "register_count", "check_ok_count", "unverified_count", "mismatch_count")}, indent=2, sort_keys=True))
+    print(json.dumps({key: report[key] for key in ("status", "issue_count", "review_blocker_count", "physical_property_count", "portfolio_reporting_target_count", "known_lofty_property_id_count", "current_manager_live_target_count", "current_manager_mutation_ready_count", "current_manager_mutation_unavailable_count", "current_manager_unavailable_count", "native_unavailable_count", "register_count", "check_ok_count", "unverified_count", "mismatch_count")}, indent=2, sort_keys=True))
     return 0 if status == "ok" else 2 if status == "review" else 1
 
 

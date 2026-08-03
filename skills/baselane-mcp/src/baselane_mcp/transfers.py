@@ -104,6 +104,22 @@ class TransferStateError(TransferError):
     """A prior transfer attempt is incomplete and must be reconciled."""
 
 
+class TransferAuthenticationRequired(TransferStateError):
+    """Baselane rejected the transfer before cash movement pending bank MFA."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        bank_account_id: int | None,
+        confirmation_token: str,
+    ) -> None:
+        super().__init__(message)
+        self.bank_account_id = bank_account_id
+        self.confirmation_token = confirmation_token
+        self.cash_movement_may_require_reconciliation = False
+
+
 GraphQLRunner = Callable[[dict[str, Any]], dict[str, Any]]
 
 
@@ -204,10 +220,13 @@ def _flatten_accounts(payload: dict[str, Any]) -> list[dict[str, Any]]:
     for parent in parents:
         if not isinstance(parent, dict):
             continue
-        flattened.append(parent)
+        parent_id = parent.get("id")
+        flattened.append({**parent, "_parent_bank_account_id": parent_id})
         for subaccount in parent.get("subAccounts") or []:
             if isinstance(subaccount, dict):
-                flattened.append(subaccount)
+                flattened.append(
+                    {**subaccount, "_parent_bank_account_id": parent_id}
+                )
     return flattened
 
 
@@ -215,6 +234,7 @@ def _safe_account(account: dict[str, Any]) -> dict[str, Any]:
     return {
         "transfer_account_id": account.get("transferAccountId"),
         "bank_account_id": account.get("id"),
+        "mfa_bank_account_id": account.get("_parent_bank_account_id"),
         "account_name": account.get("accountName"),
         "nickname": account.get("nickName"),
         "institution": account.get("institutionName"),
@@ -400,6 +420,34 @@ def _write_state(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary_path, path)
 
 
+def get_transfer_state(
+    *, confirmation_token: str, state_path: Path
+) -> dict[str, Any]:
+    """Return the durable state for one exact transfer without exposing secrets."""
+    if not confirmation_token.startswith("BASELANE-TRANSFER-"):
+        raise TransferValidationError("confirmation_token is invalid")
+    with _state_lock(state_path):
+        transfer = _load_state(state_path)["transfers"].get(confirmation_token)
+    if transfer is None:
+        return {
+            "status": "not_found",
+            "confirmation_token": confirmation_token,
+            "cash_movement_may_require_reconciliation": False,
+        }
+    status = transfer.get("status")
+    return {
+        "status": status,
+        "confirmation_token": confirmation_token,
+        "cash_movement_may_require_reconciliation": status
+        in {"submitting", "verification_failed"},
+        "retry_safe": status in {"authentication_challenge", "rejected"},
+        "challenge_type": transfer.get("challenge_type"),
+        "mfa_bank_account_id": transfer.get("mfa_bank_account_id"),
+        "plan": transfer.get("plan"),
+        "receipt": transfer.get("receipt"),
+    }
+
+
 @contextmanager
 def _state_lock(path: Path) -> Iterator[None]:
     lock_path = path.with_suffix(path.suffix + ".lock")
@@ -558,12 +606,15 @@ def execute_transfer(
                 state["transfers"][expected_token] = {
                     "status": "authentication_challenge",
                     "challenge_type": "bank_sms_otp",
+                    "mfa_bank_account_id": source.get("mfa_bank_account_id"),
                     "plan": plan,
                 }
                 _write_state(state_path, state)
-                raise TransferStateError(
+                raise TransferAuthenticationRequired(
                     "Baselane bank SMS OTP is required; complete MFA and retry "
-                    "this exact confirmation token"
+                    "this exact confirmation token",
+                    bank_account_id=source.get("mfa_bank_account_id"),
+                    confirmation_token=expected_token,
                 ) from exc
             if "REQUEST IS ALREADY IN PROGRESS" in normalized_error:
                 state["transfers"][expected_token] = {

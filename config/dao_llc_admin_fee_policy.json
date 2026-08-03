@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "effective_date": "2026-07-31",
+  "scope": "All active Lofty property DAOs; sold, inactive, archived, and entity-only roster rows are excluded.",
+  "service_cycle": {
+    "start_month": "2025-08",
+    "end_month": "2026-07"
+  },
+  "dao_charge": {
+    "annual_amount": "750.00",
+    "monthly_amount": "62.50",
+    "dao_category": "Legal Fees",
+    "eco_revenue_category": "Fees & Other Revenue",
+    "recognition": "Post one negative DAO expense and one equal positive ECO revenue accrual per service month. Cash settlement is a separate transfer fact and must clear the specific accrued payable without creating a second expense."
+  },
+  "eco_downstream_costs": {
+    "annual_payable_to_lofty": "200.00",
+    "filing_cost_reference": "125.00",
+    "treatment": "Both are ECO-side expenses. Record actual filing-vendor transactions to ECO and record the Lofty payable separately; neither amount offsets or replaces the DAO's 750.00 annual obligation."
+  },
+  "expected_margin_reference": "425.00",
+  "idempotency": "A property-month is complete only when both the DAO expense marker and matching ECO revenue marker exist once. Existing cash collection is reconciled separately."
+}

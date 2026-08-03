@@ -116,10 +116,6 @@
       "reason": "not yet launched"
     },
     {
-      "address": "122 Florida Park Dr, Palm Coast, FL 32137",
-      "reason": "lis pendens, no revenue"
-    },
-    {
       "address": "27 Pillar Ln, Palm Coast, FL 32164",
       "reason": "lis pendens, no revenue"
     },
@@ -136,13 +132,39 @@
       "reason": "no Public guarded workflow or ECO GL source; not a Lofty PM public financials target"
     },
     {
-      "address": "724 3rd Ave, Watervliet, NY 12189",
-      "reason": "Lofty PM transition completed; continue canonical Dropbox and Cash Flow Statement reporting, but do not publish Lofty updates, Discord posts, or owner emails from this workflow"
-    },
-    {
       "address": "Yhome Nursing LLC",
       "reason": "operational/legal entity row; not a Lofty property public financials target",
       "split_exclude": true
+    }
+  ],
+  "projected_annual_cash_flow_overrides": [
+    {
+      "address": "5541 S Peoria St, Chicago, IL 60621",
+      "run_month": "2026-07",
+      "projected_annual_cash_flow": 13004.04,
+      "approved_at": "2026-07-27",
+      "reason": "Preserve the user-confirmed Lofty annual cash-flow projection; July rent collections include cash timing that must not replace the approved listing projection.",
+      "evidence": "reports/baselane_financials_monthly_lofty_pm_publish.financial-only-dry-run.json"
+    },
+    {
+      "address": "1456 W 85th St, Cleveland, OH 44102",
+      "run_month": "2026-07",
+      "projected_annual_cash_flow": 0,
+      "approved_at": "2026-07-16",
+      "reason": "Keep the active cash-preservation and furnace-reserve distribution guard at zero for the July close; July ledger profitability is reported separately and does not release the retained cash.",
+      "evidence": "reports/lofty_live_updates_manager_properties.post-restore-20260722T023443Z.json"
+    }
+  ],
+  "curr_maintenance_reserve_reporting_overrides": [
+    {
+      "address": "7542 and 7656 S Colfax Ave, Chicago, IL 60649",
+      "run_month": "2026-07",
+      "curr_maintenance_reserve": 14325.48,
+      "approved_at": "2026-07-29",
+      "reason": "Use the user-confirmed Yhome sheet value for the July close without restoring the rejected stale Lofty readback into downstream reports.",
+      "evidence": "reports/yhome_transition_reconciliation.csv",
+      "live_correction_status": "pending_supported_backend_correction",
+      "live_readback": 222003.0
     }
   ],
   "distribution_rule": {

@@ -44,6 +44,27 @@
       "source_basis": "current amount due for 2026-07 payment"
     },
     {
+      "property": "804 S Quitman St",
+      "servicer": "Mr. Cooper / Rocket Mortgage",
+      "dao_mortgage": true,
+      "loan_term_months": 360,
+      "term_months": 360,
+      "annual_interest_rate": 6.995,
+      "anchor_payment_month": "2025-11",
+      "anchor_payment_number": 1,
+      "principal_balance_before_payment": 358500.0,
+      "monthly_pi_payment": 2383.91,
+      "anchor_principal": 294.15,
+      "anchor_interest": 2089.76,
+      "monthly_escrow": 297.95,
+      "monthly_property_tax_escrow": 144.48,
+      "monthly_homeowners_insurance_escrow": 153.47,
+      "observed_monthly_cash_payment": 2700.0,
+      "monthly_unapplied_or_general_escrow": 18.14,
+      "source": "Settlement Statement Refinance - 804 S Quitman St, Denver, CO 80219.pdf",
+      "source_basis": "September 12, 2025 refinance closing disclosure: $358,500 loan, 6.995% fixed, $2,383.91 monthly P&I, $297.95 estimated monthly escrow ($144.48 property tax plus inferred $153.47 homeowners insurance). First observed permanent-loan installment was November 2025. Baselane cash debits and the February Nathaniel Gipson reimbursement are consistently $2,700; the $18.14 difference is held in general escrow/unapplied classification until servicer evidence establishes its final application."
+    },
+    {
       "property": "86 Madison Ave",
       "servicer": "Onity Mortgage / MortgageQuestions.com",
       "loan_term_months": 360,

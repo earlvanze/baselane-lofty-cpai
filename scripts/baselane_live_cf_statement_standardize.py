@@ -713,7 +713,7 @@ def cf_workbook_path(property_path: Path) -> Path | None:
                     for row in range(1, min(sheet.max_row or 0, 120) + 1)
                 }
                 has_eco_gl_row = has_eco_gl_row or "ECO General Ledger (ECO GL Column E Total)" in labels
-                has_eco_cash_row = has_eco_cash_row or update_cf_label in labels
+                has_eco_cash_row = has_eco_cash_row or any(label in labels for label in update_cf_labels)
                 if has_eco_gl_row and has_eco_cash_row:
                     break
             workbook.close()
@@ -721,7 +721,7 @@ def cf_workbook_path(property_path: Path) -> Path | None:
             return (2, len(path.name), str(path).lower())
         return (0 if has_eco_gl_row and has_eco_cash_row else 1, len(path.name), str(path).lower())
 
-    update_cf_label = "ECO Operating Cash"
+    update_cf_labels = ("ECO Net DAO Funds", "ECO Operating Cash")
     return sorted(candidates, key=schema_priority)[0]
 
 
@@ -829,7 +829,7 @@ def p_and_l_row_scope(update_cf: Any) -> list[str]:
     This deliberately excludes tokenomics and generic balance-sheet rows. ECO
     The canonical ECO General Ledger row is included using month-end history
     for closed columns and the full current balance for the active column.
-    Physical ECO Operating Cash is a separate mapped-bank field and is never
+    ECO Net DAO Funds is a separate verified spendable-cash field and is never
     sourced from the property GL. No-mortgage debt rows are included so the
     policy can clear stale template debt without touching mortgage tokenomics.
     """

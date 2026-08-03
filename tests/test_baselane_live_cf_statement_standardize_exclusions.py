@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 
@@ -83,3 +84,10 @@ def test_runtime_map_nonterminal_record_remains_in_scope(tmp_path: Path):
 
     assert included == records
     assert excluded == []
+
+
+def test_closed_month_uses_month_end_source_cash_mode():
+    module = load_module()
+
+    assert module.source_cash_mode_for_month(2026, 7, today=date(2026, 8, 2)) == "as_of_month_end"
+    assert module.source_cash_mode_for_month(2026, 8, today=date(2026, 8, 2)) == "full_column_e"

@@ -80,6 +80,11 @@ BASELANE_CLEAN_REPORTING_LEDGER_PATH="${BASELANE_CLEAN_REPORTING_LEDGER_PATH:-$R
 BASELANE_SAFE_CATEGORY_LEDGER_PATH="${BASELANE_SAFE_CATEGORY_LEDGER_PATH:-$ROOT/reports/baselane_weekly_safe_category_reporting_ledger.csv}"
 BASELANE_NO_DAO_MORTGAGE_CLEAN_LEDGER_PATH="${BASELANE_NO_DAO_MORTGAGE_CLEAN_LEDGER_PATH:-$ROOT/reports/baselane_weekly_no_dao_mortgage_clean_reporting_ledger.csv}"
 BASELANE_CF_REPORTING_LEDGER_PATH="${BASELANE_CF_REPORTING_LEDGER_PATH:-$BASELANE_NO_DAO_MORTGAGE_CLEAN_LEDGER_PATH}"
+REPORTING_PROPERTY_LEDGER_REFRESH_SCRIPT="$ROOT/scripts/baselane_reporting_property_ledger_refresh.py"
+REPORTING_PROPERTY_LEDGER_REFRESH_REPORT="$ROOT/reports/baselane_weekly_reporting_property_ledger_refresh.json"
+REPORTING_PROPERTY_LEDGER_SPLIT_REPORT="$ROOT/reports/split_ledger_public_financials_last.json"
+REPORTING_PROPERTY_LEDGER_REFRESH_TIMEOUT_SECONDS="${BASELANE_REPORTING_PROPERTY_LEDGER_REFRESH_TIMEOUT_SECONDS:-600}"
+BASELANE_WEEKLY_PROPERTY_LEDGER_APPLY="${BASELANE_WEEKLY_PROPERTY_LEDGER_APPLY:-1}"
 ECOGL_SAFE_APPLY_SCRIPT="$ROOT/scripts/baselane_ecogl_apply_safe_actions.py"
 ECOGL_SAFE_APPLY_REPORT="$ROOT/reports/baselane_ecogl_safe_category_apply_report.json"
 ECOGL_SAFE_APPLY_ACTIONS_CSV="$ROOT/reports/baselane_ecogl_safe_category_apply_actions.csv"
@@ -199,6 +204,23 @@ $PY "$NO_DAO_MORTGAGE_QUARANTINE_SCRIPT" \
   --quarantine-csv "$NO_DAO_MORTGAGE_QUARANTINE_CSV" \
   --markdown "$NO_DAO_MORTGAGE_QUARANTINE_MD"
 
+if [ ! -f "$REPORTING_PROPERTY_LEDGER_REFRESH_SCRIPT" ]; then
+  echo "[$(date -Is)] weekly pass failed: missing $REPORTING_PROPERTY_LEDGER_REFRESH_SCRIPT" >&2
+  exit 1
+fi
+reporting_property_ledger_refresh_args=(
+  --source "$BASELANE_CF_REPORTING_LEDGER_PATH"
+  --real-estate-root "$DROPBOX_ROOT/Real Estate"
+  --split-report "$REPORTING_PROPERTY_LEDGER_SPLIT_REPORT"
+  --report "$REPORTING_PROPERTY_LEDGER_REFRESH_REPORT"
+)
+if [ "$BASELANE_WEEKLY_PROPERTY_LEDGER_APPLY" = "1" ]; then
+  reporting_property_ledger_refresh_args+=(--apply)
+fi
+timeout --kill-after=30s "${REPORTING_PROPERTY_LEDGER_REFRESH_TIMEOUT_SECONDS}s" \
+  "$PY" "$REPORTING_PROPERTY_LEDGER_REFRESH_SCRIPT" \
+    "${reporting_property_ledger_refresh_args[@]}" >/dev/null
+
 if [ -f "$SOURCE_CLEANUP_QUEUE_SCRIPT" ]; then
   $PY "$SOURCE_CLEANUP_QUEUE_SCRIPT" \
     --ledger "$RAW_BASELANE_LEDGER_PATH" \
@@ -266,6 +288,8 @@ rm -f "$TMP_JSON" "$TMP_CSV"
   echo "clean_reporting_ledger=$BASELANE_CLEAN_REPORTING_LEDGER_PATH"
   echo "no_dao_mortgage_clean_reporting_ledger=$BASELANE_NO_DAO_MORTGAGE_CLEAN_LEDGER_PATH"
   echo "cf_reporting_ledger=$BASELANE_CF_REPORTING_LEDGER_PATH"
+  echo "reporting_property_ledger_refresh=$REPORTING_PROPERTY_LEDGER_REFRESH_REPORT"
+  echo "reporting_property_ledger_split=$REPORTING_PROPERTY_LEDGER_SPLIT_REPORT"
   echo "ecogl_safe_apply_report=$ECOGL_SAFE_APPLY_REPORT"
   echo "first_day_pm_fee_quarantine_report=$FIRST_DAY_PM_FEE_QUARANTINE_REPORT"
   echo "no_dao_mortgage_quarantine_report=$NO_DAO_MORTGAGE_QUARANTINE_REPORT"
@@ -291,6 +315,14 @@ CONFLICT_AUTO_APPROVAL_SCRIPT="$ROOT/scripts/baselane_cf_auto_approve_zero_fill.
 CF_SYNC_LOG="$ROOT/reports/cf_statement_sync.log"
 CF_SYNC_REPORT="$ROOT/reports/baselane_weekly_cf_statement_sync_report.json"
 CF_SYNC_TIMEOUT_SECONDS="${CF_SYNC_TIMEOUT_SECONDS:-900}"
+SOURCE_CASH_AUDIT_SCRIPT="$ROOT/scripts/baselane_daily_source_cash_balance_audit.py"
+WEEKLY_SOURCE_CASH_REPORT="${WEEKLY_SOURCE_CASH_REPORT:-$ROOT/reports/baselane_weekly_source_cash_balance_${CF_MONTH//-/_}_report.json}"
+if [[ "$CF_MONTH" < "$(date +%Y-%m)" ]]; then
+  WEEKLY_SOURCE_CASH_MODE="${WEEKLY_SOURCE_CASH_MODE:-as_of_month_end}"
+else
+  WEEKLY_SOURCE_CASH_MODE="${WEEKLY_SOURCE_CASH_MODE:-full_column_e}"
+fi
+WEEKLY_SOURCE_CASH_AUDIT_RC=0
 UNTAGGED_REVIEW_JSON="$ROOT/reports/baselane_cf_untagged_review_packet.json"
 UNTAGGED_REVIEW_CSV="$ROOT/reports/baselane_cf_untagged_review_packet.csv"
 UNTAGGED_REVIEW_MD="$ROOT/reports/baselane_cf_untagged_review_packet.md"
@@ -360,6 +392,28 @@ refresh_yhome_transition_reconciliation_csv() {
     return 0
   fi
   curl -L --fail --silent --show-error "$YHOME_TRANSITION_RECONCILIATION_URL" -o "$YHOME_TRANSITION_RECONCILIATION_CSV"
+}
+
+run_weekly_source_cash_balance_audit() {
+  if [ ! -f "$SOURCE_CASH_AUDIT_SCRIPT" ]; then
+    echo "[$(date -Is)] weekly source-cash audit missing: $SOURCE_CASH_AUDIT_SCRIPT" >&2
+    return 1
+  fi
+  local source_cash_args=(
+    --month "$CF_MONTH"
+    --gl-csv "$BASELANE_CF_REPORTING_LEDGER_PATH"
+    --real-estate-root "$DROPBOX_ROOT/Real Estate"
+    --report "$WEEKLY_SOURCE_CASH_REPORT"
+    --source-cash-mode "$WEEKLY_SOURCE_CASH_MODE"
+  )
+  if [ -n "${REPORTING_CUTOFF_DATE:-}" ]; then
+    source_cash_args+=(--reporting-cutoff-date "$REPORTING_CUTOFF_DATE")
+  fi
+  set +e
+  "$PY" "$SOURCE_CASH_AUDIT_SCRIPT" "${source_cash_args[@]}" 2>&1 | tee -a "$CF_SYNC_LOG"
+  local source_cash_rc="${PIPESTATUS[0]}"
+  set -e
+  return "$source_cash_rc"
 }
 
 run_cf_balance_sheet_consistency_audit() {
@@ -460,7 +514,7 @@ run_cf_balance_sheet_cash_apply_report() {
   fi
   local apply_arg=()
   if [ "${CF_BALANCE_SHEET_CASH_APPLY:-0}" = "1" ]; then
-    apply_arg+=(--apply --apply-physical-eco-cash)
+    apply_arg+=(--apply --apply-eco-net-dao-funds)
   fi
   if [ "${CF_BALANCE_SHEET_CREATE_MISSING_ROWS:-0}" = "1" ]; then
     apply_arg+=(--create-missing-rows)
@@ -470,7 +524,7 @@ run_cf_balance_sheet_cash_apply_report() {
     --month "$CF_MONTH" \
     --candidate-packet "$ROOT/reports/baselane_financials_monthly_review_candidate_packet.json" \
     --source-cleanup-queue "$SOURCE_CLEANUP_QUEUE_REPORT" \
-    --source-cash-report "$ROOT/reports/baselane_daily_source_cash_balance_report.json" \
+    --source-cash-report "$WEEKLY_SOURCE_CASH_REPORT" \
     --report "$CF_BALANCE_SHEET_CASH_APPLY_REPORT" \
     "${apply_arg[@]}" \
     2>&1 | tee -a "$CF_SYNC_LOG"
@@ -488,7 +542,7 @@ run_lofty_transfer_requirements_report() {
     --candidate-packet "$ROOT/reports/baselane_financials_monthly_review_candidate_packet.json" \
     --cf-balance-sheet-report "$CF_BALANCE_SHEET_AUDIT_REPORT" \
     --source-cleanup-queue "$SOURCE_CLEANUP_QUEUE_REPORT" \
-    --source-cash-report "$ROOT/reports/baselane_daily_source_cash_balance_report.json" \
+    --source-cash-report "$WEEKLY_SOURCE_CASH_REPORT" \
     --yhome-csv "$YHOME_TRANSITION_RECONCILIATION_CSV" \
     --yhome-update-plan-csv "$YHOME_OPERATING_CASH_UPDATE_PLAN_CSV" \
     --report "$LOFTY_TRANSFER_REQUIREMENTS_REPORT" \
@@ -551,6 +605,9 @@ write_cf_sync_report() {
   LOFTY_TRANSFER_REQUIREMENTS_CSV="$LOFTY_TRANSFER_REQUIREMENTS_CSV" \
   LOFTY_TRANSFER_REQUIREMENTS_MD="$LOFTY_TRANSFER_REQUIREMENTS_MD" \
   LOFTY_TRANSFER_REQUIREMENTS_TELEGRAM_MD="$LOFTY_TRANSFER_REQUIREMENTS_TELEGRAM_MD" \
+  WEEKLY_SOURCE_CASH_REPORT="$WEEKLY_SOURCE_CASH_REPORT" \
+  WEEKLY_SOURCE_CASH_AUDIT_RC="$WEEKLY_SOURCE_CASH_AUDIT_RC" \
+  CF_MONTH="$CF_MONTH" \
   CF_SYNC_LOG="$CF_SYNC_LOG" \
   CF_SYNC_TIMEOUT_SECONDS="$CF_SYNC_TIMEOUT_SECONDS" \
   BASELANE_LEDGER_PATH="$BASELANE_CF_REPORTING_LEDGER_PATH" \
@@ -558,8 +615,10 @@ write_cf_sync_report() {
   BASELANE_REPORTING_LEDGER_PATH="$BASELANE_REPORTING_LEDGER_PATH" \
   BASELANE_SAFE_CATEGORY_LEDGER_PATH="$BASELANE_SAFE_CATEGORY_LEDGER_PATH" \
   BASELANE_CLEAN_REPORTING_LEDGER_PATH="$BASELANE_CLEAN_REPORTING_LEDGER_PATH" \
-  BASELANE_CF_REPORTING_LEDGER_PATH="$BASELANE_CF_REPORTING_LEDGER_PATH" \
-  BASELANE_ACCRUAL_OVERLAY_LEDGER_PATH="$BASELANE_ACCRUAL_OVERLAY_LEDGER_PATH" \
+	  BASELANE_CF_REPORTING_LEDGER_PATH="$BASELANE_CF_REPORTING_LEDGER_PATH" \
+	  REPORTING_PROPERTY_LEDGER_REFRESH_REPORT="$REPORTING_PROPERTY_LEDGER_REFRESH_REPORT" \
+	  REPORTING_PROPERTY_LEDGER_SPLIT_REPORT="$REPORTING_PROPERTY_LEDGER_SPLIT_REPORT" \
+	  BASELANE_ACCRUAL_OVERLAY_LEDGER_PATH="$BASELANE_ACCRUAL_OVERLAY_LEDGER_PATH" \
   ECOGL_SAFE_APPLY_REPORT="$ECOGL_SAFE_APPLY_REPORT" \
   ECOGL_SAFE_APPLY_ACTIONS_CSV="$ECOGL_SAFE_APPLY_ACTIONS_CSV" \
   ECOGL_SAFE_APPLY_MD="$ECOGL_SAFE_APPLY_MD" \
@@ -722,6 +781,8 @@ report = {
     "baselane_safe_category_ledger_path": os.environ.get("BASELANE_SAFE_CATEGORY_LEDGER_PATH"),
     "baselane_clean_reporting_ledger_path": os.environ.get("BASELANE_CLEAN_REPORTING_LEDGER_PATH"),
     "baselane_cf_reporting_ledger_path": os.environ.get("BASELANE_CF_REPORTING_LEDGER_PATH"),
+    "reporting_property_ledger_refresh_report": os.environ.get("REPORTING_PROPERTY_LEDGER_REFRESH_REPORT"),
+    "reporting_property_ledger_split_report": os.environ.get("REPORTING_PROPERTY_LEDGER_SPLIT_REPORT"),
     "baselane_accrual_overlay_ledger_path": os.environ.get("BASELANE_ACCRUAL_OVERLAY_LEDGER_PATH"),
     "ecogl_safe_apply_report": os.environ.get("ECOGL_SAFE_APPLY_REPORT"),
     "ecogl_safe_apply_actions_csv": os.environ.get("ECOGL_SAFE_APPLY_ACTIONS_CSV"),
@@ -1032,13 +1093,19 @@ audit_files = sorted(audit_dir.glob("audit_*.json"), key=lambda path: path.stat(
 latest_audit = audit_files[-1] if audit_files else None
 discovery_files = sorted(audit_dir.glob("discovery_*.json"), key=lambda path: path.stat().st_mtime if path.exists() else 0)
 latest_discovery = discovery_files[-1] if discovery_files else None
-source_cash_report_path = Path(os.environ["ROOT"]) / "reports" / "baselane_daily_source_cash_balance_report.json"
+source_cash_report_path = Path(os.environ["WEEKLY_SOURCE_CASH_REPORT"])
 source_cash_report = {}
+source_cash_report_month = None
+source_cash_report_current = False
 if source_cash_report_path.exists():
     try:
         loaded_source_cash_report = json.loads(source_cash_report_path.read_text(encoding="utf-8"))
         if isinstance(loaded_source_cash_report, dict):
             source_cash_report = loaded_source_cash_report
+            source_cash_report_month = str(source_cash_report.get("month") or "").strip() or None
+            source_cash_report_current = source_cash_report_month == os.environ["CF_MONTH"]
+            if not source_cash_report_current:
+                source_cash_report = {}
     except Exception as exc:  # noqa: BLE001
         report["source_cash_balance_report_status"] = "unreadable"
         report["source_cash_balance_report_error"] = str(exc)
@@ -1107,6 +1174,7 @@ if latest_audit:
         source_cash_balance_violation_count = sum(int(summary.get("source_cash_balance_violation_count") or 0) for summary in summaries)
         standalone_source_cash_violation_count = int(source_cash_report.get("violation_count") or 0)
         source_cash_balance_no_match_count = int(source_cash_report.get("no_match_count") or 0)
+        source_cash_balance_blocking_no_match_count = int(source_cash_report.get("blocking_no_match_count") or 0)
         source_cash_balance_split_scope_missing_property_count = int(source_cash_report.get("split_scope_missing_property_count") or 0)
         source_cash_balance_checked_property_count_standalone = int(source_cash_report.get("checked_property_count") or 0)
         source_cash_balance_split_scope_expected_property_count = int(source_cash_report.get("split_scope_expected_property_count") or 0)
@@ -1193,6 +1261,10 @@ if latest_audit:
                 "source_cash_balance_policy": "ECO GL Net Cash Balance must equal raw Baselane GL cumulative Amount through month-end, excluding EARLDAO interest rows only.",
                 "source_cash_balance_report": str(source_cash_report_path),
                 "source_cash_balance_report_status": source_cash_report.get("status") or report.get("source_cash_balance_report_status"),
+                "source_cash_balance_report_expected_month": os.environ["CF_MONTH"],
+                "source_cash_balance_report_month": source_cash_report_month,
+                "source_cash_balance_report_current": source_cash_report_current,
+                "source_cash_balance_audit_return_code": int(os.environ.get("WEEKLY_SOURCE_CASH_AUDIT_RC") or 0),
                 "source_cash_balance_checked_property_count": max(
                     source_cash_balance_checked_property_count,
                     source_cash_balance_checked_property_count_standalone,
@@ -1206,6 +1278,8 @@ if latest_audit:
                 "source_cash_balance_violation_properties": source_cash_balance_violation_properties[:25],
                 "source_cash_balance_no_match_count": source_cash_balance_no_match_count,
                 "source_cash_balance_no_match_properties": (source_cash_report.get("no_match_properties_bounded") or [])[:25],
+                "source_cash_balance_blocking_no_match_count": source_cash_balance_blocking_no_match_count,
+                "source_cash_balance_blocking_no_match_properties": (source_cash_report.get("blocking_no_match_properties_bounded") or [])[:25],
                 "source_cash_balance_split_scope_expected_property_count": source_cash_balance_split_scope_expected_property_count,
                 "source_cash_balance_split_scope_missing_property_count": source_cash_balance_split_scope_missing_property_count,
                 "source_cash_balance_split_scope_missing_properties": (source_cash_report.get("split_scope_missing_properties_bounded") or [])[:25],
@@ -1244,10 +1318,14 @@ if latest_audit:
         source_cash_balance_violation_count = int(report.get("source_cash_balance_violation_count") or 0)
         if source_cash_balance_violation_count:
             review_reasons.append(f"source_cash_balance_violation_count={source_cash_balance_violation_count}")
-        if source_cash_balance_no_match_count:
-            review_reasons.append(f"source_cash_balance_no_match_count={source_cash_balance_no_match_count}")
+        if source_cash_balance_blocking_no_match_count:
+            review_reasons.append(
+                f"source_cash_balance_blocking_no_match_count={source_cash_balance_blocking_no_match_count}"
+            )
         if source_cash_balance_split_scope_missing_property_count:
             review_reasons.append(f"source_cash_balance_split_scope_missing_property_count={source_cash_balance_split_scope_missing_property_count}")
+        if not source_cash_report_current:
+            review_reasons.append("source_cash_balance_report_not_current")
         cf_balance_sheet_issue_count = int(report.get("cf_balance_sheet_consistency_issue_count") or 0)
         if cf_balance_sheet_issue_count:
             review_reasons.append(f"cf_balance_sheet_consistency_issue_count={cf_balance_sheet_issue_count}")
@@ -1271,6 +1349,8 @@ tmp.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="ut
 tmp.replace(path)
 PY
 }
+
+run_weekly_source_cash_balance_audit || WEEKLY_SOURCE_CASH_AUDIT_RC="$?"
 
 if [ -f "$CF_SYNC_SCRIPT" ]; then
   echo "[$(date -Is)] Running CF statement sync..." >&2

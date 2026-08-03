@@ -9,7 +9,10 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "baselane_financials_monthly_cron.sh"
+RECOVERY_SCRIPT = REPO_ROOT / "scripts" / "baselane_financials_monthly_recovery_cron.sh"
+SCHEDULER_AUDIT_SCRIPT = REPO_ROOT / "scripts" / "baselane_scheduler_audit.py"
 STATEMENTS_SCRIPT = REPO_ROOT / "scripts" / "baselane_monthly_statements_idempotent.sh"
+MONTHLY_EXT4_REPO = "/home/digit/.openclaw/workspace/repos/baselane-lofty-cpai"
 
 
 def write_file(path: Path, text: str, executable: bool = False) -> None:
@@ -20,16 +23,205 @@ def write_file(path: Path, text: str, executable: bool = False) -> None:
 
 
 class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
+    def test_statement_capture_and_gate_cleanup_only_the_target_month(self):
+        statements_text = (
+            REPO_ROOT / "scripts" / "baselane_monthly_statements.sh"
+        ).read_text(encoding="utf-8")
+        idempotent_text = STATEMENTS_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('--target-month-cleanup-only', statements_text)
+        audit_block = idempotent_text[
+            idempotent_text.index('audit_statement_capture()') :
+            idempotent_text.index('run_auth_recovery_if_enabled()')
+        ]
+        self.assertIn('--target-month-cleanup-only', audit_block)
+
+    def test_property_reconciliation_hold_is_read_only_current_run_and_property_scoped(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        fallback_start = text.index("write_nine_country_club_refresh_hold()")
+        hold_start = text.index('CURRENT_STEP="property_reconciliation_hold_refresh"')
+        guard_start = text.index('CURRENT_STEP="lofty_guard_audit"')
+        apply_start = text.index('CURRENT_STEP="lofty_guarded_apply"')
+        hold_block = text[hold_start:guard_start]
+
+        self.assertLess(hold_start, guard_start)
+        self.assertLess(guard_start, apply_start)
+        self.assertIn('baselane_reconcile_9_country_club.py', hold_block)
+        self.assertIn('--hold-report "$PROPERTY_RECONCILIATION_HOLDS_FILE"', hold_block)
+        self.assertNotIn('--apply', hold_block)
+        self.assertIn('"held_properties"', text[guard_start:apply_start])
+        self.assertIn('property_reconciliation_hold_report_stale', text[guard_start:apply_start])
+        self.assertIn('"property_name": "9 Country Club Ln N"', text[fallback_start:guard_start])
+        self.assertIn(
+            'BASELANE_MONTHLY_PROPERTY_RECONCILIATION_HOLD_STATUS="$PROPERTY_RECONCILIATION_HOLD_STATUS"',
+            text,
+        )
+        self.assertIn(
+            '"property_reconciliation_hold_refresh": os.environ.get("BASELANE_MONTHLY_PROPERTY_RECONCILIATION_HOLD_STATUS")',
+            text,
+        )
+        self.assertIn('"property_reconciliation_held_properties": property_reconciliation_held_names', text)
+        required_order = text.split("MONTHLY_CHAIN_REQUIRED_ORDER = [", 1)[1].split("]", 1)[0]
+        self.assertIn('"property_reconciliation_hold_refresh",', required_order)
+
+    def test_live_dao_cash_reconciliation_separates_gl_and_custody_sources(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        block = text[
+            text.index('CURRENT_STEP="live_dao_cash_reconciliation"') :
+            text.index('CURRENT_STEP="lofty_review_candidate_packet"')
+        ]
+
+        self.assertIn('--ledger "$REVIEW_CANDIDATE_SOURCE_LEDGER"', block)
+        self.assertIn('--custody-ledger "$SOURCE_TRANSACTION_INDEX_FILE"', block)
+        self.assertNotIn('--ledger "$SOURCE_TRANSACTION_INDEX_FILE"', block)
+
+    def test_monthly_accruals_receive_the_close_reporting_cutoff(self):
+        monthly_text = SCRIPT.read_text(encoding="utf-8")
+        accrual_hook_text = (REPO_ROOT / "scripts" / "baselane_monthly_accruals_cron.sh").read_text(
+            encoding="utf-8"
+        )
+        finance_truth_text = (
+            REPO_ROOT / "scripts" / "baselane_monthly_finance_truth_refresh.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'BASELANE_MONTHLY_ACCRUALS_REPORTING_CUTOFF_DATE="$REPORTING_CUTOFF_DATE"',
+            monthly_text,
+        )
+        self.assertIn(
+            'ACCRUAL_REPORTING_CUTOFF_DATE="${BASELANE_MONTHLY_ACCRUALS_REPORTING_CUTOFF_DATE:-${BASELANE_REPORTING_CUTOFF_DATE:-${REPORTING_CUTOFF_DATE:-}}}"',
+            accrual_hook_text,
+        )
+        self.assertIn(
+            'ACCRUAL_ARGS+=(--reporting-cutoff-date "$ACCRUAL_REPORTING_CUTOFF_DATE")',
+            accrual_hook_text,
+        )
+        self.assertIn(
+            'BASELANE_MONTHLY_ACCRUALS_REPORTING_CUTOFF_DATE="$ACCRUAL_REPORTING_CUTOFF_DATE"',
+            finance_truth_text,
+        )
+
+    def test_scheduler_audit_requires_earlcoin_review_and_human_gated_external_sends(self):
+        namespace: dict[str, object] = {"__name__": "baselane_scheduler_audit_test"}
+        exec(compile(SCHEDULER_AUDIT_SCRIPT.read_text(encoding="utf-8"), str(SCHEDULER_AUDIT_SCRIPT), "exec"), namespace)
+        allowed = namespace["openclaw_baselane_backup_job_allowed"]
+        common_env = {
+            "DRY_RUN": "0",
+            "BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED": "1",
+            "AUTO_APPROVE_SAFE_REVIEW_CANDIDATES": "1",
+            "APPLY_LOFTY_GUARDED_UPDATES": "1",
+            "YHOME_GSHEET_APPLY": "1",
+            "YHOME_GSHEET_WRITE_ENABLED": "1",
+            "SEND_MONTHLY_DISCORD_REVIEW_DRAFTS": "1",
+            "SEND_MONTHLY_DISCORD_PROPERTY_UPDATE": "0",
+            "SEND_OWNER_EMAILS": "0",
+            "SEND_NATIVE_LOFTY_OWNER_EMAILS": "0",
+            "SEND_NON_NATIVE_OWNER_EMAILS": "0",
+            "SEND_TRANSFER_RECONCILIATION_TELEGRAM": "0",
+            "WORKSPACE_ROOT": MONTHLY_EXT4_REPO,
+            "BASELANE_MONTHLY_DISCORD_CODE_ROOT": MONTHLY_EXT4_REPO,
+        }
+        monthly_job = {
+            "id": "baselane-financials-monthly",
+            "agentId": "cron-network",
+            "sessionTarget": "isolated",
+            "payload": {
+                "kind": "command",
+                "argv": [
+                    "bash",
+                    "-lc",
+                    f"{MONTHLY_EXT4_REPO}/scripts/baselane_financials_monthly_cron.sh",
+                ],
+                "cwd": MONTHLY_EXT4_REPO,
+                "env": common_env,
+            },
+        }
+        recovery_job = json.loads(json.dumps(monthly_job))
+        recovery_job["id"] = "baselane-financials-monthly-recovery"
+        recovery_job["payload"]["argv"][2] = (
+            f"{MONTHLY_EXT4_REPO}/scripts/baselane_financials_monthly_recovery_cron.sh"
+        )
+
+        self.assertTrue(allowed(monthly_job))
+        self.assertTrue(allowed(recovery_job))
+        declared_monthly_job = json.loads(json.dumps(monthly_job))
+        declared_monthly_job["id"] = "71935991-c724-4725-ac32-752255b84618"
+        declared_monthly_job["declarationKey"] = "baselane-financials-monthly"
+        declared_recovery_job = json.loads(json.dumps(recovery_job))
+        declared_recovery_job["id"] = "d5044ff8-af88-4bd2-91e8-b6a12b52a731"
+        declared_recovery_job["declarationKey"] = "baselane-financials-monthly-recovery"
+        self.assertTrue(allowed(declared_monthly_job))
+        self.assertTrue(allowed(declared_recovery_job))
+        for unsafe_key in (
+            "SEND_MONTHLY_DISCORD_PROPERTY_UPDATE",
+            "SEND_OWNER_EMAILS",
+            "SEND_NATIVE_LOFTY_OWNER_EMAILS",
+            "SEND_NON_NATIVE_OWNER_EMAILS",
+            "SEND_TRANSFER_RECONCILIATION_TELEGRAM",
+        ):
+            unsafe_job = json.loads(json.dumps(monthly_job))
+            unsafe_job["payload"]["env"][unsafe_key] = "1"
+            self.assertFalse(allowed(unsafe_job), unsafe_key)
+        no_review_job = json.loads(json.dumps(monthly_job))
+        no_review_job["payload"]["env"]["SEND_MONTHLY_DISCORD_REVIEW_DRAFTS"] = "0"
+        self.assertFalse(allowed(no_review_job))
+        shared_workspace_cwd_job = json.loads(json.dumps(monthly_job))
+        shared_workspace_cwd_job["payload"]["cwd"] = "/home/digit/.openclaw/workspace"
+        self.assertFalse(allowed(shared_workspace_cwd_job))
+        stale_code_root_job = json.loads(json.dumps(monthly_job))
+        stale_code_root_job["payload"]["env"]["BASELANE_MONTHLY_DISCORD_CODE_ROOT"] = (
+            "/home/digit/.openclaw/workspace"
+        )
+        self.assertFalse(allowed(stale_code_root_job))
+
+    def test_recovery_posts_review_drafts_but_does_not_auto_publish_or_email(self):
+        text = RECOVERY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'SEND_MONTHLY_DISCORD_REVIEW_DRAFTS="${SEND_MONTHLY_DISCORD_REVIEW_DRAFTS:-1}"',
+            text,
+        )
+        self.assertIn(
+            'SEND_MONTHLY_DISCORD_PROPERTY_UPDATE="${SEND_MONTHLY_DISCORD_PROPERTY_UPDATE:-0}"',
+            text,
+        )
+        self.assertIn('SEND_OWNER_EMAILS="${SEND_OWNER_EMAILS:-0}"', text)
+        self.assertIn(
+            'SEND_NATIVE_LOFTY_OWNER_EMAILS="${SEND_NATIVE_LOFTY_OWNER_EMAILS:-0}"',
+            text,
+        )
+        self.assertIn(
+            'SEND_TRANSFER_RECONCILIATION_TELEGRAM="${SEND_TRANSFER_RECONCILIATION_TELEGRAM:-0}"',
+            text,
+        )
+
     def test_monthly_review_drafts_are_owned_by_discord_public_agent(self):
         text = SCRIPT.read_text(encoding="utf-8")
 
+        self.assertIn('MONTHLY_DISCORD_CODE_ROOT="${BASELANE_MONTHLY_DISCORD_CODE_ROOT:-$ROOT}"', text)
+        self.assertIn(
+            'DISCORD_ALL_SEND_PLAN_SCRIPT="$MONTHLY_DISCORD_CODE_ROOT/scripts/build_monthly_discord_all_send_plan.py"',
+            text,
+        )
+        self.assertIn(
+            'MONTHLY_DISCORD_REVIEW_AGENT_SCRIPT="$MONTHLY_DISCORD_CODE_ROOT/scripts/run_monthly_discord_review_via_agent.py"',
+            text,
+        )
+        self.assertIn(
+            'MONTHLY_DISCORD_REVIEW_SENDER_SCRIPT="$MONTHLY_DISCORD_CODE_ROOT/scripts/send_monthly_discord_review_drafts.py"',
+            text,
+        )
         self.assertIn('SEND_MONTHLY_DISCORD_REVIEW_DRAFTS="${SEND_MONTHLY_DISCORD_REVIEW_DRAFTS:-$BASELANE_MONTHLY_LIVE_ACTIONS_APPROVED}"', text)
         self.assertIn('CURRENT_STEP="discord_review_drafts"', text)
         self.assertIn('run_monthly_discord_review_via_agent.py', text)
         self.assertIn('send_monthly_discord_review_drafts.py', text)
         self.assertLess(text.index('CURRENT_STEP="discord_all_send_plan"'), text.index('CURRENT_STEP="discord_review_drafts"'))
         self.assertLess(text.index('CURRENT_STEP="discord_review_drafts"'), text.index('CURRENT_STEP="lofty_pm_publish"'))
-        self.assertIn('MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="ok"', text)
+        review_block = text[
+            text.index('CURRENT_STEP="discord_review_drafts"') : text.index('CURRENT_STEP="lofty_pm_publish"')
+        ]
+        self.assertIn('payload.get("status") or "review"', review_block)
+        self.assertIn('MONTHLY_DISCORD_REVIEW_DRAFT_STATUS="failed"', review_block)
         self.assertIn('BASELANE_MONTHLY_DISCORD_REVIEW_DRAFT_AGENT_FILE', text)
         required_order = text.split("MONTHLY_CHAIN_REQUIRED_ORDER = [", 1)[1].split("]", 1)[0]
         self.assertIn('"dao_vendor_upstream_normalization",', required_order)
@@ -92,12 +284,78 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
         self.assertLess(text.index(financial_definition), first_guarded_apply)
         self.assertLess(text.index(update_definition), first_guarded_apply)
 
+    def test_monthly_roster_proves_32_properties_and_drives_all_local_reporting(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        manager_refresh = text.index('CURRENT_STEP="lofty_manager_properties_refresh"')
+        active_roster = text.index('CURRENT_STEP="lofty_active_property_roster"')
+        live_update_capture = text.index('CURRENT_STEP="lofty_live_update_capture"')
+        first_lofty_publish = text.index('CURRENT_STEP="lofty_pm_publish"')
+
+        self.assertLess(manager_refresh, active_roster)
+        self.assertLess(active_roster, live_update_capture)
+        self.assertIn(
+            'ACTIVE_PROPERTY_ROSTER_FILE="${ACTIVE_PROPERTY_ROSTER_FILE:-$REPORT_DIR/lofty_monthly_active_property_roster.json}"',
+            text,
+        )
+        self.assertIn(
+            'ACTIVE_REPORTING_INDEX_FILE="${ACTIVE_REPORTING_INDEX_FILE:-$REPORT_DIR/lofty_monthly_active_reporting_index.csv}"',
+            text,
+        )
+        self.assertIn('--manager-snapshot "$LOFTY_MANAGER_PROPERTIES_RESPONSE_FILE"', text)
+        self.assertIn('--legacy-index "$MONTHLY_DRIVER_INDEX_CSV"', text)
+        self.assertIn('MONTHLY_INDEX_CSV="$ACTIVE_REPORTING_INDEX_FILE"', text)
+        self.assertNotIn(
+            'MONTHLY_INDEX_CSV="${COMMS_WORKSPACE:-}/updates/${RUN_MONTH}-portfolio-update-index.csv"',
+            text,
+        )
+        self.assertIn('--active-property-roster "$ACTIVE_PROPERTY_ROSTER_FILE"', text)
+
+        local_reporting_block = text[active_roster:first_lofty_publish]
+        self.assertNotIn('--manual-excluded-property', local_reporting_block)
+        self.assertNotIn('GUARDED_APPLY_EXCLUSION_ARGS', local_reporting_block)
+        self.assertEqual(
+            local_reporting_block.count('--active-roster-report "$ACTIVE_PROPERTY_ROSTER_FILE"'),
+            2,
+        )
+
+        native_publish_block = text[text.index('PUBLISH_ARGS=('):]
+        self.assertNotIn('LOFTY_PM_TEMPORARILY_UNAVAILABLE_PROPERTIES', native_publish_block)
+        self.assertNotIn('PUBLISH_ARGS+=(--exclude-property "$unavailable_property")', native_publish_block)
+        self.assertIn(
+            '"lofty_active_property_roster": os.environ.get("BASELANE_MONTHLY_LOFTY_ACTIVE_PROPERTY_ROSTER_STATUS")',
+            text,
+        )
+        self.assertIn(
+            '"lofty_active_reporting_index": os.environ.get("BASELANE_MONTHLY_LOFTY_ACTIVE_REPORTING_INDEX_FILE")',
+            text,
+        )
+
     def test_owner_email_cooldown_defaults_to_seven_days(self):
         text = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn('OWNER_EMAIL_INTERVAL_DAYS="${OWNER_EMAIL_INTERVAL_DAYS:-7}"', text)
         self.assertNotIn('OWNER_EMAIL_INTERVAL_DAYS="${OWNER_EMAIL_INTERVAL_DAYS:-31}"', text)
         self.assertIn('--send-interval-days "$OWNER_EMAIL_INTERVAL_DAYS"', text)
+
+    def test_owner_email_transports_require_separate_explicit_enablement(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('SEND_OWNER_EMAILS="${SEND_OWNER_EMAILS:-0}"', text)
+        self.assertIn(
+            'SEND_NATIVE_LOFTY_OWNER_EMAILS="${SEND_NATIVE_LOFTY_OWNER_EMAILS:-0}"',
+            text,
+        )
+        self.assertIn(
+            'SEND_NON_NATIVE_OWNER_EMAILS="${SEND_NON_NATIVE_OWNER_EMAILS:-0}"',
+            text,
+        )
+        native_send = text[
+            text.index('CURRENT_STEP="owner_email_send_guard"') : text.index(
+                'CURRENT_STEP="non_native_owner_email_packet_send"'
+            )
+        ]
+        self.assertIn('[ "$SEND_OWNER_EMAILS" = "1" ]', native_send)
+        self.assertIn('[ "$SEND_NATIVE_LOFTY_OWNER_EMAILS" = "1" ]', native_send)
 
     def test_updates_are_off_cycle_and_live_financials_require_corrective_gate(self):
         cron = SCRIPT.read_text(encoding="utf-8")
@@ -160,6 +418,26 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
         self.assertIn('"reason": "monthly_source_cash_audit_timeout"', text)
         self.assertIn('continuing fail-closed', text)
 
+    def test_monthly_source_cash_uses_current_verified_reporting_ledger(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        authority_step = text.index('CURRENT_STEP="reporting_ledger_authority"')
+        property_split_step = text.index('CURRENT_STEP="reporting_property_ledger_refresh"')
+        preapply_step = text.index('CURRENT_STEP="source_cash_preapply_freshness_refresh"')
+
+        self.assertLess(authority_step, property_split_step)
+        self.assertLess(property_split_step, preapply_step)
+        self.assertIn('baselane_reporting_ledger_authority.py', text[authority_step:property_split_step])
+        self.assertIn('--raw-ledger "$REVIEW_CANDIDATE_SOURCE_LEDGER"', text[authority_step:property_split_step])
+        self.assertIn('--reporting-ledger "$SOURCE_CASH_REPORTING_LEDGER"', text[authority_step:property_split_step])
+        self.assertIn('--refresh', text[authority_step:property_split_step])
+        self.assertIn('baselane_reporting_property_ledger_refresh.py', text[property_split_step:preapply_step])
+        self.assertIn('--source "$SOURCE_CASH_REPORTING_LEDGER"', text[property_split_step:preapply_step])
+        self.assertIn('--authority-report "$SOURCE_CASH_REPORTING_LEDGER_AUTHORITY_FILE"', text[property_split_step:preapply_step])
+        self.assertIn('reporting_property_ledger_refresh_args+=(--apply)', text[property_split_step:preapply_step])
+        self.assertGreaterEqual(text.count('--gl-csv "$SOURCE_CASH_REPORTING_LEDGER"'), 3)
+        self.assertNotIn('--source-cash-authority', text)
+        self.assertIn('--ledger "$REVIEW_CANDIDATE_SOURCE_LEDGER"', text)
+
     def test_auth_failure_does_not_downgrade_scheduled_live_run_to_dry_run(self):
         text = SCRIPT.read_text(encoding="utf-8")
         degraded_mode = text[
@@ -196,7 +474,7 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
         preapply = text.index('CURRENT_STEP="source_cash_preapply_freshness_refresh"')
         guarded_apply = text.index('CURRENT_STEP="lofty_guarded_apply"')
         self.assertLess(preapply, guarded_apply)
-        self.assertIn('MONTHLY_SOURCE_CASH_MODE="${BASELANE_MONTHLY_SOURCE_CASH_MODE:-full_column_e}"', text)
+        self.assertIn('MONTHLY_SOURCE_CASH_MODE="${BASELANE_MONTHLY_SOURCE_CASH_MODE:-as_of_month_end}"', text)
         self.assertIn('full_column_e|as_of_month_end', text)
         self.assertIn('--source-cash-mode "$MONTHLY_SOURCE_CASH_MODE"', text[preapply:guarded_apply])
         self.assertIn('--reporting-cutoff-date "$REPORTING_CUTOFF_DATE"', text[preapply:guarded_apply])
@@ -205,6 +483,10 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
         self.assertIn('LOFTY_GUARDED_APPLY_STATUS="blocked_source_cash_preapply"', text)
         self.assertIn('LOFTY_SAFE_CANDIDATE_APPROVAL_STATUS="blocked_source_cash_preapply"', text)
         self.assertIn('&& [ "$SOURCE_CASH_PREAPPLY_ALLOWED" = "1" ]', text)
+
+        consistency = text.index('CURRENT_STEP="cf_balance_sheet_consistency"')
+        yhome = text.index('CURRENT_STEP="yhome_operating_cash_apply_verify"')
+        self.assertIn('--source-cash-mode "$MONTHLY_SOURCE_CASH_MODE"', text[consistency:yhome])
 
     def test_monthly_cf_audit_verifies_workbooks_with_bounded_timeout(self):
         text = SCRIPT.read_text(encoding="utf-8")
@@ -296,7 +578,7 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
         self.assertIn('--balance-sheet-source-only', text)
         self.assertIn('--apply-balance-sheet-source-only', text)
         self.assertIn('--yhome-csv "$YHOME_TRANSITION_RECONCILIATION_CSV"', text)
-        self.assertIn('ECO Operating Cash source-only CF repair is not verified', text)
+        self.assertIn('ECO General Ledger source-only CF repair is not verified', text)
         source_only_block = text[
             text.index('CURRENT_STEP="eco_cash_source_only_standardize"') : text.index(
                 'CURRENT_STEP="live_cf_statement_standardize"'
@@ -587,6 +869,7 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
     def test_publish_send_requires_explicit_owner_email_allowed_gate(self):
         text = SCRIPT.read_text(encoding="utf-8")
 
+        self.assertIn('--current-run-started-at "$RUN_STARTED_AT"', text)
         self.assertIn('MONTHLY_READINESS_OWNER_EMAIL_ALLOWED="0"', text)
         self.assertIn('MONTHLY_READINESS_ACTIONABLE_BLOCKER_COUNT="0"', text)
         self.assertIn('MONTHLY_READINESS_PRIMARY_BLOCKER=""', text)
@@ -715,23 +998,44 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
         self.assertIn('"guild_test_post": os.environ.get("BASELANE_MONTHLY_GUILD_TEST_POST_STATUS")', text)
         self.assertIn('SEND_MONTHLY_DISCORD_PROPERTY_UPDATE="${SEND_MONTHLY_DISCORD_PROPERTY_UPDATE:-0}"', text)
         self.assertIn('MONTHLY_DISCORD_PROPERTY_UPDATE_ACCOUNT="${MONTHLY_DISCORD_PROPERTY_UPDATE_ACCOUNT:-}"', text)
-        self.assertIn('MONTHLY_DISCORD_PROPERTY_UPDATE_SCRIPT="$ROOT/scripts/send_monthly_discord_property_update.py"', text)
+        self.assertIn(
+            'MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE="${MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE:-$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE}"',
+            text,
+        )
+        self.assertIn(
+            'MONTHLY_DISCORD_REVIEW_AGENT_SCRIPT="$MONTHLY_DISCORD_CODE_ROOT/scripts/run_monthly_discord_review_via_agent.py"',
+            text,
+        )
+        self.assertIn(
+            'MONTHLY_DISCORD_REVIEW_SENDER_SCRIPT="$MONTHLY_DISCORD_CODE_ROOT/scripts/send_monthly_discord_review_drafts.py"',
+            text,
+        )
 
-        self.assertIn('[ "$LOFTY_PM_PUBLISH_STATUS" != "review_dry_run" ]', text)
-        self.assertIn('[ "$LOFTY_PM_PUBLISH_STATUS" != "ok_not_applied" ]', text)
-        self.assertIn('[ "$LOFTY_PM_PUBLISH_STATUS" != "ok_not_published" ]', text)
+        disk_hold_block = text[
+            text.index("write_lofty_pm_publish_disk_hold_report()") : text.index("write_lofty_pm_publish_upstream_hold_report()")
+        ]
+        self.assertNotIn("847877825373012018", disk_hold_block)
+        self.assertNotIn("1362189256163856594", disk_hold_block)
+        self.assertIn('"publication_state": "held_not_posted"', disk_hold_block)
+        self.assertIn('"human_approval_required": True', disk_hold_block)
+
+        discord_review_block = text[
+            text.index('CURRENT_STEP="discord_review_drafts"') : text.index('CURRENT_STEP="lofty_pm_publish"')
+        ]
+        self.assertIn('--plan "$MONTHLY_DISCORD_ALL_SEND_PLAN_FILE"', discord_review_block)
+        self.assertIn('--report "$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE"', discord_review_block)
+        self.assertIn('--agent-report "$MONTHLY_DISCORD_REVIEW_DRAFT_AGENT_FILE"', discord_review_block)
+        self.assertIn('--sender-script "$MONTHLY_DISCORD_REVIEW_SENDER_SCRIPT"', discord_review_block)
+        self.assertIn('DISCORD_REVIEW_ARGS+=(--account "$MONTHLY_DISCORD_REVIEW_ACCOUNT")', discord_review_block)
         discord_property_update_block = text[
             text.index('CURRENT_STEP="discord_property_update"') : text.index('CURRENT_STEP="non_native_owner_email_packet"')
         ]
-        self.assertIn('--plan "$MONTHLY_DISCORD_ALL_SEND_PLAN_FILE"', discord_property_update_block)
-        self.assertIn('--guild-report "$GUILD_TEST_POST_REPORT_FILE"', discord_property_update_block)
-        self.assertIn('DISCORD_PROPERTY_UPDATE_ARGS+=(--account "$MONTHLY_DISCORD_PROPERTY_UPDATE_ACCOUNT")', discord_property_update_block)
-        self.assertLess(
-            discord_property_update_block.index('[ "$LOFTY_PM_PUBLISH_STATUS" != "ok" ]'),
-            discord_property_update_block.index('--plan "$MONTHLY_DISCORD_ALL_SEND_PLAN_FILE"'),
-        )
-        self.assertIn('[ "$discord_property_update_rc" -eq 2 ]', discord_property_update_block)
-        self.assertIn('MONTHLY_DISCORD_PROPERTY_UPDATE_STATUS="review"', discord_property_update_block)
+        self.assertIn('cp -- "$MONTHLY_DISCORD_REVIEW_DRAFT_SEND_FILE" "$MONTHLY_DISCORD_PROPERTY_UPDATE_SEND_FILE"', discord_property_update_block)
+        self.assertIn('payload.get("status") or "review"', discord_property_update_block)
+        self.assertNotIn('--plan', discord_property_update_block)
+        self.assertNotIn('--guild-report', discord_property_update_block)
+        self.assertNotIn('message send', discord_property_update_block)
+        self.assertNotIn('send_monthly_discord_property_update.py', discord_property_update_block)
         self.assertLess(
             text.index('CURRENT_STEP="transfer_reconciliation"'),
             text.index('CURRENT_STEP="lofty_pm_publish"'),
@@ -824,7 +1128,7 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
         self.assertIn('OWNER_EMAIL_SEND_GUARD_SAFE_BLOCK="0"', text)
         self.assertIn('OWNER_EMAIL_SEND_GUARD_NO_SPAM_OK="0"', text)
         self.assertIn('SEND_NON_NATIVE_OWNER_EMAILS="${SEND_NON_NATIVE_OWNER_EMAILS:-0}"', text)
-        self.assertIn('SEND_NATIVE_LOFTY_OWNER_EMAILS="${SEND_NATIVE_LOFTY_OWNER_EMAILS:-1}"', text)
+        self.assertIn('SEND_NATIVE_LOFTY_OWNER_EMAILS="${SEND_NATIVE_LOFTY_OWNER_EMAILS:-0}"', text)
         self.assertIn('REQUIRE_NATIVE_LOFTY_OWNER_EMAILS="${REQUIRE_NATIVE_LOFTY_OWNER_EMAILS:-1}"', text)
         self.assertIn('OWNER_EMAIL_PACKET_FILE="${OWNER_EMAIL_PACKET_FILE:-$REPORT_DIR/baselane_monthly_owner_email_packet.json}"', text)
         self.assertIn('OWNER_EMAIL_RECIPIENTS_CSV="${OWNER_EMAIL_RECIPIENTS_CSV:-$REPORT_DIR/lofty_owner_email_recipients.csv}"', text)
@@ -845,6 +1149,7 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
         self.assertIn('"pipeline_candidate_coverage_generated_at"', text)
         self.assertIn('"pipeline_candidate_coverage_input_digests"', text)
         self.assertIn('--runtime-map "$LOFTY_PM_RUNTIME_MAP"', text)
+        self.assertIn('--active-property-roster-report "$ACTIVE_PROPERTY_ROSTER_FILE"', text)
         self.assertIn('[ "$SEND_NON_NATIVE_OWNER_EMAILS" = "1" ]', text)
         self.assertIn('[ "$REQUIRE_NATIVE_LOFTY_OWNER_EMAILS" != "1" ]', text)
         self.assertIn('native lofty-pm owner email delivery is required', text)
@@ -1370,8 +1675,11 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
         self.assertIn('"OPEN reports/baselane_804_quitman_cash_alignment_review.md"', text)
         self.assertIn('"discord_property_update": [', text)
         self.assertIn('"discord_all_send_plan_validation"', text)
-        self.assertIn('send_monthly_discord_property_update.py', text)
+        self.assertIn('run_monthly_discord_review_via_agent.py', text)
+        self.assertIn('send_monthly_discord_review_drafts.py', text)
         self.assertIn('"--plan reports/baselane_financials_monthly_discord_all_send_plan.json "', text)
+        self.assertIn('"--report reports/baselane_financials_monthly_discord_review_drafts.json "', text)
+        self.assertIn('"--agent-report reports/baselane_financials_monthly_discord_review_drafts_agent.json "', text)
         self.assertNotIn('"--guild-report reports/baselane_financials_monthly_guild_test_post.json "', text)
         self.assertIn('if name == "discord_property_update":', text)
         self.assertIn('"safe_to_run_automatically_reason": "live Discord messages require an explicit operator decision"', text)
@@ -1563,6 +1871,26 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (reports / "baselane_financials_monthly_discord_all_send_plan.json").write_text(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "run_month": "2026-06",
+                        "destination_class": "earlcoin_operator_review",
+                        "destination_purpose": "operator_review",
+                        "guild_id": "1473153860376858756",
+                        "forum_id": "1480241103528530141",
+                        "target": "channel:1480241103528530141",
+                        "records": [
+                            {
+                                "property_name": "326-332 S Alcott St, Denver, CO 80219",
+                                "thread_name": "326-332 S Alcott St, Denver, CO 80219",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
             write_file(
                 scripts / "lofty_monthly_exclusions.py",
                 "DEFAULT_MANUAL_EXCLUDED_PROPERTIES = []\n"
@@ -1578,6 +1906,42 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
                 "    return Path(path) / 'Public'\n"
                 "def resolve_property_path(path):\n"
                 "    return Path(path), {'resolved_property_path': str(path)}\n",
+            )
+            write_file(
+                scripts / "lofty_cdp_preflight_report.py",
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "report = Path(sys.argv[sys.argv.index('--report') + 1])\n"
+                "report.parent.mkdir(parents=True, exist_ok=True)\n"
+                "report.write_text(json.dumps({'status': 'ok'}))\n",
+            )
+            write_file(
+                root / "skills" / "lofty-pm" / "scripts" / "update_lofty_pm_property.py",
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "response = Path(sys.argv[sys.argv.index('--response-file') + 1])\n"
+                "response.parent.mkdir(parents=True, exist_ok=True)\n"
+                "response.write_text(json.dumps({'ok': True, 'properties': [{'address': '49 Bannbury Ln', 'status': 'ready'}]}))\n",
+            )
+            write_file(
+                scripts / "lofty_live_description_targets.py",
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "output = Path(sys.argv[sys.argv.index('--output') + 1])\n"
+                "output.parent.mkdir(parents=True, exist_ok=True)\n"
+                "output.write_text(json.dumps({'status': 'ok'}))\n",
+            )
+            write_file(
+                scripts / "lofty_monthly_active_roster.py",
+                "import json, shutil, sys\n"
+                "from pathlib import Path\n"
+                "report = Path(sys.argv[sys.argv.index('--report') + 1])\n"
+                "index_csv = Path(sys.argv[sys.argv.index('--index-csv') + 1])\n"
+                "legacy_index = Path(sys.argv[sys.argv.index('--legacy-index') + 1])\n"
+                "report.parent.mkdir(parents=True, exist_ok=True)\n"
+                "index_csv.parent.mkdir(parents=True, exist_ok=True)\n"
+                "report.write_text(json.dumps({'status': 'ok', 'authoritative_active_property_count': 32, 'authoritative_reporting_target_count': 30}))\n"
+                "shutil.copy2(legacy_index, index_csv)\n",
             )
             write_file(
                 scripts / "baselane_no_mortgage_financials_guard.py",
@@ -1596,12 +1960,45 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
                 "report.write_text(json.dumps({'status': 'ok', 'issue_count': 0, 'mutation_attempted': False}))\n",
             )
             write_file(
+                scripts / "baselane_live_dao_cash_reconciliation.py",
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "report = Path(sys.argv[sys.argv.index('--report') + 1])\n"
+                "csv_path = Path(sys.argv[sys.argv.index('--csv') + 1])\n"
+                "report.parent.mkdir(parents=True, exist_ok=True)\n"
+                "csv_path.parent.mkdir(parents=True, exist_ok=True)\n"
+                "report.write_text(json.dumps({'status': 'ok', 'issues': [], 'properties': []}))\n"
+                "csv_path.write_text('property,dao_bank_total\\n')\n",
+            )
+            write_file(
                 scripts / "baselane_cf_mortgage_balance_integrity_guard.py",
                 "import json, sys\n"
                 "from pathlib import Path\n"
                 "report = Path(sys.argv[sys.argv.index('--report') + 1])\n"
                 "report.parent.mkdir(parents=True, exist_ok=True)\n"
                 "report.write_text(json.dumps({'status': 'ok', 'candidate_workbook_count': 0, 'changed_cell_count': 0, 'remaining_sentinel_cell_count': 0}))\n",
+            )
+            write_file(
+                scripts / "baselane_reporting_ledger_authority.py",
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "report = Path(sys.argv[sys.argv.index('--report') + 1])\n"
+                "reporting_ledger = Path(sys.argv[sys.argv.index('--reporting-ledger') + 1])\n"
+                "report.parent.mkdir(parents=True, exist_ok=True)\n"
+                "reporting_ledger.parent.mkdir(parents=True, exist_ok=True)\n"
+                "reporting_ledger.write_text('Date,Amount\\n', encoding='utf-8')\n"
+                "report.write_text(json.dumps({'status': 'ok', 'issue_count': 0, 'reporting_ledger': str(reporting_ledger)}))\n",
+            )
+            write_file(
+                scripts / "baselane_reporting_property_ledger_refresh.py",
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "report = Path(sys.argv[sys.argv.index('--report') + 1])\n"
+                "split_report = Path(sys.argv[sys.argv.index('--split-report') + 1])\n"
+                "report.parent.mkdir(parents=True, exist_ok=True)\n"
+                "split_report.parent.mkdir(parents=True, exist_ok=True)\n"
+                "report.write_text(json.dumps({'status': 'ok_preview', 'issue_count': 0, 'apply_attempted': False}))\n"
+                "split_report.write_text(json.dumps({'status': 'ok', 'issue_count': 0, 'output_mismatch_count': 0}))\n",
             )
             write_file(
                 scripts / "lofty_monthly_guarded_apply.py",
@@ -1663,15 +2060,44 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
                 "report.write_text(json.dumps({'status': 'prepared_not_posted', 'valid': False, 'posted': False, 'target': 'channel:1362189256163856594', 'message_file': str(message), 'selected': {'property_name': '326-332 S Alcott St, Denver, CO 80219'}}))\n",
             )
             write_file(
-                scripts / "send_monthly_discord_property_update.py",
+                scripts / "run_monthly_discord_review_via_agent.py",
                 "import json, sys\n"
                 "from pathlib import Path\n"
-                f"Path({str(root / 'discord_args.json')!r}).write_text(json.dumps(sys.argv[1:]))\n"
+                f"Path({str(root / 'discord_review_args.json')!r}).write_text(json.dumps(sys.argv[1:]))\n"
                 "report = Path(sys.argv[sys.argv.index('--report') + 1])\n"
-                "guild = Path(sys.argv[sys.argv.index('--guild-report') + 1])\n"
-                "payload = json.loads(guild.read_text())\n"
+                "agent_report = Path(sys.argv[sys.argv.index('--agent-report') + 1])\n"
+                "destination = {\n"
+                "    'destination_class': 'earlcoin_operator_review',\n"
+                "    'destination_purpose': 'operator_review',\n"
+                "    'guild_id': '1473153860376858756',\n"
+                "    'forum_id': '1480241103528530141',\n"
+                "    'target': 'channel:1480241103528530141',\n"
+                "}\n"
+                "payload = {\n"
+                "    'status': 'ok_dry_run' if '--dry-run' in sys.argv else 'ok',\n"
+                "    'dry_run': '--dry-run' in sys.argv,\n"
+                "    'mode': 'all_plan',\n"
+                "    'delivery_mode': 'earlcoin_operator_review_drafts',\n"
+                "    'record_count': 1,\n"
+                "    'eligible_record_count': 1,\n"
+                "    'sent_or_verified_count': 1,\n"
+                "    'failed_count': 0,\n"
+                "    'plan_digest': 'a' * 64,\n"
+                "    'all_property_discord_review_proof_ok': True,\n"
+                "    'eligible_property_discord_review_coverage_ok': True,\n"
+                "    'discord_all_property_dry_run_verified': '--dry-run' in sys.argv,\n"
+                "    'discord_all_property_live_sent': '--send' in sys.argv,\n"
+                "    'review_destination': destination,\n"
+                "    **destination,\n"
+                "}\n"
                 "report.parent.mkdir(parents=True, exist_ok=True)\n"
-                "report.write_text(json.dumps({'status': 'ok_dry_run' if '--dry-run' in sys.argv else 'ok', 'dry_run': '--dry-run' in sys.argv, 'target': payload.get('target'), 'message_file': payload.get('message_file')}))\n",
+                "agent_report.parent.mkdir(parents=True, exist_ok=True)\n"
+                "report.write_text(json.dumps(payload))\n"
+                "agent_report.write_text(json.dumps({'status': payload['status'], **destination}))\n",
+            )
+            write_file(
+                scripts / "send_monthly_discord_review_drafts.py",
+                "raise SystemExit('the bridge stub owns this integration-test send')\n",
             )
             write_file(
                 scripts / "baselane_monthly_accruals_cron.sh",
@@ -1756,10 +2182,11 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
                     "PUBLISH_LOFTY_PM_UPDATES": "1",
                     "APPLY_LOFTY_GUARDED_UPDATES": "1",
                     "SEND_MONTHLY_DISCORD_PROPERTY_UPDATE": "1",
+                    "SEND_MONTHLY_DISCORD_REVIEW_DRAFTS": "1",
                     "REQUIRE_YHOME_SOLD_GUARD": "0",
                     "YHOME_TRANSITION_RECONCILIATION_URL": "",
                     "RUN_LOFTY_CDP_ENSURE": "0",
-                    "RUN_LOFTY_CDP_PREFLIGHT": "0",
+                    "RUN_LOFTY_CDP_PREFLIGHT": "1",
                     "CAPTURE_LOFTY_LIVE_UPDATE_GUARDS": "0",
                     "CAPTURE_LOFTY_LIVE_FINANCIAL_GUARDS": "0",
                     "BUILD_LOFTY_LISTING_CLEANUP_QUEUE": "0",
@@ -1790,17 +2217,19 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
             self.assertIn("--commands-file", quarantine_args)
             self.assertNotIn("--apply", quarantine_args)
             self.assertTrue(
-                (root / "discord_args.json").is_file(),
+                (root / "discord_review_args.json").is_file(),
                 (reports / "baselane_financials_monthly_run_report.json").read_text(encoding="utf-8")
                 if (reports / "baselane_financials_monthly_run_report.json").is_file()
                 else result.stderr + result.stdout,
             )
-            discord_args = json.loads((root / "discord_args.json").read_text(encoding="utf-8"))
+            discord_args = json.loads((root / "discord_review_args.json").read_text(encoding="utf-8"))
             self.assertIn("--dry-run", discord_args)
-            self.assertIn("--guild-report", discord_args)
-            discord_send = json.loads((reports / "baselane_financials_monthly_discord_property_update_send.json").read_text(encoding="utf-8"))
+            self.assertNotIn("--guild-report", discord_args)
+            self.assertIn("--plan-validation", discord_args)
+            discord_send = json.loads((reports / "baselane_financials_monthly_discord_review_drafts.json").read_text(encoding="utf-8"))
             self.assertEqual(discord_send["status"], "ok_dry_run")
-            self.assertEqual(discord_send["target"], "channel:1362189256163856594")
+            self.assertEqual(discord_send["guild_id"], "1473153860376858756")
+            self.assertEqual(discord_send["target"], "channel:1480241103528530141")
             monthly_report = json.loads((reports / "baselane_financials_monthly_run_report.json").read_text(encoding="utf-8"))
             self.assertTrue(monthly_report["generated_at"])
             self.assertEqual(monthly_report["steps"]["discord_property_update"], "ok_dry_run")
@@ -1814,7 +2243,7 @@ class BaselaneMonthlyCronSendGateTests(unittest.TestCase):
             self.assertNotIn("gap", schedule_evidence)
             self.assertEqual(
                 monthly_report["artifacts"]["discord_property_update_send"],
-                str(reports / "baselane_financials_monthly_discord_property_update_send.json"),
+                str(reports / "baselane_financials_monthly_discord_review_drafts.json"),
             )
             self.assertEqual(
                 monthly_report["artifacts"]["transfer_reconciliation_telegram_send"],

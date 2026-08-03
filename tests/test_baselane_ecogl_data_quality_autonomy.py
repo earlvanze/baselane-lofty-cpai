@@ -98,6 +98,32 @@ class FutureDatedSourceExceptionsTests(unittest.TestCase):
 
 
 class NoDaoMortgageSourceGuardTests(unittest.TestCase):
+    def test_explicit_generic_eco_property_does_not_inherit_account_policy(self):
+        row = {
+            "Account": "85-104 Alawa Pl OH",
+            "Date": "July 29, 2026",
+            "Merchant": "85-104 Alawa Pl Mortgage Principal",
+            "Description": "loanDepot.com, L | Invoices",
+            "Amount": "-1364.06",
+            "Type": "Loan Payments & Capex",
+            "Category": "Mortgage Principal Payments",
+            "Property": "Mining, Sales, Consulting, and PM",
+        }
+        self.assertEqual(autonomy.raw_no_dao_mortgage_violation_reason(row), "")
+
+    def test_blank_property_falls_back_to_covered_account(self):
+        row = {
+            "Account": "85-104 Alawa Pl OH",
+            "Date": "July 29, 2026",
+            "Merchant": "loanDepot.com, L",
+            "Description": "Mortgage payment",
+            "Amount": "-3144.52",
+            "Type": "Loan Payments & Capex",
+            "Category": "Mortgage Payments",
+            "Property": "",
+        }
+        self.assertNotEqual(autonomy.raw_no_dao_mortgage_violation_reason(row), "")
+
     def test_accepts_approved_madison_principal_curtailment(self):
         row = {
             "Account": "90 Madison Ave",
@@ -125,9 +151,30 @@ class NoDaoMortgageSourceGuardTests(unittest.TestCase):
                     "Merchant": merchant,
                     "Description": "CITADEL SERV PMT | MTGE PAYMT | 1910008671",
                     "Amount": "-100",
+                    "Type": "Manual",
+                    "Category": "Transfers & Other" if category == "General Escrow Payments" else "Operating Expenses",
+                    "Sub-category": category,
+                    "Property": "90 Madison Ave",
+                }
+                self.assertEqual(autonomy.raw_no_dao_mortgage_violation_reason(row), "")
+
+    def test_accepts_canonical_alawa_escrow_components(self):
+        cases = (
+            ("85-104 Alawa Pl Mortgage Escrow - General", "General Escrow Payments"),
+            ("85-104 Alawa Pl Mortgage Escrow - Property Taxes", "Taxes"),
+            ("85-104 Alawa Pl Mortgage Escrow - Insurance", "Insurance"),
+        )
+        for merchant, category in cases:
+            with self.subTest(category=category):
+                row = {
+                    "Account": "85-104 Alawa Pl Operations",
+                    "Date": "July 29, 2026",
+                    "Merchant": merchant,
+                    "Description": "loanDepot.com, L | Invoices",
+                    "Amount": "-100",
                     "Type": "Operating Expenses",
                     "Category": category,
-                    "Property": "90 Madison Ave",
+                    "Property": "85-104 Alawa Pl",
                 }
                 self.assertEqual(autonomy.raw_no_dao_mortgage_violation_reason(row), "")
 

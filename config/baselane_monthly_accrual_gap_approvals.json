@@ -1,7 +1,7 @@
 {
   "approval_count": 0,
   "approvals": [],
-  "generated_at": "2026-08-01T06:02:30Z",
+  "generated_at": "2026-08-02T15:29:38Z",
   "policy": "Human review scaffold only. Reviewed approvals are non-mutating and only waive zero-rent PM fee accrual generation for the listed month/key. Reviewed approvals must retain the current evidence_digest or they are rejected as stale.",
   "status": "ok"
 }

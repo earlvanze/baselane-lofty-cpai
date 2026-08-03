@@ -47,6 +47,7 @@ TIMEOUT = int(os.environ.get("BASELANE_HTTP_TIMEOUT_SECONDS", "60"))
 EXPECTED_SELECTED = int(os.environ.get("BASELANE_EXPECTED_SELECTED", "0"))
 MIN_ROWS = int(os.environ.get("BASELANE_MIN_ROWS", "6000"))
 MAX_ROWS = int(os.environ.get("BASELANE_MAX_ROWS", "25000"))
+PAGE_LIMIT = int(os.environ.get("BASELANE_PAGE_LIMIT", "500"))
 ISSUE_CLASS = "baselane-export-ledger"
 SCRIPT_PATH = Path(__file__).resolve()
 
@@ -93,6 +94,12 @@ def normalize_name(value: str) -> str:
 
 
 EXCLUDE_NORM = {normalize_name(item) for item in EXCLUDE_RAW}
+ECO_SOURCE_PROPERTY_NORM = normalize_name("Mining, Sales, Consulting, and PM")
+ECO_ACCRUAL_NOTE = re.compile(
+    r"^AOPS-(?:(?:MONTHLY|OHIL|PAU|PNL)-ACCRUAL|PM-FEE)"
+    r"\|(dao_eco|pm_eco)\|([^|]+)\|\d{4}-\d{2}"
+    r"\|(-?\d+(?:\.\d{1,2})?)(?:\s|\||$)"
+)
 EXCLUDE_TOKEN_RULES = {
     normalize_name("1 Coolwood Dr"): ["1", "coolwood"],
     normalize_name("3880 Dover St."): ["3880", "dover"],
@@ -104,6 +111,33 @@ EXCLUDE_TOKEN_RULES = {
     normalize_name("Personal"): ["personal"],
     normalize_name("Vehicles"): ["vehicles"],
 }
+
+
+def eco_accrual_target_property(row: dict[str, Any]) -> str:
+    """Return the target for an exact, balanced ECO-side accrual row."""
+    marker = ECO_ACCRUAL_NOTE.match(str(row.get("Notes") or "").strip())
+    if not marker:
+        return ""
+    kind, target, marker_amount = marker.groups()
+    try:
+        amount_matches = abs(float(row.get("Amount")) - float(marker_amount)) <= 0.001
+    except (TypeError, ValueError):
+        return ""
+    expected_prefix = (
+        "ECO Systems LLC DAO Registration Fee Revenue | "
+        if kind == "dao_eco"
+        else "ECO Systems LLC PM Fee Revenue | "
+    )
+    description = str(row.get("Description") or "").strip()
+    if (
+        not amount_matches
+        or str(row.get("Type") or "").strip() != "Revenue"
+        or str(row.get("Category") or "").strip() != "Fees & Other Revenue"
+        or not str(row.get("Merchant") or "").strip().startswith(expected_prefix)
+        or (description and not description.startswith(expected_prefix))
+    ):
+        return ""
+    return target.strip()
 
 
 def remediation_fields(classification: str) -> dict[str, Any]:
@@ -537,13 +571,15 @@ def run_export(
     fetched_transaction_ids: set[str] = set()
     duplicate_transaction_ids: set[str] = set()
     page = 1
-    limit = 200
+    limit = PAGE_LIMIT
     fetched_total = 0
     dropped_excluded_property_rows = 0
     dropped_no_property_rows = 0
     dropped_non_selected_rows = 0
     dropped_unknown_property_rows = 0
     unknown_property_name_rows = 0
+    included_eco_accrual_counterpart_rows = 0
+    dropped_excluded_eco_accrual_target_rows = 0
 
     while True:
         variables = {
@@ -614,6 +650,19 @@ def run_export(
                 "Notes": notes,
             }
             all_rows.append(row)
+
+            eco_target = ""
+            if normalize_name(prop_name) == ECO_SOURCE_PROPERTY_NORM:
+                eco_target = eco_accrual_target_property(row)
+            if eco_target:
+                if normalize_name(eco_target) in EXCLUDE_NORM:
+                    dropped_excluded_eco_accrual_target_rows += 1
+                    continue
+                out_row = dict(row)
+                out_row["Property"] = eco_target
+                filtered_rows.append(out_row)
+                included_eco_accrual_counterpart_rows += 1
+                continue
 
             if property_id is None:
                 dropped_no_property_rows += 1
@@ -696,6 +745,8 @@ def run_export(
         "dropped_no_property_rows": dropped_no_property_rows,
         "dropped_non_selected_rows": dropped_non_selected_rows,
         "dropped_unknown_property_rows": dropped_unknown_property_rows,
+        "included_eco_accrual_counterpart_rows": included_eco_accrual_counterpart_rows,
+        "dropped_excluded_eco_accrual_target_rows": dropped_excluded_eco_accrual_target_rows,
         "output_rows": len(filtered_rows),
         "unique_output_properties": unique_props,
         "blank_property_rows": blank_property_rows,

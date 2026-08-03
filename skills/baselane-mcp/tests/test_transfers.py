@@ -10,11 +10,13 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from baselane_mcp.transfers import (  # noqa: E402
+    TransferAuthenticationRequired,
     TransferError,
     TransferStateError,
     TransferValidationError,
     build_transfer_plan,
     execute_transfer,
+    get_transfer_state,
     list_active_transfer_accounts,
     run_graphql_batch_via_cdp,
     run_graphql_via_cdp,
@@ -197,6 +199,10 @@ class TransferExecutionTests(unittest.TestCase):
 
         self.assertEqual(len(accounts), 2)
         self.assertEqual(accounts[0]["account_number"], "••••4321")
+        self.assertEqual(accounts[0]["bank_account_id"], 102)
+        self.assertEqual(accounts[0]["mfa_bank_account_id"], 101)
+        self.assertEqual(accounts[1]["bank_account_id"], 101)
+        self.assertEqual(accounts[1]["mfa_bank_account_id"], 101)
         self.assertNotIn("routing_number", accounts[0])
         self.assertNotIn("plaid_account_id", accounts[0])
         self.assertTrue(all(account["eligible_for_internal_transfer"] for account in accounts))
@@ -436,7 +442,9 @@ class TransferExecutionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             state_path = Path(temporary_directory) / "state.json"
-            with self.assertRaisesRegex(TransferStateError, "SMS OTP is required"):
+            with self.assertRaisesRegex(
+                TransferAuthenticationRequired, "SMS OTP is required"
+            ) as challenge:
                 execute_transfer(
                     plan=plan,
                     confirmation_token=plan["confirmation_token"],
@@ -444,6 +452,10 @@ class TransferExecutionTests(unittest.TestCase):
                     state_path=state_path,
                 )
             challenged = json.loads(state_path.read_text(encoding="utf-8"))
+            durable = get_transfer_state(
+                confirmation_token=plan["confirmation_token"],
+                state_path=state_path,
+            )
             result = execute_transfer(
                 plan=plan,
                 confirmation_token=plan["confirmation_token"],
@@ -455,6 +467,14 @@ class TransferExecutionTests(unittest.TestCase):
             challenged["transfers"][plan["confirmation_token"]]["status"],
             "authentication_challenge",
         )
+        self.assertEqual(challenge.exception.bank_account_id, 101)
+        self.assertFalse(
+            challenge.exception.cash_movement_may_require_reconciliation
+        )
+        self.assertEqual(durable["status"], "authentication_challenge")
+        self.assertEqual(durable["mfa_bank_account_id"], 101)
+        self.assertTrue(durable["retry_safe"])
+        self.assertFalse(durable["cash_movement_may_require_reconciliation"])
         self.assertEqual(result["status"], "completed")
         self.assertEqual(mutation_calls, 2)
 
@@ -476,7 +496,9 @@ class TransferExecutionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             state_path = Path(temporary_directory) / "state.json"
-            with self.assertRaisesRegex(TransferStateError, "SMS OTP is required"):
+            with self.assertRaisesRegex(
+                TransferAuthenticationRequired, "SMS OTP is required"
+            ):
                 execute_transfer(
                     plan=plan,
                     confirmation_token=plan["confirmation_token"],

@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from baselane_ledger_revenue_policy import is_categoryless_known_rent_revenue, is_short_term_rent_revenue
 from baselane_dao_cash_authority import (
     DEFAULT_REPORT as DEFAULT_DAO_CASH_REPORT,
     apply_to_summary as apply_dao_cash_to_summary,
@@ -16,9 +17,17 @@ from canonical_property_ledger import DivergentCanonicalLedgerError, resolve_equ
 from coownership_reserve_policy import canonical_property as canonical_reserve_property
 from coownership_reserve_policy import (
     eco_gl_net_of_accruals,
+    manual_accrual_kind,
     month_end as accounting_month_end,
     outstanding_manual_accrual_liability,
+    outstanding_manual_accrual_liability_by_kind,
     read_rows as read_reserve_rows,
+)
+from lofty_monthly_balance_sheet_snapshot import (
+    has_verified_intercompany_position,
+    reconciled_counterparty_balances,
+    reconciled_obligation_breakdown,
+    render_balance_sheet_snapshot,
 )
 from baselane_reconciliation_policy import is_cash_basis_excluded_row
 from lofty_property_paths import display_name_for_property_path, resolve_property_path as resolve_canonical_property_path
@@ -38,6 +47,7 @@ FINANCIAL_DETAIL_HEADING="Financial detail:"
 CURRENT_REVIEWED_FINANCIAL_SUMMARY_SENTENCE="This month's update includes the current reviewed financial summary from the guarded monthly workflow."
 DEFAULT_CASH_ADJUSTMENTS=Path(__file__).absolute().parents[1]/"config/property_cash_summary_adjustments.json"
 MORTGAGE_TERMS=Path(__file__).absolute().parents[1]/"config/coownership_mortgage_amortization_terms.json"
+DEFAULT_LISTING_UPDATE_POLICY=Path(__file__).absolute().parents[1]/"config/lofty_listing_update_policy.json"
 
 def iso_z(): return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z")
 def parse_iso_date(v): return date.fromisoformat(v)
@@ -90,6 +100,59 @@ def property_cash_summary_adjustments(property_name):
         if isinstance(item,dict) and names_match(property_name,item.get('property_name')):
             return item
     return {}
+
+def listing_cash_flow_projection_override(property_name,run_month,policy_path=DEFAULT_LISTING_UPDATE_POLICY):
+    payload=read_json(policy_path)
+    if not isinstance(payload,dict): return None
+    for item in payload.get('projected_annual_cash_flow_overrides') or []:
+        if not isinstance(item,dict) or not names_match(property_name,item.get('address') or item.get('property_name')): continue
+        exact_month=str(item.get('run_month') or '').strip()
+        effective_from=str(item.get('effective_from') or '').strip()
+        effective_through=str(item.get('effective_through') or '').strip()
+        if exact_month and exact_month!=str(run_month or ''): continue
+        if effective_from and str(run_month or '')<effective_from: continue
+        if effective_through and str(run_month or '')>effective_through: continue
+        amount=parse_money(item.get('projected_annual_cash_flow'))
+        if amount is None: continue
+        return {
+            'projected_annual_cash_flow':round(max(amount,0.0),2),
+            'run_month':exact_month or None,
+            'effective_from':effective_from or None,
+            'effective_through':effective_through or None,
+            'reason':item.get('reason'),
+            'evidence':item.get('evidence'),
+            'approved_at':item.get('approved_at'),
+            'policy_path':str(policy_path),
+        }
+    return None
+
+def curr_maintenance_reserve_reporting_override(property_name,run_month,policy_path=None):
+    policy_path=Path(policy_path or DEFAULT_LISTING_UPDATE_POLICY)
+    payload=read_json(policy_path)
+    if not isinstance(payload,dict): return None
+    for item in payload.get('curr_maintenance_reserve_reporting_overrides') or []:
+        if not isinstance(item,dict) or not names_match(property_name,item.get('address') or item.get('property_name')): continue
+        exact_month=str(item.get('run_month') or '').strip()
+        effective_from=str(item.get('effective_from') or '').strip()
+        effective_through=str(item.get('effective_through') or '').strip()
+        if exact_month and exact_month!=str(run_month or ''): continue
+        if effective_from and str(run_month or '')<effective_from: continue
+        if effective_through and str(run_month or '')>effective_through: continue
+        amount=parse_money(item.get('curr_maintenance_reserve'))
+        if amount is None: continue
+        return {
+            'curr_maintenance_reserve':round(amount,2),
+            'run_month':exact_month or None,
+            'effective_from':effective_from or None,
+            'effective_through':effective_through or None,
+            'reason':item.get('reason'),
+            'evidence':item.get('evidence'),
+            'approved_at':item.get('approved_at'),
+            'live_correction_status':item.get('live_correction_status'),
+            'live_readback':parse_money(item.get('live_readback')),
+            'policy_path':str(policy_path),
+        }
+    return None
 def cash_position_adjustment_rows(s):
     rows=[]
     for item in (s.get('property_cash_summary_adjustments') or {}).get('cash_position_lines') or []:
@@ -145,6 +208,7 @@ def financials_md_lofty_reserve(financials_md:Path):
     text=financials_md.read_text(encoding='utf-8',errors='replace')
     patterns=[
         r"(?mi)^\|\s*Lofty Operating Cash\s*\|\s*(?P<amount>[^|\n]+?)\s*\|\s*Lofty\s*`curr_maintenance_reserve`\s*\|",
+        r"(?mi)^\s*-\s*Lofty Operating Reserve:\s*(?P<amount>Not available|-?\$[\d,]+\.\d{2})\s*$",
         r"(?mi)^\s*-\s*Lofty-held current maintenance reserve:\s*(?P<amount>Not available|-?\$[\d,]+\.\d{2})\s*$",
         r"(?mi)^\s*-\s*\*\*Lofty-held current maintenance reserve:\*\*\s*(?P<amount>Not available|-?\$[\d,]+\.\d{2})\s*$",
         r"(?mi)^\s*-\s*\*\*Current Maintenance Reserve:\*\*\s*(?P<amount>Not available|-?\$[\d,]+\.\d{2})\s*$",
@@ -386,19 +450,43 @@ def monthly_financial_summary(property_name,financials_md,index,source_ledger=No
             reserve['monthly_rent']=pm_reserve.get('monthly_rent')
             reserve['source']=pm_reserve.get('source')
             reserve['source_mode']=pm_reserve.get('source_mode') or 'pm_or_sdk_snapshot'
+    monthly_rent_source=reserve.get('source') if reserve and reserve.get('monthly_rent') is not None else None
+    monthly_rent_source_mode=reserve.get('source_mode') if monthly_rent_source else None
+    reserve_override=curr_maintenance_reserve_reporting_override(property_name,run_month)
+    live_reserve_snapshot=reserve.get('curr_maintenance_reserve') if reserve else None
+    live_reserve_snapshot_source=reserve.get('source') if reserve else None
+    if reserve_override:
+        reserve.update({
+            'curr_maintenance_reserve':reserve_override.get('curr_maintenance_reserve'),
+            'address':property_name,
+            'source':reserve_override.get('evidence') or reserve_override.get('policy_path'),
+            'source_mode':'approved_reporting_override',
+        })
     gl=gl_column_e_sum(financials_md,property_name,source_ledger,run_month,cutoff_date)
     reserve_net=None
     reserve_property=canonical_reserve_property(property_name)
     reserve_ledger=Path(str(gl.get('path') or ''))
+    reserve_rows=read_reserve_rows(reserve_ledger) if reserve_ledger.is_file() else []
     if reserve_property and run_month and reserve_ledger.is_file():
-        reserve_net=float(eco_gl_net_of_accruals(read_reserve_rows(reserve_ledger),reserve_property,run_month))
+        reserve_net=float(eco_gl_net_of_accruals(reserve_rows,reserve_property,run_month))
     open_accruals=None
+    open_accruals_by_kind=None
     if run_month and reserve_ledger.is_file():
-        open_accruals=float(-outstanding_manual_accrual_liability(read_reserve_rows(reserve_ledger),property_name,accounting_month_end(run_month)))
-    summary={'property_name':property_name,'as_of_month':run_month,'lofty_curr_maintenance_reserve':reserve.get('curr_maintenance_reserve') if reserve else None,'lofty_curr_maintenance_reserve_source':reserve.get('address') if reserve else None,'lofty_curr_maintenance_reserve_source_file':reserve.get('source') if reserve else None,'lofty_curr_maintenance_reserve_source_mode':reserve.get('source_mode') if reserve else None,'lofty_monthly_rent':reserve.get('monthly_rent') if reserve else None,'lofty_monthly_rent_source':reserve.get('source') if reserve and reserve.get('monthly_rent') is not None else None,'lofty_monthly_rent_source_mode':'pm_or_sdk_snapshot' if reserve and reserve.get('monthly_rent') is not None else None,'eco_gl_column_e_sum':gl.get('amount'),'eco_general_ledger_sum':gl.get('amount'),'eco_operating_cash':None,'eco_operating_cash_as_of_month':None,'eco_operating_cash_status':'reconciliation_pending','eco_operating_cash_source_mode':'verified_eco_cash_custody_reconciliation','eco_operating_cash_source':None,'eco_operating_cash_as_of_date':None,'eco_operating_cash_balance_scope':'eco_held_unrestricted_cash_only','eco_cash_basis_amount':gl.get('cash_basis_amount'),'eco_cash_basis_row_count':gl.get('cash_basis_row_count'),'eco_cash_basis_scope':gl.get('cash_basis_scope'),'eco_cash_basis_amount_as_of_month':gl.get('cash_basis_amount_as_of_month'),'eco_gl_column_e_net_of_accruals':reserve_net,'open_accrued_obligations':open_accruals,'open_accrued_obligations_status':'ok' if open_accruals is not None else 'reconciliation_pending','eco_gl_column_e_source':gl.get('path'),'eco_gl_column_e_row_count':gl.get('row_count'),'eco_gl_column_e_status':gl.get('status'),'eco_gl_column_e_source_mode':gl.get('source_mode'),'eco_gl_column_e_scope':gl.get('scope') or ('all_property_split_rows' if gl.get('status')=='ok' else None),'eco_gl_column_e_sum_as_of_month':gl.get('amount_as_of_month'),'eco_gl_column_e_row_count_as_of_month':gl.get('row_count_as_of_month'),'eco_gl_column_e_as_of_date':gl.get('as_of_date'),'eco_gl_column_e_scope_as_of_month':gl.get('scope_as_of_month'),'mortgage_escrow_reconciliation_required':requires_mortgage_escrow_reconciliation(property_name),'property_cash_summary_adjustments':property_cash_summary_adjustments(property_name)}
+        cutoff=accounting_month_end(run_month)
+        open_accruals=float(-outstanding_manual_accrual_liability(reserve_rows,property_name,cutoff))
+        open_accruals_by_kind={
+            kind:float(amount)
+            for kind,amount in outstanding_manual_accrual_liability_by_kind(reserve_rows,property_name,cutoff).items()
+        }
+    summary={'property_name':property_name,'as_of_month':run_month,'reporting_cutoff_date':cutoff_date.isoformat() if cutoff_date else None,'lofty_curr_maintenance_reserve':reserve.get('curr_maintenance_reserve') if reserve else None,'lofty_curr_maintenance_reserve_source':reserve.get('address') if reserve else None,'lofty_curr_maintenance_reserve_source_file':reserve.get('source') if reserve else None,'lofty_curr_maintenance_reserve_source_mode':reserve.get('source_mode') if reserve else None,'lofty_curr_maintenance_reserve_reporting_override':reserve_override,'lofty_curr_maintenance_reserve_live_snapshot':live_reserve_snapshot if reserve_override else None,'lofty_curr_maintenance_reserve_live_snapshot_source_file':live_reserve_snapshot_source if reserve_override else None,'lofty_monthly_rent':reserve.get('monthly_rent') if reserve else None,'lofty_monthly_rent_source':monthly_rent_source,'lofty_monthly_rent_source_mode':monthly_rent_source_mode,'eco_gl_column_e_sum':gl.get('amount'),'eco_general_ledger_sum':gl.get('amount'),'eco_operating_cash':None,'eco_operating_cash_as_of_month':None,'eco_operating_cash_status':'reconciliation_pending','eco_operating_cash_source_mode':'verified_eco_cash_custody_reconciliation','eco_operating_cash_source':None,'eco_operating_cash_as_of_date':None,'eco_operating_cash_balance_scope':'eco_held_unrestricted_cash_only','eco_cash_basis_amount':gl.get('cash_basis_amount'),'eco_cash_basis_row_count':gl.get('cash_basis_row_count'),'eco_cash_basis_scope':gl.get('cash_basis_scope'),'eco_cash_basis_amount_as_of_month':gl.get('cash_basis_amount_as_of_month'),'eco_gl_column_e_net_of_accruals':reserve_net,'open_accrued_obligations':open_accruals,'open_accrued_obligations_by_kind':open_accruals_by_kind,'open_accrued_obligations_status':'ok' if open_accruals is not None else 'reconciliation_pending','eco_gl_column_e_source':gl.get('path'),'eco_gl_column_e_row_count':gl.get('row_count'),'eco_gl_column_e_status':gl.get('status'),'eco_gl_column_e_source_mode':gl.get('source_mode'),'eco_gl_column_e_scope':gl.get('scope') or ('all_property_split_rows' if gl.get('status')=='ok' else None),'eco_gl_column_e_sum_as_of_month':gl.get('amount_as_of_month'),'eco_gl_column_e_row_count_as_of_month':gl.get('row_count_as_of_month'),'eco_gl_column_e_as_of_date':gl.get('as_of_date'),'eco_gl_column_e_scope_as_of_month':gl.get('scope_as_of_month'),'mortgage_escrow_reconciliation_required':requires_mortgage_escrow_reconciliation(property_name),'property_cash_summary_adjustments':property_cash_summary_adjustments(property_name),'listing_cash_flow_projection_override':listing_cash_flow_projection_override(property_name,run_month)}
     snapshot=ledger_cash_flow_snapshot(summary,run_month)
     summary['retained_capital']=snapshot.get('retained_capital') if snapshot.get('status')=='ok' else None
     return summary
+def has_verified_intercompany_summary(s):
+    """Accept only a reciprocal current position or an explicitly zero trace."""
+    return has_verified_intercompany_position(s)
+
+
 def has_verified_financial_summary(s):
     """Only publish when the investor-facing spendable-cash reconciliation is verified.
 
@@ -407,32 +495,28 @@ def has_verified_financial_summary(s):
     accrued-but-unpaid obligations and other restrictions.
     """
     unrestricted = parse_money(s.get('eco_held_unrestricted_cash'))
+    cutoff = str(s.get('reporting_cutoff_date') or '').strip()
+    source_dates = {
+        str(s.get(key) or '').strip()
+        for key in ('eco_gl_column_e_as_of_date', 'eco_operating_cash_as_of_date', 'physical_bank_cash_as_of_date')
+        if str(s.get(key) or '').strip()
+    }
+    cutoff_matches = bool(cutoff) and source_dates == {cutoff}
     return (
         s.get('eco_gl_column_e_status') == 'ok'
         and s.get('eco_held_unrestricted_cash_status') == 'ok'
         and s.get('open_accrued_obligations_status') == 'ok'
-        and s.get('intercompany_payable_status') == 'ok'
+        and s.get('counterparty_balances_status') == 'ok'
+        and has_verified_intercompany_summary(s)
+        and reconciled_obligation_breakdown(s) is not None
+        and reconciled_counterparty_balances(s, 'dao_accounts_payable_by_counterparty') is not None
+        and reconciled_counterparty_balances(s, 'dao_accounts_receivable_by_counterparty') is not None
+        and cutoff_matches
         and unrestricted is not None
         and unrestricted >= 0
     )
 def render_monthly_financial_summary(s):
-    cash_line=f"- ECO Net DAO Funds (spendable cash held by ECO): {format_reconciled_money(s.get('eco_held_unrestricted_cash'),s.get('eco_held_unrestricted_cash_status'))}"
-    as_of=f" as of {s.get('as_of_month')}" if s.get('as_of_month') else ""
-    lines=[f"Financial summary{as_of}:",f"- Lofty maintenance reserve balance: {format_money(s.get('lofty_curr_maintenance_reserve'))}",cash_line]
-    if s.get('open_accrued_obligations_status')=='ok':
-        lines.append(f"- Recorded unpaid obligations (not spendable cash): {format_money(s.get('open_accrued_obligations'))}")
-    payable=parse_money(s.get('dao_accounts_payable_to_eco'))
-    if s.get('intercompany_payable_status')=='ok' and payable and payable > 0:
-        lines.append(f"- DAO payable to ECO for verified unreimbursed cash advances: {format_money(payable)}")
-    if s.get('mortgage_escrow_reconciliation_required'):
-        if s.get('restricted_mortgage_escrow_status')=='ok':
-            lines.append(f"- Cash held by the mortgage servicer for future tax and insurance bills (not spendable): {format_money(s.get('restricted_mortgage_escrow'))}")
-        else:
-            lines.append("- Mortgage-servicer escrow for future tax and insurance bills is held separately and excluded from spendable cash; Baselane does not report its balance.")
-    if parse_money(s.get('retained_capital')): lines.append(f"- Retained capital: {format_money(s.get('retained_capital'))}")
-    for item in (s.get('property_cash_summary_adjustments') or {}).get('cash_position_lines') or []:
-        if isinstance(item,dict): lines.append(f"- {item.get('metric')}: {format_money(item.get('amount'))} ({item.get('source')})")
-    return "\n".join(lines)
+    return render_balance_sheet_snapshot(s,s.get('as_of_month'))
 FINANCIAL_SUMMARY_BLOCK_RE=re.compile(r"(?ims)\n*Financial summary(?:\s+as\s+of\s+\d{4}-\d{2})?:\s*\n\s*-\s*Lofty-held current maintenance reserve:\s*(?:Not available|-?\$[\d,]+\.\d{2})\s*\n\s*-\s*ECO GL Column E sum:\s*(?:Not available|-?\$[\d,]+\.\d{2}(?:\s+\(\d+\s+rows\))?)\s*")
 FINANCIALS_MD_SUMMARY_BLOCK_RE=re.compile(r"(?ims)\n*(?:Financial summary from FINANCIALS\.md:|Financial detail:)\s*\n.*?(?=\n\s*(?:Financial summary from FINANCIALS\.md:|Financial detail:)\s*\n|\Z)")
 LOFTY_OPERATING_CASH_SENTENCE_RE=re.compile(r"\*\*Lofty Operating Cash of (?:Not available|-?\$[\d,]+\.\d{2})\*\* held as Lofty `curr_maintenance_reserve`",re.I)
@@ -469,7 +553,7 @@ def render_owner_update_key_items(s,run_month=None):
     else:
         lines.append(f"- Net Operating Cashflow was {format_money(nocf)}.")
     payable=parse_money(s.get('dao_accounts_payable_to_eco'))
-    if s.get('intercompany_payable_status')=='ok' and payable and payable > 0:
+    if s.get('intercompany_payable_status') in {'ok','verified_payable_from_id_bearing_cash_rollforward'} and payable and payable > 0:
         lines.append(
             f"- ECO has advanced {format_money(payable)} of cash for this DAO that has not yet been reimbursed; "
             "this is recorded separately as the DAO's payable to ECO and is not described as negative cash."
@@ -500,23 +584,8 @@ def validate_latest_only_update_candidate(text):
     if len(text)>MAX_OWNER_UPDATE_CHARS: raise ValueError(f"owner update candidate too long: {len(text)}>{MAX_OWNER_UPDATE_CHARS}")
 
 def render_financials_cash_position(s,run_month=None):
-    ledger_src='ECO Systems General Ledger Column E'
-    if s.get('eco_gl_column_e_status')=='ok' and s.get('eco_gl_column_e_row_count') is not None: ledger_src+=f" ({int(s.get('eco_gl_column_e_row_count') or 0)} rows)"
     head='## Monthly Cash Position'+(f" ({run_month})" if run_month else '')
-    rows=[f"| Lofty maintenance reserve balance | {format_money(s.get('lofty_curr_maintenance_reserve'))} | Signed Lofty reserve ledger balance; a negative balance is a reserve deficit, not cash owed to ECO |"]
-    if s.get('physical_bank_cash_status')=='ok' and parse_money(s.get('physical_bank_cash')) is not None:
-        rows.append(f"| Cash in this DAO's own Baselane bank account | {format_money(s.get('physical_bank_cash'))} | Bank balance before unpaid bills and other restrictions; verified as of {s.get('physical_bank_cash_as_of_date') or 'unavailable'} |")
-    rows.extend([f"| ECO-held DAO Cash (Gross) | {format_reconciled_money(s.get('eco_held_cash_gross'),'ok' if parse_money(s.get('eco_held_cash_gross')) is not None else 'reconciliation_pending')} | Transaction-backed DAO cash in ECO-controlled accounts before recorded commitments |",f"| Less: Accrued but Unpaid Obligations | {format_reconciled_money(s.get('open_accrued_obligations'),s.get('open_accrued_obligations_status'))} | Recorded bills and fee obligations restrict cash but are not themselves ECO advances |",f"| ECO Net DAO Funds (spendable cash held by ECO) | {format_reconciled_money(s.get('eco_held_unrestricted_cash'),s.get('eco_held_unrestricted_cash_status'))} | Available ECO-held cash after recorded commitments and restrictions; never reported below zero |"])
-    payable=parse_money(s.get('dao_accounts_payable_to_eco'))
-    if s.get('intercompany_payable_status')=='ok' and payable and payable > 0:
-        rows.append(f"| DAO A/P — Due to ECO for verified advances | {format_money(payable)} | ECO cash already used for this DAO, net of transaction-backed DAO cash received by ECO; reciprocal ECO receivable |")
-    if s.get('mortgage_escrow_reconciliation_required'):
-        if s.get('restricted_mortgage_escrow_status')=='ok':
-            rows.append(f"| Cash held by the mortgage servicer for taxes and insurance | {format_money(s.get('restricted_mortgage_escrow'))} | Restricted DAO asset; not held by ECO and not available to spend |")
-        else:
-            rows.append("| Mortgage-servicer escrow for taxes and insurance | Balance not reported by Baselane | Held separately by the servicer and excluded from spendable cash |")
-    rows.extend(cash_position_adjustment_rows(s))
-    return "\n".join([head,'',"Plain-English guide: **ECO Net DAO Funds** is verified nonnegative spendable cash held by ECO for this DAO. **DAO A/P — Due to ECO** is shown separately and represents transaction-backed, unreimbursed ECO cash advances; it is not negative cash. Accrued bills remain restrictions until paid, and mortgage escrow remains restricted and unavailable.",'','| What this number means | Amount | Explanation |','|---|---:|---|',*rows])
+    return "\n".join([head,'',render_balance_sheet_snapshot(s,run_month)])
 def append_financials_cash_position(text,s,run_month=None):
     pat=re.compile(r"(?ms)\n*## Monthly Cash Position(?:\s+\([^)]+\))?\s*\n.*?(?=^##\s+|\Z)")
     block=render_financials_cash_position(s,run_month)
@@ -524,12 +593,18 @@ def append_financials_cash_position(text,s,run_month=None):
     return (text+'\n\n'+block+'\n').lstrip()
 def bucket(row):
     if 'aops-pnl-accrual|retained_capital|' in str(row.get('Notes') or '').lower(): return 'retained_capital'
+    # ECO-side paired accrual rows remain property-attributed so the
+    # intercompany subledger can reconcile them, but they are ECO receivables,
+    # not operating revenue earned by the DAO.  Keep this duplicate summary
+    # classifier aligned with coownership_reserve_policy.financial_bucket.
+    if manual_accrual_kind(row) in {'dao_eco','pm_eco'}: return 'intercompany_eco_revenue'
     transaction_text=norm(' '.join(str(row.get(k) or '') for k in ('Merchant','Description')))
     if 'internal transfer' in transaction_text: return 'inter_account_transfer'
     n=norm(' '.join(str(row.get(k) or '') for k in ('Type','Category','Sub-category')))
     category_n=norm(' '.join(str(row.get(k) or '') for k in ('Category','Sub-category')))
     if 'insurance' in n or 'rental dwelling' in n: return 'insurance'
     if 'revenue' in n or 'rent' in n: return 'rents'
+    if is_categoryless_known_rent_revenue(row,row.get('Amount')): return 'rents'
     if 'capex' in category_n or 'capital expenditure' in category_n or 'remodel' in category_n: return 'capex'
     if 'loan payments' in n or 'mortgage payment' in n: return 'debt_service'
     if 'utility' in n: return 'utilities'
@@ -582,8 +657,7 @@ def ledger_cash_flow_snapshot(s,run_month):
                 b[k]=b.get(k,0.0)+a
                 if k in REV and a > 0:
                     revenue_row_count+=1
-                    revenue_category=norm(' '.join(str(row.get(field) or '') for field in ('Category','Sub-category')))
-                    if 'short term rent' in revenue_category:
+                    if is_short_term_rent_revenue(row,a):
                         has_short_term_rent_revenue=True
     rev=round(sum(b.get(k,0.0) for k in REV),2); op=round(sum(b.get(k,0.0) for k in OPEX),2); noi=round(rev+op,2); debt_service=round(b.get('debt_service',0.0),2); capex=round(b.get('capex',0.0),2); retained=round(b.get('retained_capital',0.0),2); net=round(noi+debt_service+capex+retained,2)
     scheduled_rent=parse_money(s.get('lofty_monthly_rent') or s.get('monthly_rent'))
@@ -593,7 +667,11 @@ def ledger_cash_flow_snapshot(s,run_month):
     elif not has_short_term_rent_revenue and scheduled_rent is None and rev > 0 and revenue_row_count > 1:
         recurring_revenue=0.0; excess_revenue=rev; annualization_policy='review_required_unattributed_multi_rent_cash_not_annualized'
     recurring_noi=round(recurring_revenue+op,2); recurring_net=round(recurring_noi+debt_service+capex+retained,2); projected_basis=round(max(recurring_net,0.0)*12,2)
-    return {'status':'ok','ledger_path':str(path),'source_month_row_count':source_month_row_count(path,run_month),'revenue':rev,'operating_expenses':op,'noi':noi,'debt_service':debt_service,'capital_expenditures':capex,'retained_capital':retained,'net_operating_cashflow':net,'revenue_bucket_count':sum(1 for k in REV if b.get(k)),'revenue_row_count':revenue_row_count,'operating_expense_bucket_count':sum(1 for k in OPEX if b.get(k)),'scheduled_monthly_rent':scheduled_rent,'recurring_revenue_basis':recurring_revenue,'excess_cash_revenue':excess_revenue,'recurring_noi':recurring_noi,'recurring_net_operating_cashflow':recurring_net,'projected_annual_cash_flow_basis':projected_basis,'cash_flow_annualization_policy':annualization_policy,'has_short_term_rent_revenue':has_short_term_rent_revenue}
+    projection_override=s.get('listing_cash_flow_projection_override') if isinstance(s.get('listing_cash_flow_projection_override'),dict) else None
+    if projection_override and parse_money(projection_override.get('projected_annual_cash_flow')) is not None:
+        projected_basis=round(max(parse_money(projection_override.get('projected_annual_cash_flow')) or 0.0,0.0),2)
+        annualization_policy='approved_listing_projection_override'
+    return {'status':'ok','ledger_path':str(path),'source_month_row_count':source_month_row_count(path,run_month),'revenue':rev,'operating_expenses':op,'noi':noi,'debt_service':debt_service,'capital_expenditures':capex,'retained_capital':retained,'net_operating_cashflow':net,'revenue_bucket_count':sum(1 for k in REV if b.get(k)),'revenue_row_count':revenue_row_count,'operating_expense_bucket_count':sum(1 for k in OPEX if b.get(k)),'scheduled_monthly_rent':scheduled_rent,'recurring_revenue_basis':recurring_revenue,'excess_cash_revenue':excess_revenue,'recurring_noi':recurring_noi,'recurring_net_operating_cashflow':recurring_net,'projected_annual_cash_flow_basis':projected_basis,'cash_flow_annualization_policy':annualization_policy,'listing_cash_flow_projection_override':projection_override,'has_short_term_rent_revenue':has_short_term_rent_revenue}
 def render_source_backed_financial_snapshot(s,run_month):
     snap=ledger_cash_flow_snapshot(s,run_month)
     if snap.get('status')!='ok': raise ValueError(f"cannot build source-backed financial snapshot: {snap.get('status')}")
@@ -604,7 +682,16 @@ def render_source_backed_financial_snapshot(s,run_month):
     metrics.append(f"| Net Operating Cashflow | {format_money(snap.get('net_operating_cashflow'))} |")
     if snap.get('cash_flow_annualization_policy') in {'scheduled_rent_run_rate_excess_cash_not_annualized','review_required_unattributed_multi_rent_cash_not_annualized'}:
         metrics.extend([f"| Scheduled Monthly Rent | {format_money(snap.get('scheduled_monthly_rent'))} |",f"| Excess Cash Revenue | {format_money(snap.get('excess_cash_revenue'))} |",f"| Recurring Revenue Basis | {format_money(snap.get('recurring_revenue_basis'))} |",f"| Recurring NOI | {format_money(snap.get('recurring_noi'))} |",f"| Recurring Net Operating Cashflow | {format_money(snap.get('recurring_net_operating_cashflow'))} |",f"| Projected Annual Cash Flow Basis | {format_money(snap.get('projected_annual_cash_flow_basis'))} |"])
+    elif snap.get('cash_flow_annualization_policy')=='approved_listing_projection_override':
+        metrics.append(f"| Projected Annual Cash Flow Basis | {format_money(snap.get('projected_annual_cash_flow_basis'))} |")
     evidence=[f"| Source month | {run_month} |",f"| ECO GL source | `{snap.get('ledger_path')}` |",f"| Source-month dated rows | {snap.get('source_month_row_count')} |",f"| Revenue bucket count | {snap.get('revenue_bucket_count')} |",f"| Operating expense bucket count | {snap.get('operating_expense_bucket_count')} |",f"| Cash Flow Annualization Policy | {snap.get('cash_flow_annualization_policy')} |"]
+    projection_override=snap.get('listing_cash_flow_projection_override') if isinstance(snap.get('listing_cash_flow_projection_override'),dict) else None
+    if projection_override:
+        evidence.extend([
+            f"| Listing projection override reason | {projection_override.get('reason') or 'Approved month-scoped listing projection'} |",
+            f"| Listing projection override evidence | `{projection_override.get('evidence') or projection_override.get('policy_path')}` |",
+            f"| Listing projection override approved at | {projection_override.get('approved_at') or 'Not recorded'} |",
+        ])
     evidence.extend(source_evidence_adjustment_rows(s))
     return "\n".join(['# Financials','',f'## Cash Flow Snapshot ({run_month})','','| Metric | Amount |','|---|---:|',*metrics,'',render_financials_cash_position(s,run_month),'','## Source Evidence','','| Field | Value |','|---|---|',*evidence])+"\n"
 def financials_md_summary_sections(financial_text, run_month=None):
@@ -641,6 +728,7 @@ def owner_financials_summary_sections(financial_text,run_month=None):
 def plain_text_financials_section(section):
     lines=[]
     for raw in str(section or '').splitlines():
+        leading_whitespace=raw[:len(raw)-len(raw.lstrip())]
         line=raw.strip()
         if not line:
             if lines and lines[-1]: lines.append('')
@@ -653,7 +741,10 @@ def plain_text_financials_section(section):
             if len(cells)>=3: lines.append(f"{cells[0]}: {cells[1]} ({cells[2]})")
             elif len(cells)==2: lines.append(f"{cells[0]}: {cells[1]}")
             continue
-        lines.append(line.replace('`',''))
+        rendered=line.replace('`','')
+        if leading_whitespace and rendered.startswith(('-', '*')):
+            rendered='  '+rendered
+        lines.append(rendered)
     return "\n".join(lines).strip()
 def append_financials_md_summary(text,financial_text,run_month=None):
     sections=owner_financials_summary_sections(financial_text,run_month)
@@ -733,6 +824,9 @@ def financial_candidate_snapshot_evidence(s,run_month=None):
         'capital_expenditures':snap.get('capital_expenditures'),
         'retained_capital':snap.get('retained_capital'),
         'net_operating_cashflow':snap.get('net_operating_cashflow'),
+        'projected_annual_cash_flow_basis':snap.get('projected_annual_cash_flow_basis'),
+        'cash_flow_annualization_policy':snap.get('cash_flow_annualization_policy'),
+        'listing_cash_flow_projection_override':snap.get('listing_cash_flow_projection_override'),
         'revenue_bucket_count':snap.get('revenue_bucket_count'),
         'operating_expense_bucket_count':snap.get('operating_expense_bucket_count'),
     }
@@ -782,16 +876,25 @@ def suspicious_markers(text):
 def build_packet(manifest,output_dir:Path,entry_date:date,lofty_profile_json=None,source_ledger=None,lofty_properties_dir=None,lofty_all_properties_json=None,dao_cash_report=None,reporting_cutoff_date=None,manual_excluded_properties=None):
     output_dir=output_dir.resolve(); records=[]; issue_count=update_count=fin_count=marker_count=gate_count=financials_md_summary_count=synthetic_summary_count=0
     index=load_lofty_reserve_index(lofty_profile_json,lofty_properties_dir,lofty_all_properties_json)
-    dao_cash_authority=load_dao_cash_report(Path(dao_cash_report or DEFAULT_DAO_CASH_REPORT))
+    # A close packet is evaluated at its reporting cutoff. A correctly dated
+    # 07/31 custody snapshot must remain usable when the packet is rebuilt
+    # after midnight on 08/02.
+    dao_cash_authority=load_dao_cash_report(
+        Path(dao_cash_report or DEFAULT_DAO_CASH_REPORT),
+        today=reporting_cutoff_date or entry_date,
+    )
     manifest_records=manifest.get('records') or []
     skipped_excluded_count=0
     for r in manifest_records:
         if not isinstance(r,dict): continue
-        if section_excluded_or_skipped(r.get('update_status')) and section_excluded_or_skipped(r.get('financial_status')): skipped_excluded_count+=1; continue
+        if section_excluded_or_skipped(r.get('update_status')) and section_excluded_or_skipped(r.get('financial_status')):
+            skipped_excluded_count+=1
+            if not r.get('financial_summary_only'):
+                continue
         raw=str(r.get('property_name') or 'property'); managed_name=str(r.get('managed_name') or '').strip(); prop_path,meta=resolve_property_path(Path(str(r.get('property_path') or ''))); name=raw if meta.get('property_path_resolution')=='flat_public_to_nested_public' else (display_name_for_property_path(prop_path,meta) if prop_path.exists() else raw); summary_name=managed_name or name
         outdir=output_dir/slugify(name); outdir.mkdir(parents=True,exist_ok=True); um=outdir/f"{manifest.get('run_month')}-owner-update-review-candidate.md"; fm=outdir/f"{manifest.get('run_month')}-FINANCIALS-review-candidate.md"; remove_stale_candidate(um); remove_stale_candidate(fm)
         exclusion=live_publish_exclusion(prop_path,manual_excluded_properties)
-        rec={'property_name':name,'managed_name':managed_name or None,'input_property_name':raw,'property_path':str(prop_path),'input_property_path':r.get('property_path'),**meta,'updates_md':r.get('updates_md'),'financials_md':r.get('financials_md'),'update_candidate':str(um),'financial_candidate':str(fm),'update_approval_target':update_approval_target(r,str(manifest.get('run_month') or '')),'financial_approval_target':financial_approval_target(r,str(manifest.get('run_month') or '')),'live_publish_excluded':bool(exclusion),'live_publish_exclusion_source':exclusion.get('source') if exclusion else None,'live_publish_exclusion_reason':exclusion.get('exclude_reason') if exclusion else None,'monthly_financial_summary':{},'financial_candidate_snapshot':{},'update_source_mode':None,'issues':[],'markers':[],'financial_candidate_gate_issues':[]}
+        rec={'property_name':name,'managed_name':managed_name or None,'input_property_name':raw,'property_path':str(prop_path),'input_property_path':r.get('property_path'),**meta,'updates_md':r.get('updates_md'),'financials_md':r.get('financials_md'),'update_candidate':str(um),'financial_candidate':str(fm),'update_approval_target':update_approval_target(r,str(manifest.get('run_month') or '')),'financial_approval_target':financial_approval_target(r,str(manifest.get('run_month') or '')),'financial_summary_only':bool(r.get('financial_summary_only')),'financial_summary_scope':r.get('financial_summary_scope'),'financial_summary_scope_reason':r.get('financial_summary_scope_reason'),'live_publish_excluded':bool(exclusion),'live_publish_exclusion_source':exclusion.get('source') if exclusion else None,'live_publish_exclusion_reason':exclusion.get('exclude_reason') if exclusion else None,'monthly_financial_summary':{},'financial_candidate_snapshot':{},'update_source_mode':None,'issues':[],'markers':[],'financial_candidate_gate_issues':[]}
         fin_path=resolve_record_document_path(r.get('financials_md'),prop_path,'00 - README & Property Snapshot')
         rec['financials_md']=str(fin_path)
         rec['financial_approval_target']=None
@@ -804,7 +907,7 @@ def build_packet(manifest,output_dir:Path,entry_date:date,lofty_profile_json=Non
         rec['financial_candidate_snapshot']=financial_candidate_snapshot_evidence(rec['monthly_financial_summary'],str(manifest.get('run_month') or '') or None)
         if fin_path.is_file() or rec['monthly_financial_summary'].get('eco_gl_column_e_status')=='ok':
             if rec['monthly_financial_summary'].get('lofty_curr_maintenance_reserve') is None:
-                if rec['live_publish_excluded']:
+                if rec['live_publish_excluded'] or rec['financial_summary_only']:
                     rec['local_reporting_notes']=['monthly financial summary missing Lofty curr_maintenance_reserve; live publish is excluded by policy']
                 else: issue_count+=1; rec['issues'].append('monthly financial summary missing Lofty curr_maintenance_reserve')
             if rec['monthly_financial_summary'].get('eco_gl_column_e_status')!='ok': issue_count+=1; rec['issues'].append('monthly financial summary missing ECO GL Column E source')
@@ -818,18 +921,39 @@ def build_packet(manifest,output_dir:Path,entry_date:date,lofty_profile_json=Non
         except Exception as e: issue_count+=1; rec['issues'].append(f'financial candidate failed: {e}')
         try:
             draft=resolve_record_document_path(r.get('draft_path'),prop_path,'00 - README & Property Snapshot')
-            if draft.is_file():
+            if rec['financial_summary_only']:
+                text=(
+                    f"## {entry_date.isoformat()}\n\n"
+                    f"- Property Update ({entry_date:%m/%d/%Y}):\n"
+                    "This update provides the current reviewed financial position through the reporting cutoff.\n"
+                )
+                rec['update_source_mode']='financial_summary_only'
+            elif draft.is_file():
                 raw_text=draft.read_text(encoding='utf-8',errors='replace')
                 if generic_owner_update_draft(raw_text) and has_verified_financial_summary(rec['monthly_financial_summary']): text=update_entry_from_financial_summary(name,entry_date,rec['monthly_financial_summary']); rec['update_source_mode']='financial_summary_fallback_generic_draft'
                 else: text=update_entry_from_draft(draft,entry_date); rec['update_source_mode']='draft'
             else: text=update_entry_from_financial_summary(name,entry_date,rec['monthly_financial_summary']); rec['update_source_mode']='financial_summary_fallback_missing_draft'
             if rec['monthly_financial_summary']:
-                text=ensure_owner_update_key_items(text,rec['monthly_financial_summary'],str(manifest.get('run_month') or '') or None)
-                if fin_text:
+                if rec['financial_summary_only']:
+                    summary_text=render_financials_cash_position(
+                        rec['monthly_financial_summary'],
+                        str(manifest.get('run_month') or '') or None,
+                    )
+                    text=(
+                        text.rstrip()
+                        + "\n\nFinancial detail:\n\n"
+                        + summary_text
+                        + "\n"
+                    )
+                    validate_latest_only_update_candidate(text)
+                    rec['financial_summary_source_mode']='synthetic_financial_summary_only'; rec['financials_md_summary_sha256']=sha256_text(summary_text); rec['financials_md_summary_char_count']=len(summary_text); synthetic_summary_count+=1
+                else:
+                    text=ensure_owner_update_key_items(text,rec['monthly_financial_summary'],str(manifest.get('run_month') or '') or None)
+                if fin_text and not rec['financial_summary_only']:
                     summary_text=financials_md_summary_text(fin_text,str(manifest.get('run_month') or '') or None)
                     text=append_financials_md_summary(text,fin_text,str(manifest.get('run_month') or '') or None)
                     rec['financial_summary_source_mode']='financials_md'; rec['financials_md_summary_sha256']=sha256_text(summary_text or ''); rec['financials_md_summary_char_count']=len(summary_text or ''); financials_md_summary_count+=1
-                else:
+                elif not rec['financial_summary_only']:
                     text=append_monthly_financial_summary(text,rec['monthly_financial_summary']); rec['financial_summary_source_mode']='synthetic'; synthetic_summary_count+=1
             um.write_text(text,encoding='utf-8'); update_count+=1; rec['markers'].extend('update.'+m for m in suspicious_markers(text))
         except Exception as e: issue_count+=1; rec['issues'].append(f'update candidate failed: {e}')
@@ -841,9 +965,9 @@ def build_packet(manifest,output_dir:Path,entry_date:date,lofty_profile_json=Non
         else: empty_reason='no_candidate_records_generated'
     pruned_stale_candidates=prune_unlisted_candidates(output_dir,str(manifest.get('run_month') or ''),records)
     manifest_source_issues=manifest.get('source_issues') if isinstance(manifest.get('source_issues'),list) else []
-    missing_reserve_records=[{'property_name':r.get('property_name'),'managed_name':r.get('managed_name'),'input_property_name':r.get('input_property_name'),'financials_md':r.get('financials_md')} for r in records if not r.get('live_publish_excluded') and isinstance(r.get('monthly_financial_summary'),dict) and r.get('monthly_financial_summary',{}).get('lofty_curr_maintenance_reserve') is None]
+    missing_reserve_records=[{'property_name':r.get('property_name'),'managed_name':r.get('managed_name'),'input_property_name':r.get('input_property_name'),'financials_md':r.get('financials_md')} for r in records if not r.get('live_publish_excluded') and not r.get('financial_summary_only') and isinstance(r.get('monthly_financial_summary'),dict) and r.get('monthly_financial_summary',{}).get('lofty_curr_maintenance_reserve') is None]
     missing_reserve_artifacts=write_missing_reserve_artifacts(output_dir,missing_reserve_records,manifest.get('run_month'))
-    return {'generated_at':iso_z(),'status':'review' if issue_count or marker_count or empty_reason else 'ok','run_month':manifest.get('run_month'),'entry_date':entry_date.isoformat(),'reporting_cutoff_date':reporting_cutoff_date.isoformat() if reporting_cutoff_date else None,'lofty_profile_json':str(lofty_profile_json) if lofty_profile_json else None,'lofty_properties_dir':str(lofty_properties_dir) if lofty_properties_dir else None,'lofty_all_properties_json':str(lofty_all_properties_json) if lofty_all_properties_json else None,'source_ledger':str(source_ledger) if source_ledger else None,'lofty_reserve_index_count':len(index),'lofty_reserve_index_source_counts':reserve_index_source_counts(index),'missing_lofty_reserve_count':len(missing_reserve_records),'missing_lofty_reserve_records':missing_reserve_records[:100],'missing_lofty_reserve_csv':missing_reserve_artifacts['missing_lofty_reserve_csv'],'missing_lofty_reserve_markdown':missing_reserve_artifacts['missing_lofty_reserve_markdown'],'output_dir':str(output_dir),'manifest_record_count':len(manifest_records),'manifest_status':manifest.get('status'),'manifest_source_issue_count':int(manifest.get('source_issue_count') or len(manifest_source_issues)),'review_manifest_source_issues':manifest_source_issues,'skipped_excluded_record_count':skipped_excluded_count,'pruned_stale_candidate_count':len(pruned_stale_candidates),'pruned_stale_candidates':pruned_stale_candidates,'empty_candidate_packet_reason':empty_reason,'next_action':'Regenerate monthly review manifest from non-empty guarded apply output before Discord/email/transfer reconciliation.' if empty_reason=='review_manifest_has_no_records' else None,'property_count':len(records),'update_candidate_count':update_count,'financial_candidate_count':fin_count,'issue_count':issue_count,'marker_count':marker_count,'financial_candidate_gate_issue_count':gate_count,'financials_md_summary_update_count':financials_md_summary_count,'synthetic_summary_update_count':synthetic_summary_count,'records':records}
+    return {'generated_at':iso_z(),'status':'review' if issue_count or marker_count or empty_reason else 'ok','run_month':manifest.get('run_month'),'entry_date':entry_date.isoformat(),'reporting_cutoff_date':reporting_cutoff_date.isoformat() if reporting_cutoff_date else None,'lofty_profile_json':str(lofty_profile_json) if lofty_profile_json else None,'lofty_properties_dir':str(lofty_properties_dir) if lofty_properties_dir else None,'lofty_all_properties_json':str(lofty_all_properties_json) if lofty_all_properties_json else None,'source_ledger':str(source_ledger) if source_ledger else None,'lofty_reserve_index_count':len(index),'lofty_reserve_index_source_counts':reserve_index_source_counts(index),'missing_lofty_reserve_count':len(missing_reserve_records),'missing_lofty_reserve_records':missing_reserve_records[:100],'missing_lofty_reserve_csv':missing_reserve_artifacts['missing_lofty_reserve_csv'],'missing_lofty_reserve_markdown':missing_reserve_artifacts['missing_lofty_reserve_markdown'],'output_dir':str(output_dir),'manifest_record_count':len(manifest_records),'manifest_status':manifest.get('status'),'manifest_source_issue_count':int(manifest.get('source_issue_count') or len(manifest_source_issues)),'review_manifest_source_issues':manifest_source_issues,'skipped_excluded_record_count':skipped_excluded_count,'pruned_stale_candidate_count':len(pruned_stale_candidates),'pruned_stale_candidates':pruned_stale_candidates,'empty_candidate_packet_reason':empty_reason,'next_action':'Regenerate monthly review manifest from non-empty guarded apply output before Discord/email/transfer reconciliation.' if empty_reason=='review_manifest_has_no_records' else None,'authoritative_active_property_count':manifest.get('authoritative_active_property_count'),'authoritative_reporting_target_count':manifest.get('authoritative_reporting_target_count'),'active_property_roster':manifest.get('active_property_roster'),'property_count':len(records),'update_candidate_count':update_count,'financial_candidate_count':fin_count,'issue_count':issue_count,'marker_count':marker_count,'financial_candidate_gate_issue_count':gate_count,'financials_md_summary_update_count':financials_md_summary_count,'synthetic_summary_update_count':synthetic_summary_count,'records':records}
 def render_markdown(report):
     lines=['# Lofty Monthly Review Candidate Packet','',f"- Run month: `{report['run_month']}`",f"- Entry date: `{report['entry_date']}`",f"- Status: `{report['status']}`",f"- Update candidates: `{report['update_candidate_count']}`",f"- Financial candidates: `{report['financial_candidate_count']}`",f"- Issues: `{report['issue_count']}`",f"- Markers: `{report['marker_count']}`",f"- Financial candidate gate issues: `{report.get('financial_candidate_gate_issue_count',0)}`",'','These are review candidates only. They are not approved artifacts and guarded apply will not consume them until a reviewer copies approved text to the manifest approval targets.','','## Candidate Files','']
     for r in report['records']:

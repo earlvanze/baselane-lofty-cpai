@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from discord_summary_routing_policy import active_portfolio_summary_population_issues
+
 
 def iso_z() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -32,18 +34,37 @@ def receipt_id(receipt: object) -> str:
     direct = str(receipt.get("messageId") or "").strip()
     if direct:
         return direct
-    payload = receipt.get("payload") if isinstance(receipt.get("payload"), dict) else {}
-    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-    return str(result.get("messageId") or "").strip()
+    for envelope_name in ("payload", "raw"):
+        envelope = receipt.get(envelope_name)
+        if not isinstance(envelope, dict):
+            continue
+        result = envelope.get("result") if isinstance(envelope.get("result"), dict) else {}
+        direct_result = str(result.get("messageId") or "").strip()
+        if direct_result:
+            return direct_result
+        nested = result.get("receipt") if isinstance(result.get("receipt"), dict) else {}
+        platform_ids = nested.get("platformMessageIds")
+        if isinstance(platform_ids, list):
+            ids = [str(value).strip() for value in platform_ids if str(value).strip()]
+            if ids:
+                # The final continuation fragment is the safest bounded-read anchor.
+                return ids[-1]
+    return ""
 
 
 def receipt_timestamp_ms(receipt: object) -> int:
     if not isinstance(receipt, dict):
         return 0
-    payload = receipt.get("payload") if isinstance(receipt.get("payload"), dict) else {}
-    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-    nested = result.get("receipt") if isinstance(result.get("receipt"), dict) else {}
-    return int(nested.get("sentAt") or 0)
+    for envelope_name in ("payload", "raw"):
+        envelope = receipt.get(envelope_name)
+        if not isinstance(envelope, dict):
+            continue
+        result = envelope.get("result") if isinstance(envelope.get("result"), dict) else {}
+        nested = result.get("receipt") if isinstance(result.get("receipt"), dict) else {}
+        sent_at = nested.get("sentAt")
+        if sent_at:
+            return int(sent_at)
+    return 0
 
 
 def parse_cli_json(stdout: str) -> dict[str, Any]:
@@ -92,7 +113,7 @@ def read_messages(
     # bounded read covers the entire generated pair without scanning channel history.
     anchor_id = around_ids[-1] if around_ids else ""
     requests: list[list[str]] = (
-        [["--around", anchor_id, "--limit", "30"]] if anchor_id else [["--limit", "30"]]
+        [["--around", anchor_id, "--limit", "10"]] if anchor_id else [["--limit", "10"]]
     )
     for read_args in requests:
         command = [
@@ -136,8 +157,9 @@ def is_old_batch_message(
     message_id = str(row.get("id") or "")
     timestamp_ms = int(row.get("timestampMs") or 0)
     near_receipt = bool(sent_at_ms and timestamp_ms and abs(timestamp_ms - sent_at_ms) <= 120_000)
-    exact_prefix = content.startswith(f"July 31 close draft for {property_name}") or content.startswith(
-        "[DRAFT FOR REVIEW - NOT EMAILED]"
+    exact_prefix = near_receipt and (
+        content.startswith(f"July 31 close draft for {property_name}")
+        or content.startswith("[DRAFT FOR REVIEW - NOT EMAILED]")
     )
     text_fragment = near_receipt and any(len(content) >= 24 and content in expected for expected in expected_texts)
     return bool((message_id in expected_ids and near_receipt) or exact_prefix or text_fragment)
@@ -157,6 +179,13 @@ def main() -> int:
 
     manifest = read_json(args.manifest)
     plan = read_json(args.plan)
+    authoritative_property_count = plan.get("authoritative_active_property_count")
+    expected_count = plan.get("authoritative_reporting_target_count")
+    population_issues = active_portfolio_summary_population_issues(
+        authoritative_property_count,
+        expected_count,
+        len(plan.get("records") or []),
+    )
     plan_by_property = {
         str(record.get("property_name") or ""): str(record.get("message") or "")
         for record in plan.get("records") or []
@@ -268,7 +297,12 @@ def main() -> int:
         )
 
     remaining_count = sum(len(result["remaining_ids"]) for result in results)
-    status = "ok" if len(results) == 20 and not global_issues and remaining_count == 0 else "review"
+    global_issues.extend(population_issues)
+    status = (
+        "ok"
+        if len(results) == expected_count and not global_issues and remaining_count == 0
+        else "review"
+    )
     report = {
         "generated_at": iso_z(),
         "status": status,
