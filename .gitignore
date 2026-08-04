@@ -38,3 +38,6 @@ scripts/.*_state*
 /.secrets/
 /skills/lofty-pm
 /skills/baselane-mcp/har-skills
+
+# Property-specific Colfax investigations stay in the private OpenClaw workspace.
+**/*[Cc]olfax*
